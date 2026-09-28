@@ -1,159 +1,147 @@
-# If you don’t have experience with GitHub but still want to run this software on your device, become a channel member of my YouTube channel, and I’ll help you set it up.
+# 🇺🇸 USA Conference Discovery & 2-Day Publication AI Agent
 
-👉 [Join the channel here](https://www.youtube.com/channel/UCE3Q1BsHrW6FK4aSUdO32bQ/join)
-
-
-# 📚 General Conference Analysis Suite
-
-A comprehensive toolkit for scraping, analyzing, and exploring LDS General Conference talks from 1971 to present using modern web technologies and AI-powered topic classification.
-
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-
-## 🎯 Overview
-
-This project provides three powerful components:
-
-1. **Web Scraper** - Extracts conference talk data from churchofjesuschrist.org
-2. **AI Topic Classification** - Uses DeBERTa NLP model to classify talks by 60+ gospel topics
-3. **Interactive Web App** - Beautiful Next.js application for exploring and analyzing talks
-
-## ✨ Features
-
-### 📖 Web Scraper
-- Scrapes 280,000+ conference talks dating back to 1971
-- Extracts titles, speakers, callings, full text, and footnotes
-- Data cleaning and standardization
-- Outputs to CSV/JSON formats
-
-### 🤖 Topic Classification
-- Zero-shot classification using DeBERTa-v3-base model
-- 60+ gospel topics from Preach My Gospel
-- Multi-label classification (up to 5 topics per talk)
-- Fast version: 10-20x speedup with batch processing
-- Resume capability with checkpoints
-
-### 😊 Emotion Analysis
-- Emotion classification using roberta-base-go_emotions model
-- 28 emotion labels (positive, negative, cognitive, neutral)
-- Multi-label emotion detection per talk
-- Track emotional tone trends over 50+ years
-- Batch processing for efficient analysis
-
-### 🎨 Interactive Web Application
-- **10 Features**:
-  - Advanced word search with Boolean logic
-  - Exact phrase search
-  - Topic exploration (60+ gospel topics)
-  - Emotion analysis (28 emotions)
-  - Speaker analysis and statistics
-  - Conference breakdowns
-  - Individual talk analysis
-  - Overall statistics and trends
-  - Advanced filtering (by speaker, era, year)
-  - Ask AI. Ask any question in natural language and a Gemini Agent writes and executes Python code on your machine to answer it.
-- Built with Next.js, TypeScript, and shadcn/ui
-- Beautiful visualizations with Recharts
-- Real-time search with 280,000+ talks
-- Responsive design for all devices
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.8+
-- Node.js 18+
-- npm or yarn
-
-### 1. Setup Python Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/lukejoneslj/GeneralConferenceScraper.git
-cd GeneralConferenceScraper
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install Python dependencies
-pip install -r requirements_nlp.txt
-```
-
-### 2. Run Web Scraper
-
-```bash
-cd scraper
-python conferencescraper.py
-```
-
-### 3. Run AI Classification (Optional)
-
-#### Topic Classification
-
-To add topic classification to talks:
-
-```bash
-cd classification
-python classify_topics_fast.py  # Recommended: 10-20x faster
-```
-
-**Time estimate:** 10-15 hours on CPU, 4-8 hours on GPU
-
-See [`docs/FAST_VERSION_README.md`](docs/FAST_VERSION_README.md) for optimization details.
-
-#### Emotion Classification
-
-To add emotion analysis to talks:
-
-```bash
-cd classification
-pip install -r requirements_emotions.txt  # If not already installed
-python classify_emotions_fast.py
-```
-
-**Time estimate:** 4-10 hours on CPU, 2-4 hours on GPU
-
-**You can run the topic and emotion classification models in Google Colab for faster processing**
-
-See [`docs/EMOTION_CLASSIFICATION_GUIDE.md`](docs/EMOTION_CLASSIFICATION_GUIDE.md) for details.
-
-### 4. Launch Web Application
-
-```bash
-cd conference-app
-
-# Install dependencies
-npm install
-
-# Copy data file
-cp ../data/conference_talks_cleaned.csv public/
-
-# Run development server
-npm run dev
-```
-
-Visit [http://localhost:3000](http://localhost:3000)
-
-**Technologies:**
-- Next.js 15 with App Router
-- TypeScript for type safety
-- shadcn/ui for beautiful components
-- Recharts for data visualization
-- Tailwind CSS for styling
-- Flask for executing Python code from AskAI
-
-## 📝 License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Original scraper based on work by [johnmwood](https://github.com/johnmwood)
-- AI model: [MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli](https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli)
-- Data source: [The Church of Jesus Christ of Latter-day Saints](https://www.churchofjesuschrist.org/study/general-conference)
-- Topics based on [Preach My Gospel](https://www.churchofjesuschrist.org/study/manual/preach-my-gospel-a-guide-to-missionary-service)
-
-
-**⭐ Star this repository if you find it useful!**
+An automated 24/7 AI-powered agent that monitors and extracts conference details and speaker information across **6 major websites** for conferences held in the **USA**, validates them using **Google Gemini AI**, stores them in **PostgreSQL**, and publishes their full details into an **Excel sheet exactly 2 days before each conference starts**.
 
 ---
 
+## 🏛️ System Architecture & Workflow
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. Conference Sources (6 Websites)                                     │
+│    • 10times (10times.com/usa/conferences)                             │
+│    • Luma (lu.ma/discover)                                             │
+│    • Eventbrite (eventbrite.com/d/united-states/conferences/)           │
+│    • Meetup (meetup.com/find/?keywords=conference&location=us)         │
+│    • Cvent (cvent.com/events)                                          │
+│    • Events in America (eventsinamerica.com)                           │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ Raw HTML & Metadata
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 2. Data Collection Layer                                               │
+│    • Requests, BeautifulSoup4, Multi-threaded concurrent workers       │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ Candidate Event Streams
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 3. AI Extraction & Validation Agent                                    │
+│    • Google Gemini API (gemini-2.5-flash)                              │
+│    • Enforces USA location validation                                  │
+│    • Extracts Title, Dates, Speakers, Companies, Venue, City, URLs     │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ Structured Validated Data
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 4. PostgreSQL Database                                                 │
+│    • SQLAlchemy ORM (with automatic SQLite fallback for local test)    │
+│    • Stores discovered conferences, speaker profiles, and statuses     │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ T-2 Days Publication Trigger
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 5. Scheduler & Publication Engine (Celery + Redis / APScheduler)       │
+│    • Scans database for events starting in exactly 2 days              │
+│    • Appends verified records to the styled Excel spreadsheet          │
+│    • Updates publication status and timestamp                          │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 6. Output & Interfaces                                                 │
+│    • Formatted Excel Sheet (.xlsx) with 15 required columns            │
+│    • Modern React (Next.js) + Tailwind CSS Dashboard                   │
+│    • FastAPI Backend REST Endpoints (port 8000)                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📊 Excel Sheet Schema (15 Required Columns)
+
+The published Excel spreadsheet (`data/excel/usa_conferences_published.xlsx`) contains:
+
+| # | Column Name | Description |
+|---|---|---|
+| 1 | `Conference ID` | Unique identifier (e.g., `CONF-2026-XXXXXX`) |
+| 2 | `Conference Title` | Verified formal conference title |
+| 3 | `Industry / Category` | Domain (AI, Cloud, FinTech, Healthcare, Energy) |
+| 4 | `Conference Start Date` | Event start date (`YYYY-MM-DD`) |
+| 5 | `Conference End Date` | Event end date (`YYYY-MM-DD`) |
+| 6 | `Speakers` | Keynote & featured speakers list |
+| 7 | `Speaker Titles / Companies` | Designations and organizations of speakers |
+| 8 | `Venue` | Convention center, hall, or hotel |
+| 9 | `City` | USA City (San Francisco, New York, Austin, Chicago, etc.) |
+| 10 | `Country` | Verified as `USA` |
+| 11 | `Organizer` | Host association or corporate organizer |
+| 12 | `Official Conference URL` | Primary conference homepage |
+| 13 | `Registration URL` | Direct ticketing / registration link |
+| 14 | `Source URL` | Listing page on 10times, Luma, Eventbrite, etc. |
+| 15 | `Publication Date` | Date published to Excel (**exactly 2 days before event**) |
+
+---
+
+## 🚀 Quick Start Guide
+
+### 1. Environment Configuration
+
+In `backend/.env`:
+```ini
+# PostgreSQL Connection
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/conference_db
+
+# Gemini AI Key (from https://aistudio.google.com/)
+GEMINI_API_KEY=your_gemini_api_key
+
+# Redis (optional; APScheduler runs automatically if Redis is inactive)
+REDIS_URL=redis://localhost:6379/0
+
+# Automation
+SCRAPER_INTERVAL_MINUTES=720
+REMINDER_DAYS_BEFORE=2
+```
+
+---
+
+### 2. Run the Backend API & Scheduler
+
+In PowerShell (with virtual environment active):
+
+```powershell
+cd c:\conference-agent\GeneralConferenceScraper
+
+# Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Start FastAPI server on port 8000
+python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+- **Swagger Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Health Check**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+- **Direct Excel Download**: [http://localhost:8000/api/excel/download](http://localhost:8000/api/excel/download)
+
+---
+
+### 3. Run the Frontend Dashboard
+
+In a separate terminal:
+
+```powershell
+cd c:\conference-agent\GeneralConferenceScraper\conference-app
+
+# Start Next.js development server
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+---
+
+### 4. Run Automated End-to-End Test
+
+To test the entire pipeline (scraping, AI validation, database insertion, 2-day reminder check, and Excel generation):
+
+```powershell
+python .\backend\test_pipeline.py
+```
