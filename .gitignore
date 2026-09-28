@@ -43,6 +43,12 @@ data/*.json
 classification_checkpoint.csv
 conference_talks_with_topics.csv
 
+# Environment & Secrets
+.env
+*.env
+backend/.env
+*.db
+
 # Next.js
 conference-app/.next/
 conference-app/out/

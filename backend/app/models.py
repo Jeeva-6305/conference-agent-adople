@@ -1,0 +1,61 @@
+import uuid
+from datetime import datetime, date
+from sqlalchemy import Column, String, Date, DateTime, Boolean, Text, Integer
+from .database import Base
+
+def generate_conf_id() -> str:
+    return f"CONF-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
+
+class Conference(Base):
+    __tablename__ = "conferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conference_id = Column(String(50), unique=True, index=True, default=generate_conf_id)
+    conference_title = Column(String(255), nullable=False, index=True)
+    industry_category = Column(String(100), default="Technology & Business")
+    
+    start_date = Column(Date, nullable=False, index=True)
+    end_date = Column(Date, nullable=False)
+    
+    # Speaker details
+    speakers = Column(Text, default="")  # e.g., "Dr. Jane Doe, John Smith"
+    speaker_titles_companies = Column(Text, default="")  # e.g., "CTO at TechCorp, VP at AI Inc"
+    
+    # Location details
+    venue = Column(String(255), default="Convention Center")
+    city = Column(String(100), default="San Francisco")
+    country = Column(String(50), default="USA")
+    
+    # Organizer & Links
+    organizer = Column(String(255), default="")
+    official_conference_url = Column(String(500), default="")
+    registration_url = Column(String(500), default="")
+    source_url = Column(String(500), nullable=False)
+    source_name = Column(String(50), nullable=False)  # 10times, luma, eventbrite, meetup, cvent, events_in_america
+    
+    # Publication & Reminder Status
+    is_published_to_excel = Column(Boolean, default=False, index=True)
+    publication_date = Column(Date, nullable=True)  # Populated exactly 2 days before start_date
+    status = Column(String(50), default="discovered")  # discovered, published
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "Conference ID": self.conference_id,
+            "Conference Title": self.conference_title,
+            "Industry / Category": self.industry_category,
+            "Conference Start Date": self.start_date.isoformat() if self.start_date else "",
+            "Conference End Date": self.end_date.isoformat() if self.end_date else "",
+            "Speakers": self.speakers,
+            "Speaker Titles / Companies": self.speaker_titles_companies,
+            "Venue": self.venue,
+            "City": self.city,
+            "Country": self.country,
+            "Organizer": self.organizer,
+            "Official Conference URL": self.official_conference_url,
+            "Registration URL": self.registration_url,
+            "Source URL": self.source_url,
+            "Publication Date": self.publication_date.isoformat() if self.publication_date else ""
+        }
