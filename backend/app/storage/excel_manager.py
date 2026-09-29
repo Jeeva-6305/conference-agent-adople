@@ -20,8 +20,6 @@ EXCEL_COLUMNS = [
     "Conference Start Date",
     "Conference End Date",
     "Speakers Available",
-    "Speakers",
-    "Speaker Titles / Companies",
     "Venue",
     "City",
     "Country",
@@ -181,8 +179,7 @@ class ExcelManager:
                 continue
 
             # Determine whether speakers/auditors are available (Yes/No)
-            has_speakers = bool(conf.speakers and conf.speakers.strip() and conf.speakers.strip().lower() != "none" and "tbd" not in conf.speakers.lower())
-            speakers_available_str = "Yes" if has_speakers else "No"
+            speakers_available_str = conf.speakers_available or "Yes"
             
             # Publication Date: MUST be the original conference publication date
             pub_date_str = conf.publication_date.isoformat() if conf.publication_date else ""
@@ -194,8 +191,6 @@ class ExcelManager:
                 conf.start_date.isoformat() if conf.start_date else "",
                 conf.end_date.isoformat() if conf.end_date else "",
                 speakers_available_str,
-                conf.speakers,
-                conf.speaker_titles_companies,
                 conf.venue,
                 conf.city,
                 conf.country,
@@ -210,55 +205,7 @@ class ExcelManager:
             existing_ids.add(conf.conference_id)
             existing_titles.add(title_clean)
 
-            # If speakers are available (Yes), add them to the Speakers sheet
-            if has_speakers:
-                names = [s.strip() for s in conf.speakers.split(",") if s.strip()]
-                titles = [t.strip() for t in (conf.speaker_titles_companies or "").split(",") if t.strip()]
-                location_str = f"{conf.city}, {conf.country}"
-
-                for idx, name in enumerate(names):
-                    if (name.lower(), title_clean) in existing_speakers:
-                        continue
-
-                    title_str = titles[idx] if idx < len(titles) else "Featured Speaker"
-                    
-                    # Parse company and job role
-                    job_role = title_str
-                    company_name = ""
-                    if " at " in title_str:
-                        parts = title_str.split(" at ", 1)
-                        job_role = parts[0].strip()
-                        company_name = parts[1].strip()
-                    elif " of " in title_str:
-                        parts = title_str.split(" of ", 1)
-                        job_role = parts[0].strip()
-                        company_name = parts[1].strip()
-                    elif "@" in title_str:
-                        parts = title_str.split("@", 1)
-                        job_role = parts[0].strip()
-                        company_name = parts[1].strip()
-                    elif conf.organizer:
-                        company_name = conf.organizer
-
-                    if not company_name:
-                        company_name = conf.organizer or "Industry Organization"
-
-                    speaking_info = conf.speaker_talks_details or f"Invited speaker and industry contributor at {conf.conference_title}."
-
-                    spk_row = [
-                        name,
-                        conf.conference_title,
-                        company_name,      # Company / Organization
-                        job_role,          # Job Role / Designation
-                        company_name,      # Company Name
-                        location_str,      # Location
-                        speaking_info      # Previous Conference / Event Speaking Information, if available
-                    ]
-                    ws_spk.append(spk_row)
-                    added_spk_count += 1
-                    existing_speakers.add((name.lower(), title_clean))
-
-        # Also write explicit Speaker models if provided
+        # Write explicit Speaker models into the Speakers sheet
         if speakers:
             for spk in speakers:
                 key = (spk.speaker_name.strip().lower(), spk.conference_name.strip().lower())

@@ -84,6 +84,7 @@ def get_conferences(
     category: Optional[str] = Query(None, description="Filter by category"),
     search: Optional[str] = Query(None, description="Search by title, speaker, or city"),
     published_only: Optional[bool] = Query(False, description="Filter only conferences published to Excel"),
+    status: Optional[str] = Query(None, description="Filter by status (published, scheduled)"),
     db: Session = Depends(get_db)
 ):
     query = db.query(Conference)
@@ -94,11 +95,12 @@ def get_conferences(
         query = query.filter(Conference.industry_category.ilike(f"%{category}%"))
     if published_only:
         query = query.filter(Conference.is_published_to_excel == True)
+    if status:
+        query = query.filter(Conference.status == status)
     if search:
         search_filter = f"%{search}%"
         query = query.filter(
             (Conference.conference_title.ilike(search_filter)) |
-            (Conference.speakers.ilike(search_filter)) |
             (Conference.city.ilike(search_filter)) |
             (Conference.venue.ilike(search_filter))
         )
@@ -120,12 +122,19 @@ def get_conference_detail(identifier: str, db: Session = Depends(get_db)):
 @app.get("/api/speakers", response_model=List[SpeakerResponse])
 def get_speakers(
     conference_id: Optional[str] = Query(None, description="Filter speakers by Conference ID"),
+    published_only: Optional[bool] = Query(False, description="Filter speakers of published conferences"),
     db: Session = Depends(get_db)
 ):
     """Fetch verified speaker profiles extracted from official sources."""
     query = db.query(Speaker)
     if conference_id:
         query = query.filter(Speaker.conference_id == conference_id)
+    elif published_only:
+        today = date.today()
+        exact_t2 = today + timedelta(days=2)
+        pub_confs = db.query(Conference).filter(Conference.is_published_to_excel == True, Conference.start_date == exact_t2).all()
+        pub_ids = [c.conference_id for c in pub_confs]
+        query = query.filter(Speaker.conference_id.in_(pub_ids))
     return query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
 
 @app.post("/api/trigger/scrape")

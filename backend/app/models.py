@@ -17,10 +17,6 @@ class Conference(Base):
     start_date = Column(Date, nullable=False, index=True)
     end_date = Column(Date, nullable=False)
     
-    # Speaker details
-    speakers = Column(Text, default="")  # e.g., "Dr. Jane Doe, John Smith"
-    speaker_titles_companies = Column(Text, default="")  # e.g., "CTO at TechCorp, VP at AI Inc"
-    speaker_talks_details = Column(Text, default="")  # e.g., previous speaking engagements, topics, keynotes
     
     # Conference Overview & Details
     description = Column(Text, default="")
@@ -54,8 +50,6 @@ class Conference(Base):
             "Conference Start Date": self.start_date.isoformat() if self.start_date else "",
             "Conference End Date": self.end_date.isoformat() if self.end_date else "",
             "Speakers Available": self.speakers_available or "Yes",
-            "Speakers": self.speakers,
-            "Speaker Titles / Companies": self.speaker_titles_companies,
             "Venue": self.venue,
             "City": self.city,
             "Country": self.country,
@@ -88,5 +82,5 @@ class Speaker(Base):
             "Job Role / Designation": self.job_role_designation,
             "Company Name": self.company_name,
             "Location": self.location,
-            "Previous Conference / Event Speaking Information": self.previous_speaking_info
+            "Previous Conference / Event Speaking Information, if available": self.previous_speaking_info
         }

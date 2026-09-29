@@ -10,13 +10,22 @@ class RawEventData(BaseModel):
     raw_location: Optional[str] = None
     raw_date: Optional[str] = None
 
+class SpeakerDetailItem(BaseModel):
+    speaker_name: str = Field(description="Full name of speaker")
+    job_role_designation: str = Field(default="", description="Job role or designation")
+    company_organization: str = Field(default="", description="Company or organization name")
+    company_name: str = Field(default="", description="Company name")
+    location: str = Field(default="", description="Location or city/state of speaker/organization")
+    previous_speaking_info: str = Field(default="", description="Previous speaking information or talks if available")
+
 class AIConferenceExtraction(BaseModel):
     conference_title: str = Field(description="The formal title of the conference")
     industry_category: str = Field(description="Industry or domain, e.g. Technology, AI, Healthcare, Finance, Energy")
     start_date: str = Field(description="Conference start date in YYYY-MM-DD format")
     end_date: str = Field(description="Conference end date in YYYY-MM-DD format")
-    speakers: List[str] = Field(default=[], description="List of keynote or featured speaker names")
+    speakers: List[str] = Field(default=[], description="List of all keynote or featured speaker names")
     speaker_titles_companies: List[str] = Field(default=[], description="List of titles/companies corresponding to speakers")
+    speaker_details: List[SpeakerDetailItem] = Field(default=[], description="All extracted speaker profiles with full available details")
     speaker_talks_details: Optional[str] = Field(default="", description="Previous talks, keynotes, or speaking details")
     description: Optional[str] = Field(default="", description="Comprehensive verified conference overview")
     venue: str = Field(default="Conference Center", description="Venue name or hotel")
@@ -36,8 +45,8 @@ class ConferenceResponse(BaseModel):
     industry_category: str
     start_date: date
     end_date: date
-    speakers: str
-    speaker_titles_companies: str
+    speakers: Optional[str] = ""
+    speaker_titles_companies: Optional[str] = ""
     speaker_talks_details: Optional[str] = ""
     description: Optional[str] = ""
     venue: str

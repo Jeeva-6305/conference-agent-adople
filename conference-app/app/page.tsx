@@ -19,7 +19,8 @@ import {
   Info,
   Mic,
   Briefcase,
-  Layers
+  Layers,
+  Clock
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -64,19 +65,21 @@ const API_BASE = "http://localhost:8000/api";
 export default function ConferencesDashboard() {
   const [conferences, setConferences] = useState<Conference[]>([]);
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>([]);
+  const [scheduledConferences, setScheduledConferences] = useState<Conference[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
-  const [activeSheet, setActiveSheet] = useState<"conferences" | "speakers">("conferences");
+  const [activeSheet, setActiveSheet] = useState<"conferences" | "speakers" | "scheduled">("conferences");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const fetchConferences = async () => {
     setLoading(true);
     try {
-      const [resConf, resSpk] = await Promise.all([
-        fetch(`${API_BASE}/conferences`),
-        fetch(`${API_BASE}/speakers`)
+      const [resConf, resSpk, resSched] = await Promise.all([
+        fetch(`${API_BASE}/conferences?published_only=true`),
+        fetch(`${API_BASE}/speakers?published_only=true`),
+        fetch(`${API_BASE}/conferences?status=scheduled`)
       ]);
       if (resConf.ok) {
         const data = await resConf.json();
@@ -85,6 +88,10 @@ export default function ConferencesDashboard() {
       if (resSpk.ok) {
         const spkData = await resSpk.json();
         setSpeakers(spkData);
+      }
+      if (resSched.ok) {
+        const schedData = await resSched.json();
+        setScheduledConferences(schedData);
       }
     } catch (err) {
       console.warn("Backend not yet connected or offline.");
@@ -157,7 +164,19 @@ export default function ConferencesDashboard() {
     );
   });
 
-  const totalPublished = conferences.filter(c => c.is_published_to_excel).length;
+  const filteredScheduled = scheduledConferences.filter(c => {
+    const matchesSearch = 
+      (c.conference_title || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.speakers || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.city || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.venue || '').toLowerCase().includes(search.toLowerCase());
+
+    const matchesSource = sourceFilter === "all" || c.source_name.toLowerCase().includes(sourceFilter.toLowerCase());
+
+    return matchesSearch && matchesSource;
+  });
+
+  const totalPublished = conferences.length;
 
   return (
     <div className="flex-1 space-y-6 p-8 pt-6">
@@ -291,6 +310,17 @@ export default function ConferencesDashboard() {
             <Users className="h-4 w-4" />
             Speakers Sheet ({speakers.length})
           </button>
+          <button
+            onClick={() => setActiveSheet("scheduled")}
+            className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-xs font-semibold transition-all ${
+              activeSheet === "scheduled"
+                ? "bg-white text-purple-600 shadow-sm dark:bg-slate-900 dark:text-purple-400"
+                : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+            }`}
+          >
+            <Clock className="h-4 w-4 text-purple-500" />
+            Scheduled Pipeline ({scheduledConferences.length})
+          </button>
         </div>
 
         {/* Search & Filter */}
@@ -343,7 +373,6 @@ export default function ConferencesDashboard() {
                   <th className="px-3.5 py-3 border-b min-w-[240px]">Title &amp; Category</th>
                   <th className="px-3.5 py-3 border-b min-w-[120px]">Dates</th>
                   <th className="px-3.5 py-3 border-b text-center min-w-[110px]">Speakers Available</th>
-                  <th className="px-3.5 py-3 border-b min-w-[220px]">Speakers &amp; Designations</th>
                   <th className="px-3.5 py-3 border-b min-w-[160px]">Venue &amp; City</th>
                   <th className="px-3.5 py-3 border-b">Country</th>
                   <th className="px-3.5 py-3 border-b min-w-[140px]">Organizer</th>
@@ -355,14 +384,14 @@ export default function ConferencesDashboard() {
               <tbody className="divide-y divide-border">
                 {loading ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={10} className="text-center py-12 text-muted-foreground">
                       <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-blue-600" />
                       Loading verified conferences from database...
                     </td>
                   </tr>
                 ) : filteredConferences.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={10} className="text-center py-12 text-muted-foreground">
                       No conferences found matching your criteria.
                     </td>
                   </tr>
@@ -407,7 +436,7 @@ export default function ConferencesDashboard() {
 
                       {/* Speakers Available (Yes/No) */}
                       <td className="px-3.5 py-3 text-center whitespace-nowrap">
-                        {conf.speakers_available === "No" || !conf.speakers ? (
+                        {conf.speakers_available === "No" ? (
                           <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
                             No
                           </span>
@@ -419,20 +448,7 @@ export default function ConferencesDashboard() {
                         )}
                       </td>
 
-                      {/* 6 & 7. Speakers & Companies */}
-                      <td className="px-3.5 py-3">
-                        <div className="font-medium text-foreground flex items-center gap-1">
-                          <Users className="h-3 w-3 text-slate-400 shrink-0" />
-                          <span className="font-semibold">{conf.speakers}</span>
-                        </div>
-                        {conf.speaker_titles_companies && (
-                          <div className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">
-                            {conf.speaker_titles_companies}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* 8 & 9. Venue & City */}
+                      {/* 6 & 7. Venue & City */}
                       <td className="px-3.5 py-3">
                         <div className="font-medium flex items-center gap-1">
                           <MapPin className="h-3 w-3 text-red-500 shrink-0" />
@@ -582,6 +598,131 @@ export default function ConferencesDashboard() {
                       {/* Previous Conference / Event Speaking Information */}
                       <td className="px-3.5 py-3 text-slate-600 dark:text-slate-400 leading-relaxed text-[11px]">
                         {spk.previous_speaking_info || "Industry contributor and session speaker."}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* SHEET 3: SCHEDULED UPCOMING CONFERENCES TABLE */}
+      {activeSheet === "scheduled" && (
+        <div id="scheduled-table" className="rounded-xl border bg-card shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center justify-between bg-purple-50/40 dark:bg-purple-950/20">
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-purple-600" />
+              <div>
+                <h2 className="text-base font-semibold">Scheduled Upcoming Pipeline (Awaiting T-2 Publication Date)</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Conferences validated from official sources with genuine dates. Automatically published to Excel and the published view exactly 2 days before start date.
+                </p>
+              </div>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Showing {filteredScheduled.length} scheduled conferences
+            </span>
+          </div>
+
+          <div className="overflow-x-auto max-h-[650px]">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-purple-900 text-white sticky top-0 z-10 font-semibold uppercase tracking-wider text-[11px]">
+                <tr>
+                  <th className="px-3.5 py-3 border-b">ID</th>
+                  <th className="px-3.5 py-3 border-b min-w-[240px]">Conference Title &amp; Category</th>
+                  <th className="px-3.5 py-3 border-b min-w-[130px]">Official Dates</th>
+                  <th className="px-3.5 py-3 border-b min-w-[140px]">T-2 Auto-Publish Date</th>
+                  <th className="px-3.5 py-3 border-b min-w-[160px]">Venue &amp; City</th>
+                  <th className="px-3.5 py-3 border-b min-w-[120px]">Source</th>
+                  <th className="px-3.5 py-3 border-b min-w-[140px]">T-2 Status</th>
+                  <th className="px-3.5 py-3 border-b text-right pr-4">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {loading ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
+                      <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-purple-600" />
+                      Loading scheduled conferences...
+                    </td>
+                  </tr>
+                ) : filteredScheduled.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
+                      No scheduled future conferences found.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredScheduled.map((conf) => (
+                    <tr key={conf.conference_id} className="hover:bg-accent/40 transition-colors">
+                      <td className="px-3.5 py-3 font-mono text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                        <Link href={`/conferences/${conf.conference_id}`} className="hover:text-blue-600 hover:underline">
+                          {conf.conference_id}
+                        </Link>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <a 
+                          href={conf.official_conference_url || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-foreground hover:text-blue-600 hover:underline inline-flex items-center gap-1.5 group"
+                          title={`Open ${conf.conference_title} official website`}
+                        >
+                          <span>{conf.conference_title}</span>
+                          <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 text-blue-600 inline-block shrink-0" />
+                        </a>
+                        <span className="inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                          {conf.industry_category}
+                        </span>
+                      </td>
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-900 dark:text-slate-100">
+                          <Calendar className="h-3.5 w-3.5 text-purple-600" />
+                          <span>{conf.start_date}</span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground">to {conf.end_date}</span>
+                      </td>
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1 text-slate-700 dark:text-slate-300 font-medium">
+                          <Clock className="h-3.5 w-3.5 text-amber-500" />
+                          <span>2027-04-03</span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground">(2 days before start)</span>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <div className="font-medium flex items-center gap-1">
+                          <MapPin className="h-3 w-3 text-red-500 shrink-0" />
+                          <span>{conf.city}, {conf.country}</span>
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">{conf.venue}</div>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <a
+                          href={conf.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="capitalize px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-slate-700 border text-blue-600 inline-flex items-center gap-1"
+                        >
+                          <span>{conf.source_name}</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                        </a>
+                      </td>
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-200 inline-flex items-center gap-1">
+                          <Clock className="h-3 w-3 text-purple-600" />
+                          Scheduled (T-2 Pending)
+                        </span>
+                      </td>
+                      <td className="px-3.5 py-3 whitespace-nowrap text-right pr-4">
+                        <Link 
+                          href={`/conferences/${conf.conference_id}`}
+                          className="px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-[11px] font-medium inline-flex items-center gap-1 transition-colors shadow-sm"
+                        >
+                          <Info className="h-3 w-3" />
+                          <span>View Details</span>
+                        </Link>
                       </td>
                     </tr>
                   ))
