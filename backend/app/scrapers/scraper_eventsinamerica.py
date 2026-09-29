@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class EventsInAmericaScraper(BaseScraper):
     def __init__(self):
-        super().__init__("events_in_america", "https://eventsinamerica.com")
+        super().__init__("events_in_america", "https://eventsinamerica.com/events/trade-shows/2026")
         self.verified_eia_listings = [
             (
                 "National Healthcare Innovation & AI Summit",
