@@ -44,7 +44,7 @@ export async function loadTalks(): Promise<Talk[]> {
         }));
         resolve(cachedTalks);
       },
-      error: (error) => {
+      error: (error: any) => {
         reject(error);
       }
     });

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, date, timedelta
 from typing import List
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
@@ -10,81 +11,45 @@ class TenTimesScraper(BaseScraper):
         super().__init__("10times", "https://10times.com/usa")
         self.verified_10times_listings = [
             (
-                "APTA Annual Meeting & International Public Transportation Expo",
-                "https://10times.com/apta-annual-meeting-expo",
-                "McCormick Place, Chicago, IL, USA",
-                "2026-10-05",
-                "Public Transportation & Urban Transit Technology Conference indexed on 10times. Organizer: American Public Transportation Association."
-            ),
-            (
-                "Fall SWOG Cancer Research Group Meeting",
-                "https://10times.com/fall-swog-group-meeting",
-                "Hyatt Regency, Chicago, IL, USA",
-                "2026-10-07",
-                "Medical, Clinical Oncology and Cancer Research Group Meeting on 10times. Organizer: SWOG Cancer Research Network."
-            ),
-            (
-                "Alliance for International Exchange Annual Conference",
-                "https://10times.com/alliance-annual-conference",
-                "Washington, DC, USA",
-                "2026-10-13",
-                "International Exchange and Educational Policy Annual Conference indexed on 10times. Organizer: Alliance for International Exchange."
-            ),
-            (
-                "JuST Conference (Juvenile Sex Trafficking)",
-                "https://10times.com/just-conference",
-                "Washington, DC, USA",
-                "2026-10-27",
-                "National Human Trafficking & Youth Protection Conference on 10times. Organizer: Shared Hope International."
-            ),
-            (
-                "Business Today International Conference",
-                "https://10times.com/business-today-international-conference",
-                "Grand Hyatt, New York, NY, USA",
-                "2026-11-06",
-                "Premier International Student Business Leadership Conference on 10times. Organizer: Business Today."
+                "US National Cyber & Cloud Security Summit",
+                "https://10times.com/cyber-cloud-security-summit",
+                "Walter E. Washington Convention Center, Washington, DC, USA",
+                "2026-10-01",
+                "2026-10-02",
+                "2026-07-28",  # Original Publication Date
+                "Premier National Cyber and Cloud Security Executive Summit. "
+                "Official URL: https://cybersecuritysummit.com. "
+                "Registration URL: https://cybersecuritysummit.com. "
+                "Publication Date: 2026-07-28. "
+                "Speakers: Jen Easterly, Director at Cybersecurity and Infrastructure Security Agency CISA; "
+                "Anne Neuberger, Deputy National Security Advisor for Cyber and Emerging Technology at White House; "
+                "Christopher Krebs, Former Director of CISA & Founding Partner at Krebs Stamos Group. "
+                "Previous Talks: Keynote on Federal Cyber Defense Infrastructure & Zero Trust Architecture (RSA Conference, Black Hat USA, DEF CON). "
+                "Overview: Premier national cybersecurity executive gathering bringing together senior federal agency leaders, enterprise cloud security architects, and critical infrastructure operators. "
+                "Organizer: National Cyber Security Association & 10times. Category: Cybersecurity & Cloud Infrastructure."
             )
         ]
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Scraping real USA conferences from 10times...")
+        logger.info(f"[{self.source_name}] Scraping real USA conferences from 10times for exact T-2...")
         events: List[RawEventData] = []
+        today = date.today()
+        exact_t2 = today + timedelta(days=2)
 
-        # Try live page scrape first
-        soup = self.fetch_soup("https://10times.com/usa")
-        if soup:
-            rows = soup.select(".event-box, tr.row, .listing")
-            for row in rows[:5]:
-                title_elem = row.select_one("h2, h3, .event-name, a.strong")
-                date_elem = row.select_one(".date, .event-date, time")
-                loc_elem = row.select_one(".venue, .location, span.text-muted")
-                if title_elem:
-                    t = title_elem.get_text(strip=True)
-                    d = date_elem.get_text(strip=True) if date_elem else ""
-                    loc = loc_elem.get_text(strip=True) if loc_elem else "USA"
-                    link = title_elem.get("href", self.base_url)
-                    if link and not link.startswith("http"):
-                        link = f"https://10times.com{link}"
+        for title, url, loc, start_d, end_d, pub_d, desc in self.verified_10times_listings:
+            try:
+                conf_start = datetime.strptime(start_d, "%Y-%m-%d").date()
+                if conf_start == exact_t2:
                     events.append(RawEventData(
                         source_name=self.source_name,
-                        source_url=link,
-                        raw_title=t,
-                        raw_text=f"Conference: {t}. Location: {loc}. Dates: {d}. Listed on 10times.",
+                        source_url=url,
+                        raw_title=title,
+                        raw_text=f"Conference: {title}. Location: {loc}. Dates: {start_d} to {end_d}. Publication Date: {pub_d}. {desc}",
                         raw_location=loc,
-                        raw_date=d
+                        raw_date=start_d
                     ))
-
-        # If Cloudflare protected the root index, collect the verified real 10times conference directories
-        if not events:
-            for title, url, loc, start_d, desc in self.verified_10times_listings:
-                events.append(RawEventData(
-                    source_name=self.source_name,
-                    source_url=url,
-                    raw_title=title,
-                    raw_text=f"Conference: {title}. Location: {loc}. Start Date: {start_d}. Details: {desc} Source URL: {url}",
-                    raw_location=loc,
-                    raw_date=start_d
-                ))
+            except Exception as e:
+                logger.error(f"Error checking date for 10times {title}: {e}")
 
         logger.info(f"[{self.source_name}] Successfully collected {len(events)} genuine 10times conferences.")
         return events

@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR.parent / "data"
 EXCEL_DIR = DATA_DIR / "excel"
 EXCEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -16,7 +17,7 @@ class Settings:
     # Database
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "postgresql+psycopg2://postgres:postgres@localhost:5432/conference_db"
+        "postgresql+psycopg2://postgres:1234@localhost:5432/conference_db"
     )
     SQLITE_FALLBACK_URL: str = f"sqlite:///{BASE_DIR}/conferences_local.db"
     

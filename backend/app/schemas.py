@@ -17,12 +17,16 @@ class AIConferenceExtraction(BaseModel):
     end_date: str = Field(description="Conference end date in YYYY-MM-DD format")
     speakers: List[str] = Field(default=[], description="List of keynote or featured speaker names")
     speaker_titles_companies: List[str] = Field(default=[], description="List of titles/companies corresponding to speakers")
+    speaker_talks_details: Optional[str] = Field(default="", description="Previous talks, keynotes, or speaking details")
+    description: Optional[str] = Field(default="", description="Comprehensive verified conference overview")
     venue: str = Field(default="Conference Center", description="Venue name or hotel")
     city: str = Field(description="US City where conference takes place")
     country: str = Field(default="USA", description="Must be USA or United States")
     organizer: str = Field(default="", description="Name of organizing company or association")
     official_conference_url: str = Field(default="", description="Official conference homepage link")
     registration_url: str = Field(default="", description="Registration or ticketing URL")
+    publication_date: Optional[str] = Field(default="", description="Original conference publication or announcement date (YYYY-MM-DD)")
+    speakers_available: Optional[str] = Field(default="Yes", description="'Yes' if speakers/auditors available, 'No' otherwise")
     is_valid_usa_conference: bool = Field(description="True if this is a verified conference happening in the USA")
 
 class ConferenceResponse(BaseModel):
@@ -34,6 +38,8 @@ class ConferenceResponse(BaseModel):
     end_date: date
     speakers: str
     speaker_titles_companies: str
+    speaker_talks_details: Optional[str] = ""
+    description: Optional[str] = ""
     venue: str
     city: str
     country: str
@@ -44,7 +50,23 @@ class ConferenceResponse(BaseModel):
     source_name: str
     is_published_to_excel: bool
     publication_date: Optional[date]
+    speakers_available: Optional[str] = "Yes"
     status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SpeakerResponse(BaseModel):
+    id: int
+    conference_id: str
+    conference_name: str
+    speaker_name: str
+    company_organization: str
+    job_role_designation: str
+    company_name: str
+    location: str
+    previous_speaking_info: Optional[str] = ""
     created_at: datetime
 
     class Config:

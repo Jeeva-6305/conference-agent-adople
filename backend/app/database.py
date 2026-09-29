@@ -41,4 +41,11 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS speaker_talks_details TEXT DEFAULT '';"))
+            conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';"))
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"Auto-migration check notice: {e}")
     logger.info("Database tables initialized successfully.")
