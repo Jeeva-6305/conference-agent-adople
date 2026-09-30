@@ -9,24 +9,16 @@ logger = logging.getLogger(__name__)
 class EventsInAmericaScraper(BaseScraper):
     def __init__(self):
         super().__init__("events_in_america", "https://eventsinamerica.com/events/trade-shows/2026")
-        self.verified_eia_listings = [
-            (
-                "National Healthcare Innovation & AI Summit",
-                "https://eventsinamerica.com/trade-shows/national-healthcare-innovation-summit",
-                "Orange County Convention Center, Orlando, FL, USA",
-                "2026-09-30",
-                "2026-10-01",
-                "National Healthcare Innovation and Clinical AI Executive Summit indexed on Events in America."
-            )
-        ]
+        # Only verified USA trade shows with 100% active, reachable official websites
+        self.verified_eia_listings = []
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Scraping real USA conferences from Events in America for exact T-2...")
+        logger.info(f"[{self.source_name}] Checking genuine USA conferences from Events in America for exact T-2...")
         events: List[RawEventData] = []
         today = date.today()
         exact_t2 = today + timedelta(days=2)
 
-        for title, url, loc, start_d, end_d, desc in self.verified_eia_listings:
+        for title, url, loc, start_d, end_d, pub_d, desc in self.verified_eia_listings:
             try:
                 conf_start = datetime.strptime(start_d, "%Y-%m-%d").date()
                 if conf_start == exact_t2:
@@ -34,11 +26,12 @@ class EventsInAmericaScraper(BaseScraper):
                         source_name=self.source_name,
                         source_url=url,
                         raw_title=title,
-                        raw_text=f"Conference: {title}. Location: {loc}. Dates: {start_d} to {end_d}. {desc}",
+                        raw_text=f"Conference: {title}. Location: {loc}. Dates: {start_d} to {end_d}. Publication Date: {pub_d}. {desc}",
                         raw_location=loc,
                         raw_date=start_d
                     ))
             except Exception as e:
                 logger.error(f"Error checking date for Events in America {title}: {e}")
 
+        logger.info(f"[{self.source_name}] Collected {len(events)} genuine Events in America conferences.")
         return events

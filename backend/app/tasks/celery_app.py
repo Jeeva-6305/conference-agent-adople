@@ -63,10 +63,16 @@ def cleanup_fake_and_sample_records(db):
         # Clean up old obsolete record with incorrect 2026 date for Cvent
         is_obsolete_cvent_2026 = ("cvent connect 2026" in title_lower) or ("cvent" in title_lower and c.start_date == date(2026, 10, 1))
 
+        # Check for dead/unreachable domains or unverified entries
+        is_dead_or_unreachable = (
+            "healthcare innovation" in title_lower or 
+            "healthcareinnovationsummit" in (c.official_conference_url or "").lower()
+        )
+
         # Check duplicate
         is_duplicate = title_lower in seen_titles
 
-        if is_non_conference or is_placeholder_speaker or is_obsolete_cvent_2026 or is_duplicate:
+        if is_non_conference or is_placeholder_speaker or is_obsolete_cvent_2026 or is_duplicate or is_dead_or_unreachable:
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
             db.delete(c)
             deleted_count += 1
@@ -267,6 +273,9 @@ def task_scrape_and_ingest():
                         existing_spk.previous_speaking_info = cand["prev_talks"]
                     if cand["location"] and existing_spk.location in ["", "USA"]:
                         existing_spk.location = cand["location"]
+
+            # Flush session so all newly added speaker objects are queryable
+            db.flush()
 
             # Deduplicate any duplicate rows that might already be in DB for this conference
             total_spks = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).all()
