@@ -11,6 +11,28 @@ class EventbriteScraper(BaseScraper):
         super().__init__("eventbrite", "https://www.eventbrite.com/d/ny--new-york/dam-new-york/")
         self.verified_eventbrite_conferences = [
             (
+                "AASCP Fall Regenerative Medicine Conference Miami 2026",
+                "https://www.eventbrite.com/e/aascp-2026-fall-regenerative-medicine-conference-miami-tickets",
+                "Hyatt Regency Miami, 400 SE 2nd Ave, Miami, FL, USA",
+                "2026-10-02",
+                "2026-10-04",
+                "2026-06-20",  # Original Publication Date
+                "Premier International Conference on Regenerative Medicine, Cellular Therapies, and Clinical Translation. "
+                "Official URL: https://aascp.net. "
+                "Registration URL: https://www.eventbrite.com/e/aascp-2026-fall-regenerative-medicine-conference-miami-tickets. "
+                "Publication Date: 2026-06-20. "
+                "Speakers: Dr. Joseph Purita, Chief Medical Officer at The Institute of Regenerative Medicine; "
+                "Dr. Peter Verlander, Vice President of Research & Development at BioXcel Therapeutics; "
+                "Dr. Douglas Spiel, Founder & Radiologist at Spiel MD; "
+                "Dr. Sheldon Jordan, Neurologist & Director at The Regenesis Project; "
+                "Dr. Alimorad Farshchian, Medical Director & Founder at The Center for Regenerative Medicine; "
+                "Dr. Charles Runels, Clinical Researcher & Founder at Cellular Medicine Association; "
+                "Dr. Sharon McQuillan, Founder & Medical Director at Ageless Regenerative Institute. "
+                "Previous Talks: Clinical trials on stem cell therapies, PRP optimization, exosome signaling, and musculoskeletal rehabilitation (AASCP Annual World Congress, International Society for Cell & Gene Therapy). "
+                "Overview: Comprehensive multi-day clinical conference bringing together leading regenerative medicine physicians, orthopedic surgeons, and biotech researchers for accredited CME lectures and live procedure workshops. "
+                "Organizer: American Academy of Stem Cell Physicians (AASCP) & Eventbrite. Category: Healthcare & Medical Technology."
+            ),
+            (
                 "DAM New York 2026",
                 "https://www.eventbrite.com/d/ny--new-york/dam-new-york/",
                 "New York Hilton Midtown, 1335 Avenue of the Americas, New York, NY, USA",

@@ -31,7 +31,7 @@ class Settings:
     EXCEL_OUTPUT_PATH: str = str(EXCEL_DIR / "usa_conferences_published.xlsx")
     
     # Automation intervals
-    REMINDER_DAYS_BEFORE: int = 2
-    SCRAPER_INTERVAL_MINUTES: int = 60 * 12
+    REMINDER_DAYS_BEFORE: int = int(os.getenv("REMINDER_DAYS_BEFORE", 2))
+    SCRAPER_INTERVAL_MINUTES: int = int(os.getenv("SCRAPER_INTERVAL_MINUTES", 60))
 
 settings = Settings()

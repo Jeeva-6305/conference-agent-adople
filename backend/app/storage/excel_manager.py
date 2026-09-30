@@ -36,8 +36,9 @@ SPEAKER_COLUMNS = [
     "Company / Organization",
     "Job Role / Designation",
     "Company Name",
-    "Location",
-    "Previous Conference / Event Speaking Information, if available"
+    "Official Company Website URL",
+    "Speaker LinkedIn Profile URL",
+    "Location"
 ]
 
 class ExcelManager:
@@ -216,8 +217,9 @@ class ExcelManager:
                         spk.company_organization or spk.company_name,
                         spk.job_role_designation,
                         spk.company_name,
-                        spk.location,
-                        spk.previous_speaking_info or ""
+                        getattr(spk, "official_company_website_url", "") or "",
+                        getattr(spk, "linkedin_url", "") or "",
+                        spk.location
                     ])
                     existing_speakers.add(key)
                     added_spk_count += 1

@@ -56,6 +56,8 @@ interface SpeakerProfile {
   company_organization: string;
   job_role_designation: string;
   company_name: string;
+  official_company_website_url?: string;
+  linkedin_url?: string;
   location: string;
   previous_speaking_info?: string;
 }
@@ -66,6 +68,14 @@ export default function ConferencesDashboard() {
   const [conferences, setConferences] = useState<Conference[]>([]);
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>([]);
   const [scheduledConferences, setScheduledConferences] = useState<Conference[]>([]);
+  const [schedulerInfo, setSchedulerInfo] = useState<{
+    is_running?: boolean;
+    interval_display?: string;
+    last_scrape_time?: string | null;
+    next_scrape_time?: string | null;
+    last_status?: string;
+    total_runs?: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -76,10 +86,11 @@ export default function ConferencesDashboard() {
   const fetchConferences = async () => {
     setLoading(true);
     try {
-      const [resConf, resSpk, resSched] = await Promise.all([
+      const [resConf, resSpk, resSched, resSchedInfo] = await Promise.all([
         fetch(`${API_BASE}/conferences?published_only=true`),
         fetch(`${API_BASE}/speakers?published_only=true`),
-        fetch(`${API_BASE}/conferences?status=scheduled`)
+        fetch(`${API_BASE}/conferences?status=scheduled`),
+        fetch(`${API_BASE}/scheduler/status`)
       ]);
       if (resConf.ok) {
         const data = await resConf.json();
@@ -92,6 +103,10 @@ export default function ConferencesDashboard() {
       if (resSched.ok) {
         const schedData = await resSched.json();
         setScheduledConferences(schedData);
+      }
+      if (resSchedInfo && resSchedInfo.ok) {
+        const sData = await resSchedInfo.json();
+        setSchedulerInfo(sData);
       }
     } catch (err) {
       console.warn("Backend not yet connected or offline.");
@@ -190,6 +205,22 @@ export default function ConferencesDashboard() {
           <p className="text-sm text-muted-foreground mt-1">
             Conferences starting exactly 2 days from today are verified via Gemini AI, stored in PostgreSQL, and published to Excel with separate Speakers sheet.
           </p>
+          <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              ⏰ Hourly Auto-Scraper: Active (Runs every 1 hour)
+            </span>
+            {schedulerInfo?.last_scrape_time && (
+              <span className="text-xs text-muted-foreground bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border">
+                Last Run: {new Date(schedulerInfo.last_scrape_time).toLocaleTimeString()}
+              </span>
+            )}
+            {schedulerInfo?.next_scrape_time && (
+              <span className="text-xs text-muted-foreground bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border">
+                Next Run: {new Date(schedulerInfo.next_scrape_time).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -525,25 +556,26 @@ export default function ConferencesDashboard() {
               <thead className="bg-emerald-900 text-white sticky top-0 z-10 font-semibold uppercase tracking-wider text-[11px]">
                 <tr>
                   <th className="px-3.5 py-3 border-b">Speaker Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[220px]">Conference Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[180px]">Company / Organization</th>
-                  <th className="px-3.5 py-3 border-b min-w-[180px]">Job Role / Designation</th>
-                  <th className="px-3.5 py-3 border-b min-w-[160px]">Company Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[140px]">Location</th>
-                  <th className="px-3.5 py-3 border-b min-w-[260px]">Previous Speaking Information</th>
+                  <th className="px-3.5 py-3 border-b min-w-[200px]">Conference Name</th>
+                  <th className="px-3.5 py-3 border-b min-w-[160px]">Company / Organization</th>
+                  <th className="px-3.5 py-3 border-b min-w-[160px]">Job Role / Designation</th>
+                  <th className="px-3.5 py-3 border-b min-w-[140px]">Company Name</th>
+                  <th className="px-3.5 py-3 border-b min-w-[180px]">Official Company Website</th>
+                  <th className="px-3.5 py-3 border-b min-w-[170px]">LinkedIn Profile</th>
+                  <th className="px-3.5 py-3 border-b min-w-[130px]">Location</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
                       <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600" />
                       Loading speaker profiles...
                     </td>
                   </tr>
                 ) : filteredSpeakers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
                       No speakers found matching your search.
                     </td>
                   </tr>
@@ -587,17 +619,49 @@ export default function ConferencesDashboard() {
                         {spk.company_name}
                       </td>
 
+                      {/* Official Company Website */}
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        {spk.official_company_website_url ? (
+                          <a
+                            href={spk.official_company_website_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1 font-medium"
+                          >
+                            <span>{spk.official_company_website_url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}</span>
+                            <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+
+                      {/* Speaker LinkedIn Profile */}
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        {spk.linkedin_url ? (
+                          <a
+                            href={spk.linkedin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#0A66C2]/10 text-[#0A66C2] hover:bg-[#0A66C2]/20 font-medium text-[11px] border border-[#0A66C2]/30 transition-colors"
+                          >
+                            <svg className="h-3 w-3 fill-current shrink-0" viewBox="0 0 24 24">
+                              <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/>
+                            </svg>
+                            <span>LinkedIn Profile</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+
                       {/* Location */}
                       <td className="px-3.5 py-3 whitespace-nowrap">
                         <div className="flex items-center gap-1 text-slate-700 dark:text-slate-300">
                           <MapPin className="h-3 w-3 text-red-500 shrink-0" />
                           <span>{spk.location}</span>
                         </div>
-                      </td>
-
-                      {/* Previous Conference / Event Speaking Information */}
-                      <td className="px-3.5 py-3 text-slate-600 dark:text-slate-400 leading-relaxed text-[11px]">
-                        {spk.previous_speaking_info || "Industry contributor and session speaker."}
                       </td>
                     </tr>
                   ))

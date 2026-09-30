@@ -212,6 +212,8 @@ def task_scrape_and_ingest():
                         "company_org": spk_d.company_organization or spk_d.company_name or conf.organizer or "Industry Organization",
                         "job_role": spk_d.job_role_designation or "Keynote Speaker",
                         "company": spk_d.company_name or spk_d.company_organization or conf.organizer or "Industry Organization",
+                        "company_website": getattr(spk_d, "official_company_website_url", "") or "",
+                        "linkedin": getattr(spk_d, "linkedin_url", "") or "",
                         "location": spk_d.location or f"{conf.city}, {conf.country}",
                         "prev_talks": spk_d.previous_speaking_info or extracted.speaker_talks_details or f"Featured speaker at {conf.conference_title}"
                     })
@@ -236,6 +238,8 @@ def task_scrape_and_ingest():
                         "company_org": company_name,
                         "job_role": job_role or "Keynote Speaker",
                         "company": company_name,
+                        "company_website": "",
+                        "linkedin": "",
                         "location": f"{conf.city}, {conf.country}",
                         "prev_talks": extracted.speaker_talks_details or f"Featured speaker at {conf.conference_title}"
                     })
@@ -256,6 +260,8 @@ def task_scrape_and_ingest():
                         company_organization=cand["company_org"],
                         job_role_designation=cand["job_role"],
                         company_name=cand["company"],
+                        official_company_website_url=cand.get("company_website", "") or "",
+                        linkedin_url=cand.get("linkedin", "") or "",
                         location=cand["location"],
                         previous_speaking_info=cand["prev_talks"]
                     )
@@ -264,6 +270,10 @@ def task_scrape_and_ingest():
                 else:
                     # Update fields if more details available
                     existing_spk = existing_by_name[n_key]
+                    if cand.get("company_website") and not existing_spk.official_company_website_url:
+                        existing_spk.official_company_website_url = cand["company_website"]
+                    if cand.get("linkedin") and not existing_spk.linkedin_url:
+                        existing_spk.linkedin_url = cand["linkedin"]
                     if cand["job_role"] and existing_spk.job_role_designation in ["", "Keynote Speaker", "Speaker"]:
                         existing_spk.job_role_designation = cand["job_role"]
                     if cand["company"] and existing_spk.company_name in ["", "Industry Organization"]:

@@ -70,6 +70,8 @@ class Speaker(Base):
     company_organization = Column(String(255), default="")
     job_role_designation = Column(String(255), default="")
     company_name = Column(String(255), default="")
+    official_company_website_url = Column(String(500), default="")
+    linkedin_url = Column(String(500), default="")
     location = Column(String(255), default="")
     previous_speaking_info = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -81,6 +83,7 @@ class Speaker(Base):
             "Company / Organization": self.company_organization,
             "Job Role / Designation": self.job_role_designation,
             "Company Name": self.company_name,
-            "Location": self.location,
-            "Previous Conference / Event Speaking Information, if available": self.previous_speaking_info
+            "Official Company Website URL": self.official_company_website_url or "",
+            "Speaker LinkedIn Profile URL": self.linkedin_url or "",
+            "Location": self.location
         }

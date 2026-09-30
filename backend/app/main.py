@@ -12,8 +12,8 @@ from .database import get_db, init_db
 from .models import Conference, Speaker
 from .schemas import ConferenceResponse, SpeakerResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
-from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before
-from .tasks.scheduler import start_scheduler
+from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records
+from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -33,8 +33,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records
-
 @app.on_event("startup")
 def startup_event():
     init_db()
@@ -46,6 +44,10 @@ def startup_event():
     if db.query(Conference).count() == 0:
         logger.info("Triggering genuine T-2 conference discovery & AI validation cycle...")
         task_scrape_and_ingest()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    stop_scheduler()
 
 @app.get("/api/health")
 def health_check(db: Session = Depends(get_db)):
@@ -69,14 +71,23 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         Conference.start_date == exact_2_days
     ).count()
     
+    sched = get_scheduler_status()
+    
     return DashboardStats(
         total_conferences=total,
         published_to_excel=published,
         upcoming_2_days=upcoming_2_days,
         sources_active=6,
-        last_scrape_time=None,
+        last_scrape_time=sched.get("last_scrape_time"),
+        next_scrape_time=sched.get("next_scrape_time"),
+        scheduler_interval=sched.get("interval_display", "Every 1 hour"),
         excel_path=settings.EXCEL_OUTPUT_PATH
     )
+
+@app.get("/api/scheduler/status")
+def get_scheduler_telemetry():
+    """Live telemetry of the automated 1-hour scraping background job."""
+    return get_scheduler_status()
 
 @app.get("/api/conferences", response_model=List[ConferenceResponse])
 def get_conferences(

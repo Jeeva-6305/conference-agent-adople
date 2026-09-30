@@ -15,8 +15,10 @@ class SpeakerDetailItem(BaseModel):
     job_role_designation: str = Field(default="", description="Job role or designation")
     company_organization: str = Field(default="", description="Company or organization name")
     company_name: str = Field(default="", description="Company name")
+    official_company_website_url: Optional[str] = Field(default="", description="Official website URL where the speaker works")
+    linkedin_url: Optional[str] = Field(default="", description="Speaker's original LinkedIn profile URL")
     location: str = Field(default="", description="Location or city/state of speaker/organization")
-    previous_speaking_info: str = Field(default="", description="Previous speaking information or talks if available")
+    previous_speaking_info: Optional[str] = Field(default="", description="Previous speaking information or talks if available")
 
 class AIConferenceExtraction(BaseModel):
     conference_title: str = Field(description="The formal title of the conference")
@@ -74,6 +76,8 @@ class SpeakerResponse(BaseModel):
     company_organization: str
     job_role_designation: str
     company_name: str
+    official_company_website_url: Optional[str] = ""
+    linkedin_url: Optional[str] = ""
     location: str
     previous_speaking_info: Optional[str] = ""
     created_at: datetime
@@ -86,5 +90,7 @@ class DashboardStats(BaseModel):
     published_to_excel: int
     upcoming_2_days: int
     sources_active: int
-    last_scrape_time: Optional[datetime]
+    last_scrape_time: Optional[datetime] = None
+    next_scrape_time: Optional[datetime] = None
+    scheduler_interval: Optional[str] = "Every 1 hour"
     excel_path: str

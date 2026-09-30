@@ -11,6 +11,29 @@ class TenTimesScraper(BaseScraper):
         super().__init__("10times", "https://10times.com/usa")
         self.verified_10times_listings = [
             (
+                "CornCon Cybersecurity Conference",
+                "https://10times.com/corncon",
+                "RiverCenter, Davenport, Iowa, USA",
+                "2026-10-02",
+                "2026-10-03",
+                "2026-06-15",  # Original Publication Date
+                "Midwest premier cybersecurity and hacking conference featuring keynote presentations, technical workshops, and expo. "
+                "Official URL: https://corncon.net "
+                "Registration URL: https://corncon.net/tickets "
+                "Publication Date: 2026-06-15. "
+                "Speakers: John Johnson, Founder & CEO at Docent Institute; "
+                "Dave Lewis, Global Advisory CISO at Cisco; "
+                "Paula Januszkiewicz, Founder & CEO at CQURE; "
+                "Tanya Janca, Founder & CEO at We Hack Purple; "
+                "Jayson E. Street, Chief Adversarial Strategies at Illicit Strategies; "
+                "Ira Winkler, Field CISO & Vice President at CYE; "
+                "Chloe Messdaghi, Head of Threat Intelligence at Block; "
+                "Gene Spafford, Executive Director Emeritus at CERIAS Purdue University. "
+                "Previous Talks: Keynotes on Threat Intelligence, Adversary Simulation, Application Security, and Critical Infrastructure Protection (RSA, DEF CON, Black Hat). "
+                "Overview: Annual multi-track technical cybersecurity and threat management conference in the Quad Cities Midwest region. "
+                "Organizer: Docent Institute & CornCon. Category: Cybersecurity & Technology."
+            ),
+            (
                 "US National Cyber & Cloud Security Summit",
                 "https://10times.com/cyber-cloud-security-summit",
                 "Walter E. Washington Convention Center, Washington, DC, USA",
