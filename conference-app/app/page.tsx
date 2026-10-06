@@ -62,11 +62,25 @@ interface SpeakerProfile {
   previous_speaking_info?: string;
 }
 
+interface AttendeeProfile {
+  id: number;
+  conference_id: string;
+  conference_name: string;
+  expected_attendee_count?: string;
+  registered_attendee_count?: string;
+  attendee_categories?: string;
+  target_audience?: string;
+  industries?: string;
+  job_roles?: string;
+  source_url?: string;
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
 
 export default function ConferencesDashboard() {
   const [conferences, setConferences] = useState<Conference[]>([]);
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>([]);
+  const [attendees, setAttendees] = useState<AttendeeProfile[]>([]);
   const [scheduledConferences, setScheduledConferences] = useState<Conference[]>([]);
   const [schedulerInfo, setSchedulerInfo] = useState<{
     is_running?: boolean;
@@ -80,15 +94,17 @@ export default function ConferencesDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
-  const [activeSheet, setActiveSheet] = useState<"conferences" | "speakers" | "scheduled">("conferences");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [activeSheet, setActiveSheet] = useState<"conferences" | "speakers" | "attendees" | "scheduled">("conferences");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const fetchConferences = async () => {
     setLoading(true);
     try {
-      const [resConf, resSpk, resSched, resSchedInfo] = await Promise.all([
+      const [resConf, resSpk, resAtt, resSched, resSchedInfo] = await Promise.all([
         fetch(`${API_BASE}/conferences?published_only=true`),
         fetch(`${API_BASE}/speakers?published_only=true`),
+        fetch(`${API_BASE}/attendees?published_only=true`),
         fetch(`${API_BASE}/conferences?status=scheduled`),
         fetch(`${API_BASE}/scheduler/status`)
       ]);
@@ -99,6 +115,10 @@ export default function ConferencesDashboard() {
       if (resSpk.ok) {
         const spkData = await resSpk.json();
         setSpeakers(spkData);
+      }
+      if (resAtt && resAtt.ok) {
+        const attData = await resAtt.json();
+        setAttendees(attData);
       }
       if (resSched.ok) {
         const schedData = await resSched.json();
@@ -113,6 +133,7 @@ export default function ConferencesDashboard() {
     } finally {
       setLoading(false);
     }
+
   };
 
   useEffect(() => {
@@ -166,8 +187,9 @@ export default function ConferencesDashboard() {
       (c.venue || '').toLowerCase().includes(search.toLowerCase());
 
     const matchesSource = sourceFilter === "all" || c.source_name.toLowerCase().includes(sourceFilter.toLowerCase());
+    const matchesCategory = categoryFilter === "all" || (c.industry_category || '').toLowerCase().includes(categoryFilter.toLowerCase());
 
-    return matchesSearch && matchesSource;
+    return matchesSearch && matchesSource && matchesCategory;
   });
 
   const filteredSpeakers = speakers.filter(s => {
@@ -180,6 +202,21 @@ export default function ConferencesDashboard() {
     );
   });
 
+  const filteredAttendees = attendees.filter(a => {
+    const matchesSearch =
+      (a.conference_name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (a.target_audience || '').toLowerCase().includes(search.toLowerCase()) ||
+      (a.industries || '').toLowerCase().includes(search.toLowerCase()) ||
+      (a.job_roles || '').toLowerCase().includes(search.toLowerCase()) ||
+      (a.attendee_categories || '').toLowerCase().includes(search.toLowerCase());
+
+    const matchesCategory =
+      categoryFilter === "all" ||
+      (a.industries || '').toLowerCase().includes(categoryFilter.toLowerCase());
+
+    return matchesSearch && matchesCategory;
+  });
+
   const filteredScheduled = scheduledConferences.filter(c => {
     const matchesSearch = 
       (c.conference_title || '').toLowerCase().includes(search.toLowerCase()) ||
@@ -188,8 +225,9 @@ export default function ConferencesDashboard() {
       (c.venue || '').toLowerCase().includes(search.toLowerCase());
 
     const matchesSource = sourceFilter === "all" || c.source_name.toLowerCase().includes(sourceFilter.toLowerCase());
+    const matchesCategory = categoryFilter === "all" || (c.industry_category || '').toLowerCase().includes(categoryFilter.toLowerCase());
 
-    return matchesSearch && matchesSource;
+    return matchesSearch && matchesSource && matchesCategory;
   });
 
   const totalPublished = conferences.length;
@@ -201,10 +239,10 @@ export default function ConferencesDashboard() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
             <Building2 className="h-7 w-7 text-blue-600" />
-            USA Conference Discovery & Publication Agent
+            USA Conference Discovery &amp; Publication Agent
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Conferences starting exactly 2 days from today are verified via Gemini AI, stored in PostgreSQL, and published to Excel with separate Speakers sheet.
+            Focusing on 6 core business categories (Healthcare, Medicine &amp; Hospitals, Enterprise AI, AI Solutions, Financial Services, Technology) starting exactly 2 days out.
           </p>
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300">
@@ -275,7 +313,7 @@ export default function ConferencesDashboard() {
           </div>
           <div className="text-3xl font-bold tracking-tight text-foreground">{conferences.length}</div>
           <p className="text-xs text-muted-foreground">
-            Formal genuine USA conferences starting 2026-10-01
+            USA T-2 conferences in core business categories
           </p>
         </div>
 
@@ -285,9 +323,9 @@ export default function ConferencesDashboard() {
             <span className="text-xs font-semibold uppercase tracking-wider">Excel Workbook</span>
             <FileSpreadsheet className="h-5 w-5 text-emerald-600" />
           </div>
-          <div className="text-3xl font-bold tracking-tight text-foreground">2 Sheets</div>
+          <div className="text-3xl font-bold tracking-tight text-foreground">3 Sheets</div>
           <p className="text-xs text-muted-foreground">
-            &apos;USA Conferences&apos; &amp; separate &apos;Speakers&apos; sheet
+            &apos;USA Conferences&apos;, &apos;Speakers&apos;, &amp; &apos;Attendees&apos; sheets
           </p>
         </div>
 
@@ -329,7 +367,7 @@ export default function ConferencesDashboard() {
             }`}
           >
             <FileSpreadsheet className="h-4 w-4" />
-            USA Conferences Sheet ({conferences.length})
+            USA Conferences ({conferences.length})
           </button>
           <button
             onClick={() => setActiveSheet("speakers")}
@@ -339,8 +377,19 @@ export default function ConferencesDashboard() {
                 : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
             }`}
           >
+            <Mic className="h-4 w-4" />
+            Speakers ({speakers.length})
+          </button>
+          <button
+            onClick={() => setActiveSheet("attendees")}
+            className={`flex items-center gap-2 rounded-md px-3.5 py-1.5 text-xs font-semibold transition-all ${
+              activeSheet === "attendees"
+                ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-900 dark:text-indigo-400"
+                : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+            }`}
+          >
             <Users className="h-4 w-4" />
-            Speakers Sheet ({speakers.length})
+            Attendees ({attendees.length})
           </button>
           <button
             onClick={() => setActiveSheet("scheduled")}
@@ -356,16 +405,39 @@ export default function ConferencesDashboard() {
         </div>
 
         {/* Search & Filter */}
-        <div className="flex flex-1 sm:max-w-md items-center gap-2">
+        <div className="flex flex-1 sm:max-w-xl items-center gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder={activeSheet === "conferences" ? "Search by Title, Speaker, City, Venue..." : "Search by Speaker Name, Conference, Company..."}
+              placeholder={
+                activeSheet === "conferences" 
+                  ? "Search by Title, Speaker, City, Venue..." 
+                  : activeSheet === "speakers"
+                  ? "Search by Speaker Name, Conference, Company..."
+                  : activeSheet === "attendees"
+                  ? "Search by Audience, Industry, Role..."
+                  : "Search pipeline..."
+              }
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9 h-9 text-xs"
             />
           </div>
+
+          {/* Category Filter */}
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="all">All Categories</option>
+            <option value="healthcare">Healthcare</option>
+            <option value="medicine">Medicine &amp; Hospitals</option>
+            <option value="enterprise ai">Enterprise AI</option>
+            <option value="ai solutions">AI Solutions</option>
+            <option value="financial">Financial Services</option>
+            <option value="technology">Technology</option>
+          </select>
 
           {activeSheet === "conferences" && (
             <select
@@ -388,6 +460,7 @@ export default function ConferencesDashboard() {
           )}
         </div>
       </div>
+
 
       {/* SHEET 1: USA CONFERENCES TABLE */}
       {activeSheet === "conferences" && (
@@ -678,7 +751,113 @@ export default function ConferencesDashboard() {
         </div>
       )}
 
-      {/* SHEET 3: SCHEDULED UPCOMING CONFERENCES TABLE */}
+      {/* SHEET 3: ATTENDEES TABLE (Excel Sheet 3) */}
+      {activeSheet === "attendees" && (
+        <div id="attendees-table" className="rounded-xl border bg-card shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center justify-between bg-indigo-50/40 dark:bg-indigo-950/20">
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-indigo-600" />
+              <div>
+                <h2 className="text-base font-semibold">Attendees &amp; Participant Profiles (Excel Sheet 3)</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Expected counts, registered counts, participant categories, target audience, and professional roles.
+                </p>
+              </div>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Showing {filteredAttendees.length} attendee profiles
+            </span>
+          </div>
+
+          <div className="overflow-x-auto max-h-[650px]">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-indigo-900 text-white sticky top-0 z-10 font-semibold uppercase tracking-wider text-[11px]">
+                <tr>
+                  <th className="px-3.5 py-3 border-b min-w-[200px]">Conference</th>
+                  <th className="px-3.5 py-3 border-b text-center min-w-[120px]">Expected Count</th>
+                  <th className="px-3.5 py-3 border-b text-center min-w-[120px]">Registered Count</th>
+                  <th className="px-3.5 py-3 border-b min-w-[180px]">Participant Categories</th>
+                  <th className="px-3.5 py-3 border-b min-w-[220px]">Target Audience</th>
+                  <th className="px-3.5 py-3 border-b min-w-[150px]">Industries</th>
+                  <th className="px-3.5 py-3 border-b min-w-[220px]">Job Roles / Professions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
+                      <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-indigo-600" />
+                      Loading attendee profiles...
+                    </td>
+                  </tr>
+                ) : filteredAttendees.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
+                      No attendee data available matching your search.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredAttendees.map((att, idx) => (
+                    <tr key={idx} className="hover:bg-accent/40 transition-colors">
+                      {/* Conference Name & ID */}
+                      <td className="px-3.5 py-3">
+                        <div className="font-semibold text-foreground">{att.conference_name}</div>
+                        <span className="font-mono text-[10px] text-muted-foreground">{att.conference_id}</span>
+                      </td>
+
+                      {/* Expected Count */}
+                      <td className="px-3.5 py-3 text-center">
+                        {att.expected_attendee_count ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                            {att.expected_attendee_count}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+
+                      {/* Registered Count */}
+                      <td className="px-3.5 py-3 text-center">
+                        {att.registered_attendee_count ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
+                            {att.registered_attendee_count}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+
+                      {/* Participant Categories */}
+                      <td className="px-3.5 py-3 text-slate-700 dark:text-slate-300">
+                        {att.attendee_categories || "-"}
+                      </td>
+
+                      {/* Target Audience */}
+                      <td className="px-3.5 py-3 text-slate-600 dark:text-slate-400">
+                        {att.target_audience || "-"}
+                      </td>
+
+                      {/* Industries */}
+                      <td className="px-3.5 py-3">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                          {att.industries || "-"}
+                        </span>
+                      </td>
+
+                      {/* Job Roles */}
+                      <td className="px-3.5 py-3 text-slate-700 dark:text-slate-300">
+                        {att.job_roles || "-"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* SHEET 4: SCHEDULED UPCOMING CONFERENCES TABLE */}
       {activeSheet === "scheduled" && (
         <div id="scheduled-table" className="rounded-xl border bg-card shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b flex items-center justify-between bg-purple-50/40 dark:bg-purple-950/20">

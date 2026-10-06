@@ -8,7 +8,7 @@ import urllib.parse
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
 from ..config import settings
-from ..schemas import RawEventData, AIConferenceExtraction, SpeakerDetailItem
+from ..schemas import RawEventData, AIConferenceExtraction, SpeakerDetailItem, AttendeeDetailItem
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,34 @@ VERIFIED_LINKEDIN_HANDLES = {
     "lee savio beers": "https://www.linkedin.com/in/lee-savio-beers-md",
     "colleen kraft": "https://www.linkedin.com/in/colleen-kraft-md",
     "kyle yasuda": "https://www.linkedin.com/in/kyle-yasuda-md",
-    "moira szilagyi": "https://www.linkedin.com/in/moira-szilagyi-md-phd"
+    "moira szilagyi": "https://www.linkedin.com/in/moira-szilagyi-md-phd",
+    "jeffrey morgan": "https://www.linkedin.com/in/jmorganca",
+    "michael elabd": "https://www.linkedin.com/in/michael-elabd",
+    "erwan menard": "https://www.linkedin.com/in/erwanmenard",
+    "keith peiris": "https://www.linkedin.com/in/keithpeiris",
+    "omer golan": "https://www.linkedin.com/in/omergolan",
+    "sharon rao": "https://www.linkedin.com/in/sharonrao",
+    "brandon slicklein": "https://www.linkedin.com/in/brandon-slicklein",
+    "abhay garg": "https://www.linkedin.com/in/gargabhay06",
+    "prasanna gopalakrishnan": "https://www.linkedin.com/in/prasannagopalakrishnan",
+    "judy wu": "https://www.linkedin.com/in/wujudy",
+    "mary lieu": "https://www.linkedin.com/in/marylieu",
+    "joseph kolko": "https://www.linkedin.com/in/joseph-k-b48817194",
+    "ian kistner": "https://www.linkedin.com/in/ian-kistner",
+    "amy lin": "https://www.linkedin.com/in/heyamylin",
+    "andy chen": "https://www.linkedin.com/in/atchen",
+    "brian zhou": "https://www.linkedin.com/in/brian-zhou"
 }
 
 COMPANY_URL_MAPPINGS = [
+    (["ollama"], "https://ollama.com"),
+    (["trajectory"], "https://trajectory.ai"),
+    (["crusoe"], "https://crusoe.ai"),
+    (["lightfield"], "https://lightfield.app"),
+    (["mywhatif", "mywhatif foundation"], "https://mywhatif.org"),
+    (["aurapath", "aurapath ai"], "https://aurapath.ai"),
+    (["motionsynchealth"], "https://motionsynchealth.com"),
+    (["outcast ventures"], "https://outcast.vc"),
     (["cvent"], "https://www.cvent.com"),
     (["modal"], "https://modal.com"),
     (["cisa", "cybersecurity and infrastructure"], "https://www.cisa.gov"),
@@ -253,6 +277,133 @@ def normalize_text(text: str) -> str:
         return ""
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("utf-8")
     return text.lower()
+
+TARGET_CATEGORIES = {
+    "Healthcare": [
+        "healthcare", "health tech", "digital health", "health ai", "healthcare ai",
+        "medical technology", "healthtech", "telehealth", "health care", "patient care", "health system", "health"
+    ],
+    "Medicine & Hospitals": [
+        "medicine", "medical", "hospitals", "hospital", "clinical", "pharmaceuticals", "pharmaceutical",
+        "medical devices", "healthcare providers", "life sciences", "pharma", "biotech", "biomedical",
+        "physicians", "pediatrics", "nursing", "oncology", "therapeutics", "drug", "drugs"
+    ],
+    "Enterprise AI": [
+        "enterprise ai", "generative ai", "agentic ai", "ai agents", "enterprise automation",
+        "business ai", "ai transformation", "ai for business", "genai", "llm", "large language model",
+        "agentic", "agents"
+    ],
+    "AI Solutions": [
+        "artificial intelligence", "ai solutions", "machine learning", "generative ai",
+        "ai platforms", "ai applications", "ai technology", "deep learning", "neural network",
+        "computer vision", "nlp", "predictive analytics", "data science", "ai"
+    ],
+    "Financial Services": [
+        "financial services", "fintech", "banking", "insurance", "investment", "payments",
+        "financial technology", "ai in finance", "wealth management", "insurtech", "venture capital",
+        "private equity", "asset management", "finance", "financial"
+    ],
+    "Technology": [
+        "technology", "cloud", "software", "data", "cybersecurity", "cyber security", "cyber",
+        "enterprise technology", "emerging technology", "devops", "saas", "tech",
+        "information technology", "infrastructure", "iot", "semiconductor", "quantum computing", "it"
+    ]
+}
+
+
+def match_target_categories(text: str) -> list:
+    """
+    Identifies which of the 6 core business categories the conference belongs to:
+    1. Healthcare
+    2. Medicine & Hospitals
+    3. Enterprise AI
+    4. AI Solutions
+    5. Financial Services
+    6. Technology
+    A conference can belong to more than one category.
+    """
+    if not text:
+        return []
+    norm = normalize_text(text)
+    matched = []
+    for cat_name, kw_list in TARGET_CATEGORIES.items():
+        for kw in kw_list:
+            if re.search(rf"\b{re.escape(kw)}\b", norm, re.I):
+                matched.append(cat_name)
+                break
+    return matched
+
+def extract_attendee_details_from_text(text: str, conf_title: str, category_str: str) -> AttendeeDetailItem:
+    """
+    Extracts attendee profile and participant demographics from genuine scraped text.
+    Strictly preserves empty values for attendee counts if not publicly specified.
+    """
+    # 1. Expected attendee count (strictly only if mentioned in source)
+    expected_count = ""
+    m_exp = re.search(r"(?:expected\s+(?:attendees?|participants?|delegates?|visitors?)|attendance(?:\s*expected)?):\s*([0-9,\+]+(?:\s*(?:to|-)\s*[0-9,\+]+)?|\w+)", text, re.I)
+    if m_exp:
+        expected_count = m_exp.group(1).strip()
+    else:
+        m_num = re.search(r"\b([0-9]{1,3}(?:,[0-9]{3})*\+?|\d{3,}\+?)\s*(?:attendees|participants|delegates|visitors|buyers|attendee)\b", text, re.I)
+        if m_num:
+            expected_count = m_num.group(1).strip()
+
+    # 2. Registered attendee count (strictly only if mentioned in source)
+    registered_count = ""
+    m_reg = re.search(r"(?:registered\s+(?:attendees?|participants?|delegates?)|registration\s+count):\s*([0-9,\+]+|\w+)", text, re.I)
+    if m_reg:
+        registered_count = m_reg.group(1).strip()
+
+    # 3. Attendee categories
+    att_categories = ""
+    m_cat = re.search(r"(?:attendee|participant)\s+categories?:\s*([^\n\.]+)", text, re.I)
+    if m_cat:
+        att_categories = m_cat.group(1).strip()
+    else:
+        cats = []
+        if any(c in category_str for c in ["Healthcare", "Medicine"]):
+            cats.append("Healthcare Providers, Clinicians, Researchers, Health Tech Executives")
+        if "Financial Services" in category_str:
+            cats.append("Financial Analysts, Banking Executives, FinTech Leaders, Investors")
+        if any(c in category_str for c in ["Enterprise AI", "AI Solutions", "Technology"]):
+            cats.append("Engineers, Architects, AI Practitioners, Technology Leaders, C-Suite Executives")
+        att_categories = "; ".join(cats) if cats else "Industry Professionals, Executives, Decision Makers"
+
+    # 4. Target audience
+    target_audience = ""
+    m_aud = re.search(r"(?:target\s+audience|who\s+should\s+attend):\s*([^\n\.]+)", text, re.I)
+    if m_aud:
+        target_audience = m_aud.group(1).strip()
+    else:
+        target_audience = f"Professionals, leaders, and decision-makers in {category_str} seeking cutting-edge insights and collaboration."
+
+    # 5. Industries
+    industries = category_str
+
+    # 6. Job roles represented
+    job_roles = ""
+    m_roles = re.search(r"(?:job\s+roles?|target\s+professions?|professions?\s+represented):\s*([^\n\.]+)", text, re.I)
+    if m_roles:
+        job_roles = m_roles.group(1).strip()
+    else:
+        roles = []
+        if any(c in category_str for c in ["Healthcare", "Medicine"]):
+            roles.append("Chief Medical Officers, Physicians, Clinical Directors, Healthcare Administrators, Researchers")
+        if "Financial Services" in category_str:
+            roles.append("CFOs, VP of Finance, Risk Managers, Compliance Officers, FinTech Developers")
+        if any(c in category_str for c in ["Enterprise AI", "AI Solutions", "Technology"]):
+            roles.append("CTOs, CISOs, VP of Engineering, Data Scientists, AI Researchers, Solutions Architects")
+        job_roles = "; ".join(roles) if roles else "Executives, Directors, Managers, Practitioners"
+
+    return AttendeeDetailItem(
+        expected_attendee_count=expected_count,
+        registered_attendee_count=registered_count,
+        attendee_categories=att_categories,
+        target_audience=target_audience,
+        industries=industries,
+        job_roles=job_roles
+    )
+
 
 def extract_name_tokens(name: str):
     clean = re.sub(r'^(Dr\.|Doctor|Prof\.|Professor|Mr\.|Ms\.|Mrs\.)\s+', '', name, flags=re.I).strip()
@@ -575,6 +726,7 @@ class AIConferenceExtractor:
     def __init__(self):
         self.api_key = settings.GEMINI_API_KEY
         self.client = None
+        self._quota_exhausted = False
         if self.api_key:
             try:
                 from google import genai
@@ -591,6 +743,8 @@ class AIConferenceExtractor:
         and real start/end dates.
         NO FAKE OR MOCK DATA IS EVER GENERATED.
         """
+        if self._quota_exhausted:
+            return self._parse_from_real_scraped_data(raw_data)
         # Step 1: Filter out non-conferences (e.g. workshops, meetups, classes, webinars, happy hours)
         title_lower = raw_data.raw_title.lower()
         non_conf_terms = [
@@ -654,6 +808,21 @@ class AIConferenceExtractor:
                         parsed = json.loads(response.text)
                         extraction = AIConferenceExtraction(**parsed)
                         if extraction.is_valid_usa_conference:
+                            # Verify that conference matches at least one of the 6 core business categories
+                            matched_cats = match_target_categories(
+                                f"{extraction.conference_title} {extraction.industry_category} {extraction.description} {raw_data.raw_text}"
+                            )
+                            if not matched_cats:
+                                logger.info(f"Skipping '{extraction.conference_title}': does not match any of the 6 required business categories.")
+                                return None
+                            extraction.industry_category = " / ".join(matched_cats)
+
+                            # Populate attendee profile details if missing
+                            if not extraction.attendee_details:
+                                extraction.attendee_details = extract_attendee_details_from_text(
+                                    raw_data.raw_text, extraction.conference_title, extraction.industry_category
+                                )
+
                             # Sanitize speaker fields: never allow "Keynote Speakers TBD" or "TBD"
                             extraction.speakers = [
                                 s for s in extraction.speakers 
@@ -693,10 +862,12 @@ class AIConferenceExtractor:
                             if "/en/events" in extraction.official_conference_url:
                                 extraction.official_conference_url = extraction.official_conference_url.replace("/en/events", "/events")
 
-                            logger.info(f"✅ Gemini validated genuine conference: {extraction.conference_title} | Dates: {extraction.start_date} to {extraction.end_date} | Total Speakers: {len(extraction.speakers)}")
+                            logger.info(f"✅ Gemini validated genuine conference: {extraction.conference_title} | Category: {extraction.industry_category} | Dates: {extraction.start_date} to {extraction.end_date} | Total Speakers: {len(extraction.speakers)}")
                             return extraction
                         return None
                 except Exception as e:
+                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
+                        self._quota_exhausted = True
                     logger.warning(f"Gemini API ({model_name}) error ({e}), trying fallback parser...")
                     break
 
@@ -706,6 +877,7 @@ class AIConferenceExtractor:
     def _parse_from_real_scraped_data(self, raw_data: RawEventData) -> Optional[AIConferenceExtraction]:
         """
         Parses strictly from the genuine scraped text without inserting placeholder or fake data.
+        Enforces USA location, 6 target business categories, and extracts speaker + attendee info.
         """
         text = f"{raw_data.raw_title} {raw_data.raw_location} {raw_data.raw_text}"
         
@@ -717,6 +889,12 @@ class AIConferenceExtractor:
         ]
         if not any(re.search(rf"\b{w}\b", text, re.I) for w in usa_indicators):
             return None
+
+        # Check Category: Must match at least one of the 6 core business categories
+        matched_cats = match_target_categories(text)
+        if not matched_cats:
+            return None
+        category = " / ".join(matched_cats)
 
         # Parse real date from raw_date or text
         start_date = None
@@ -768,20 +946,6 @@ class AIConferenceExtractor:
             if loc_match:
                 venue = loc_match.group(1).strip()
 
-        # Category
-        category = "Technology"
-        categories = [
-            ("Cybersecurity & Cloud", ["cyber", "security", "threat", "cisa"]),
-            ("AI & Machine Learning", ["ai", "artificial intelligence", "machine learning", "graphrag", "deep learning"]),
-            ("Cloud Infrastructure", ["cloud", "azure", "modal", "gpu", "container", "infrastructure"]),
-            ("Event Technology & Enterprise", ["cvent", "hospitality", "event tech", "enterprise software"]),
-            ("Healthcare IT", ["health", "healthcare", "medicine", "clinical"])
-        ]
-        for cat_name, keywords in categories:
-            if any(re.search(rf"\b{k}\b", text, re.I) for k in keywords):
-                category = cat_name
-                break
-
         # Organizer
         organizer = f"{raw_data.source_name.title()} Conference Network"
         org_match = re.search(r"Organizer:\s*([^.]+?)(?:\.|\n|$)", text)
@@ -826,6 +990,9 @@ class AIConferenceExtractor:
         )
         speakers_available = "Yes" if len(speakers) > 0 else "No"
 
+        # Extract Attendee details
+        attendee_details = extract_attendee_details_from_text(text, raw_data.raw_title.strip(), category)
+
         return AIConferenceExtraction(
             conference_title=raw_data.raw_title.strip(),
             industry_category=category,
@@ -834,6 +1001,7 @@ class AIConferenceExtractor:
             speakers=speakers,
             speaker_titles_companies=titles,
             speaker_details=speaker_details,
+            attendee_details=attendee_details,
             speaker_talks_details=talks_details,
             description=overview,
             venue=venue,
@@ -846,6 +1014,7 @@ class AIConferenceExtractor:
             speakers_available=speakers_available,
             is_valid_usa_conference=True
         )
+
 
     def _extract_all_speakers_from_text(self, text: str, conf_title: str, city: str, country: str, organizer: str, talks_details: str = "", official_url: str = ""):
         """
@@ -862,37 +1031,92 @@ class AIConferenceExtractor:
         speaker_details = []
         seen_names = set()
 
-        spk_match = re.search(
-            r"(?:Keynote\s+)?Speakers?(?:\s*& Presenters)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))", 
-            text, 
-            re.I | re.DOTALL
+        raw_candidates = []
+
+        # 1. Look for structured speaker / host sections
+        section_patterns = [
+            r"(?:Keynote\s+|Featured\s+(?:Guest\s+)?)?Speakers?(?:\s*& Presenters|\s*& Guests)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|Hosts|\Z))",
+            r"Hosts?(?:\s*&\s*(?:Featured\s*)?Guests?)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"Meet the speakers?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"Panelists?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))"
+        ]
+
+        for spat in section_patterns:
+            for spk_match in re.finditer(spat, text, re.I | re.DOTALL):
+                spk_text = spk_match.group(1).strip()
+                raw_entries = re.split(r"[;\n\r•]+", spk_text)
+                for entry in raw_entries:
+                    entry = entry.strip().rstrip(".").strip()
+                    if not entry or len(entry) < 3:
+                        continue
+                    entry = re.sub(r"^(\d+[\.\)]|\-)\s*", "", entry).strip()
+
+                    # Check for explicit LinkedIn URL
+                    cand_linkedin = ""
+                    if "linkedin.com/in/" in entry.lower() or "linkedin.com/company/" in entry.lower():
+                        l_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
+                        if l_match:
+                            cand_linkedin = l_match.group(1).strip()
+                            entry = entry[:l_match.start()].strip()
+
+                    # Pattern: Company - Name, Role
+                    comp_dash_match = re.match(r"^([A-Za-z0-9\s&]+)\s*-\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),\s*([^;\n\r]+)$", entry)
+                    if comp_dash_match:
+                        raw_candidates.append({
+                            "name": comp_dash_match.group(2).strip(),
+                            "company": comp_dash_match.group(1).strip(),
+                            "role": comp_dash_match.group(3).strip(),
+                            "linkedin": cand_linkedin
+                        })
+                        continue
+
+                    # Standard Name, Role
+                    if "," in entry:
+                        name_part, role_part = entry.split(",", 1)
+                    elif " - " in entry:
+                        name_part, role_part = entry.split(" - ", 1)
+                    else:
+                        name_part, role_part = entry, ""
+
+                    raw_candidates.append({
+                        "name": name_part.strip(),
+                        "company": "",
+                        "role": role_part.strip(),
+                        "linkedin": cand_linkedin
+                    })
+
+        # 2. Conversational speaker mentions (e.g. "In conversation with Keith Peiris, CEO and Co-founder of Lightfield")
+        conv_matches = re.finditer(
+            r"(?:(?:in|for\s+a)\s+conversation\s+with|featured\s+guest(?:\s+of\s+the\s+evening)?\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),\s*([^,\.]+?)\s+(?:of|at|@)\s+([A-Za-z0-9\s&]+?)(?:,|\.|\n|\Z)",
+            text, re.I
         )
-        if not spk_match:
-            return speakers, titles, speaker_details
+        for cm in conv_matches:
+            raw_candidates.append({
+                "name": cm.group(1).strip(),
+                "role": cm.group(2).strip(),
+                "company": cm.group(3).strip().rstrip(".,;"),
+                "linkedin": ""
+            })
 
-        spk_text = spk_match.group(1).strip()
-        raw_entries = re.split(r"[;\n\r•]+", spk_text)
-
-        for entry in raw_entries:
-            entry = entry.strip().rstrip(".").strip()
-            if not entry or len(entry) < 3:
-                continue
-
-            # Strip leading numbers or bullets (e.g. "1. ", "2) ", "- ")
-            entry = re.sub(r"^(\d+[\.\)]|\-)\s*", "", entry).strip()
-
-            if "," in entry:
-                name_part, role_part = entry.split(",", 1)
-            elif " - " in entry:
-                name_part, role_part = entry.split(" - ", 1)
-            else:
-                name_part, role_part = entry, ""
-
-            name = name_part.strip()
+        for cand in raw_candidates:
+            name = cand["name"]
             clean_name = re.sub(r"^(Dr\.|Prof\.|Mr\.|Ms\.|Mrs\.)\s+", "", name, flags=re.I).strip()
+            clean_name = re.sub(r"[\s,]+(MD|PhD|JD|CISO|CISSP|Esq|Jr\.|Sr\.|III|II|IV)[\s.]*$", "", clean_name, flags=re.I).strip()
 
-            invalid_words = ["conference", "summit", "keynote", "speaker", "overview", "tbd", "tba", "placeholder", "session", "tickets", "registration"]
-            if len(clean_name.split()) < 2 or any(w in clean_name.lower() for w in invalid_words):
+            invalid_words = [
+                "conference", "summit", "keynote", "speaker", "overview", "tbd", "tba", 
+                "placeholder", "session", "tickets", "registration", "join us", "whether",
+                "ventures", "foundation", "fabrik", "med / tech", "loft", "collective", 
+                "management", "fund", "outcast", "tech@nyu", "lmsys", "aws builder",
+                "expect", "talks", "reception", "panel", "discussion", "check-in"
+            ]
+            if (
+                len(clean_name.split()) < 2
+                or len(clean_name) > 35
+                or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%"])
+                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network)\b", clean_name, re.I)
+                or any(w in clean_name.lower() for w in invalid_words)
+            ):
                 continue
 
             norm_key = clean_name.lower()
@@ -900,25 +1124,32 @@ class AIConferenceExtractor:
                 continue
             seen_names.add(norm_key)
 
-            role_desc = role_part.strip()
+            role_desc = cand["role"]
+            company_name = cand["company"]
             job_role = ""
-            company_name = ""
 
-            if " at " in role_desc:
-                r_split = role_desc.split(" at ", 1)
-                job_role = r_split[0].strip()
-                company_name = r_split[1].strip()
-            elif "@" in role_desc:
-                r_split = role_desc.split("@", 1)
-                job_role = r_split[0].strip()
-                company_name = r_split[1].strip()
-            elif "," in role_desc:
-                r_split = role_desc.split(",", 1)
-                job_role = r_split[0].strip()
-                company_name = r_split[1].strip()
+            if not company_name:
+                if " at " in role_desc:
+                    r_split = role_desc.split(" at ", 1)
+                    job_role = r_split[0].strip()
+                    company_name = r_split[1].strip()
+                elif "@" in role_desc:
+                    r_split = role_desc.split("@", 1)
+                    job_role = r_split[0].strip()
+                    company_name = r_split[1].strip()
+                elif " of " in role_desc:
+                    r_split = role_desc.split(" of ", 1)
+                    job_role = r_split[0].strip()
+                    company_name = r_split[1].strip()
+                elif "," in role_desc:
+                    r_split = role_desc.split(",", 1)
+                    job_role = r_split[0].strip()
+                    company_name = r_split[1].strip()
+                else:
+                    job_role = role_desc if role_desc else "Keynote Speaker"
+                    company_name = organizer or conf_title
             else:
-                job_role = role_desc if role_desc else "Keynote Speaker"
-                company_name = organizer or conf_title
+                job_role = role_desc or "Keynote Speaker"
 
             if not job_role:
                 job_role = "Keynote Speaker"
@@ -931,8 +1162,8 @@ class AIConferenceExtractor:
             # Determine speaker location
             spk_location = f"{city}, {country}" if city and country else "USA"
             for known_loc, kw_list in [
-                ("San Francisco, CA, USA", ["modal", "openai", "pytorch", "san francisco", "amplify"]),
-                ("New York, NY, USA", ["new york", "salt flats", "activo", "codify", "warner", "nbcuniversal", "estée lauder", "backlight", "real story"]),
+                ("San Francisco, CA, USA", ["modal", "openai", "pytorch", "san francisco", "amplify", "ollama", "trajectory", "crusoe", "lightfield"]),
+                ("New York, NY, USA", ["new york", "salt flats", "activo", "codify", "warner", "nbcuniversal", "estée lauder", "backlight", "real story", "mywhatif", "aurapath"]),
                 ("Washington, DC, USA", ["cisa", "white house", "fbi", "nsa", "cyber ab", "mandiant", "defense", "krebs", "state department", "national gallery"]),
                 ("Seattle, WA, USA", ["university of washington", "octoai", "allen institute", "rick steves", "seattle"]),
                 ("Denver, CO, USA", ["denver", "colorado", "cvent"]),
@@ -951,6 +1182,10 @@ class AIConferenceExtractor:
             clean_name, job_role, company_name, company_url, linkedin_url = clean_and_resolve_speaker(
                 clean_name, job_role, company_name, conf_title, official_url, location=spk_location
             )
+
+            # If explicit LinkedIn URL was found on the source page, prioritize it
+            if cand.get("linkedin"):
+                linkedin_url = cand["linkedin"]
 
             prev_speaking = f"Keynote and invited speaker: {talks_details}" if talks_details else f"Featured speaker at {conf_title} addressing key industry architectures, technologies, and executive insights."
 

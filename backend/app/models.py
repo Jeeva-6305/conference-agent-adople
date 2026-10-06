@@ -87,3 +87,32 @@ class Speaker(Base):
             "Speaker LinkedIn Profile URL": self.linkedin_url or "",
             "Location": self.location
         }
+
+class Attendee(Base):
+    __tablename__ = "attendees"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conference_id = Column(String(50), index=True)
+    conference_name = Column(String(255), nullable=False)
+    expected_attendee_count = Column(String(100), default="")
+    registered_attendee_count = Column(String(100), default="")
+    attendee_categories = Column(String(255), default="")
+    target_audience = Column(Text, default="")
+    industries = Column(String(255), default="")
+    job_roles = Column(Text, default="")
+    source_url = Column(String(500), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "Conference ID": self.conference_id,
+            "Conference Name": self.conference_name,
+            "Expected Attendee Count": self.expected_attendee_count or "",
+            "Registered Attendee Count": self.registered_attendee_count or "",
+            "Attendee / Participant Categories": self.attendee_categories or "",
+            "Target Audience": self.target_audience or "",
+            "Industries": self.industries or "",
+            "Job Roles / Professions Represented": self.job_roles or "",
+            "Source URL": self.source_url or ""
+        }
+

@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import get_db, init_db
-from .models import Conference, Speaker
-from .schemas import ConferenceResponse, SpeakerResponse, DashboardStats
+from .models import Conference, Speaker, Attendee
+from .schemas import ConferenceResponse, SpeakerResponse, AttendeeResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
 from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records, task_sync_to_google_sheets, task_migrate_db_to_google_sheets
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -149,11 +150,29 @@ def get_speakers(
         query = query.filter(Speaker.conference_id.in_(pub_ids))
     return query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
 
+@app.get("/api/attendees", response_model=List[AttendeeResponse])
+def get_attendees(
+    conference_id: Optional[str] = Query(None, description="Filter attendees by Conference ID"),
+    published_only: Optional[bool] = Query(False, description="Filter attendees of published conferences"),
+    db: Session = Depends(get_db)
+):
+    """Fetch attendee and participant profile details."""
+    query = db.query(Attendee)
+    if conference_id:
+        query = query.filter(Attendee.conference_id == conference_id)
+    elif published_only:
+        today = date.today()
+        exact_t2 = today + timedelta(days=2)
+        pub_confs = db.query(Conference).filter(Conference.is_published_to_excel == True, Conference.start_date == exact_t2).all()
+        pub_ids = [c.conference_id for c in pub_confs]
+        query = query.filter(Attendee.conference_id.in_(pub_ids))
+    return query.order_by(Attendee.conference_name.asc()).all()
+
 @app.post("/api/trigger/scrape")
 def trigger_scrape(background_tasks: BackgroundTasks):
     """Manually triggers immediate 24/7 web scraping & AI extraction cycle."""
     background_tasks.add_task(task_scrape_and_ingest)
-    return {"message": "Scrape and AI ingestion cycle triggered across all 6 websites in background."}
+    return {"message": "Scrape and AI ingestion cycle triggered across all configured websites in background."}
 
 @app.post("/api/trigger/publish")
 def trigger_publish():
@@ -175,14 +194,15 @@ def download_excel():
 @app.get("/api/excel/preview")
 def preview_excel(sheet: Optional[str] = Query("USA Conferences")):
     manager = ExcelManager()
-    if sheet not in ["USA Conferences", "Speakers"]:
+    valid_sheets = ["USA Conferences", "Speakers", "Attendees"]
+    if sheet not in valid_sheets:
         sheet = "USA Conferences"
     try:
         df = manager.read_excel_as_dataframe(sheet_name=sheet)
         records = df.fillna("").to_dict(orient="records")
         return {
             "sheet": sheet,
-            "sheets": ["USA Conferences", "Speakers"],
+            "sheets": valid_sheets,
             "columns": list(df.columns),
             "total_rows": len(records),
             "rows": records
@@ -191,11 +211,12 @@ def preview_excel(sheet: Optional[str] = Query("USA Conferences")):
         logger.error(f"Error reading Excel sheet {sheet}: {e}")
         return {
             "sheet": sheet,
-            "sheets": ["USA Conferences", "Speakers"],
+            "sheets": valid_sheets,
             "columns": [],
             "total_rows": 0,
             "rows": []
         }
+
 
 
 @app.post("/api/trigger/google-sheets-sync")

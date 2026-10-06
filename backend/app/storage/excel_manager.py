@@ -9,7 +9,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from ..config import settings
-from ..models import Conference, Speaker
+from ..models import Conference, Speaker, Attendee
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,18 @@ SPEAKER_COLUMNS = [
     "Location"
 ]
 
+ATTENDEE_COLUMNS = [
+    "Conference ID",
+    "Conference Name",
+    "Expected Attendee Count",
+    "Registered Attendee Count",
+    "Attendee / Participant Categories",
+    "Target Audience",
+    "Industries",
+    "Job Roles / Professions Represented",
+    "Source URL"
+]
+
 class ExcelManager:
     def __init__(self, file_path: str = settings.EXCEL_OUTPUT_PATH):
         self.file_path = file_path
@@ -51,7 +63,7 @@ class ExcelManager:
             self.reset_excel()
 
     def reset_excel(self):
-        """Creates or resets the Excel file with two styled sheets: USA Conferences & Speakers."""
+        """Creates or resets the Excel file with three styled sheets: USA Conferences, Speakers, and Attendees."""
         wb = Workbook()
         
         # 1. Main Sheet: USA Conferences
@@ -89,8 +101,25 @@ class ExcelManager:
 
         self._auto_fit_columns(ws_spk)
 
+        # 3. Third Sheet: Attendees
+        ws_att = wb.create_sheet(title="Attendees")
+        att_header_fill = PatternFill(start_color="4338CA", end_color="4338CA", fill_type="solid")
+        att_header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+        ws_att.append(ATTENDEE_COLUMNS)
+        ws_att.row_dimensions[1].height = 28
+
+        for col_idx, col_name in enumerate(ATTENDEE_COLUMNS, 1):
+            cell = ws_att.cell(row=1, column=col_idx)
+            cell.fill = att_header_fill
+            cell.font = att_header_font
+            cell.alignment = align_center
+
+        self._auto_fit_columns(ws_att)
+
         self._safe_save(wb)
-        logger.info(f"Initialized blank Excel workbook with 'USA Conferences' and 'Speakers' sheets at {self.file_path}")
+        logger.info(f"Initialized blank Excel workbook with 'USA Conferences', 'Speakers', and 'Attendees' sheets at {self.file_path}")
+
 
     def _safe_save(self, wb) -> bool:
         try:
@@ -125,18 +154,29 @@ class ExcelManager:
                     cell.border = thin_border
                     cell.alignment = Alignment(vertical="center")
 
-    def sync_published_conferences(self, conferences: List[Conference], speakers: Optional[List[Speaker]] = None) -> int:
+    def sync_published_conferences(
+        self,
+        conferences: List[Conference],
+        speakers: Optional[List[Speaker]] = None,
+        attendees: Optional[List[Attendee]] = None
+    ) -> int:
         """
-        Completely refreshes the Excel workbook with genuine verified conferences
-        and their associated speakers sheet.
+        Completely refreshes the Excel workbook with genuine verified conferences,
+        their associated speakers sheet, and attendee profiles sheet.
         """
         self.reset_excel()
-        return self.publish_conferences(conferences, speakers)
+        return self.publish_conferences(conferences, speakers, attendees)
 
-    def publish_conferences(self, conferences: List[Conference], speakers: Optional[List[Speaker]] = None) -> int:
+    def publish_conferences(
+        self,
+        conferences: List[Conference],
+        speakers: Optional[List[Speaker]] = None,
+        attendees: Optional[List[Attendee]] = None
+    ) -> int:
         """
-        Appends newly due conferences into the 'USA Conferences' sheet
-        and their detailed speaker profiles into the 'Speakers' sheet.
+        Appends newly due conferences into the 'USA Conferences' sheet,
+        their detailed speaker profiles into the 'Speakers' sheet,
+        and attendee profiles into the 'Attendees' sheet.
         """
         if not conferences:
             return 0
@@ -156,6 +196,12 @@ class ExcelManager:
         else:
             ws_spk = wb["Speakers"]
 
+        if "Attendees" not in wb.sheetnames:
+            ws_att = wb.create_sheet(title="Attendees")
+            ws_att.append(ATTENDEE_COLUMNS)
+        else:
+            ws_att = wb["Attendees"]
+
         # Collect existing conference IDs and titles
         existing_ids = set()
         existing_titles = set()
@@ -171,8 +217,15 @@ class ExcelManager:
             if row[0] and len(row) > 1 and row[1]:
                 existing_speakers.add((str(row[0]).strip().lower(), str(row[1]).strip().lower()))
 
+        # Collect existing attendees (conference_id)
+        existing_attendees = set()
+        for row in ws_att.iter_rows(min_row=2, max_col=2, values_only=True):
+            if row[0]:
+                existing_attendees.add(str(row[0]).strip())
+
         added_conf_count = 0
         added_spk_count = 0
+        added_att_count = 0
 
         for conf in conferences:
             title_clean = conf.conference_title.strip().lower()
@@ -224,13 +277,36 @@ class ExcelManager:
                     existing_speakers.add(key)
                     added_spk_count += 1
 
-        if added_conf_count > 0 or added_spk_count > 0:
+        # Write Attendee models into the Attendees sheet
+        if attendees:
+            for att in attendees:
+                if att.conference_id not in existing_attendees:
+                    ws_att.append([
+                        att.conference_id,
+                        att.conference_name,
+                        att.expected_attendee_count or "",
+                        att.registered_attendee_count or "",
+                        att.attendee_categories or "",
+                        att.target_audience or "",
+                        att.industries or "",
+                        att.job_roles or "",
+                        att.source_url or ""
+                    ])
+                    existing_attendees.add(att.conference_id)
+                    added_att_count += 1
+
+        if added_conf_count > 0 or added_spk_count > 0 or added_att_count > 0:
             self._auto_fit_columns(ws_conf)
             self._auto_fit_columns(ws_spk)
+            self._auto_fit_columns(ws_att)
             self._safe_save(wb)
-            logger.info(f"Published {added_conf_count} conferences and {added_spk_count} speakers to Excel at {self.file_path}")
+            logger.info(
+                f"Published {added_conf_count} conferences, {added_spk_count} speakers, "
+                f"and {added_att_count} attendee records to Excel at {self.file_path}"
+            )
 
         return added_conf_count
+
 
     def read_excel_as_dataframe(self, sheet_name: str = "USA Conferences") -> pd.DataFrame:
         self._ensure_file_exists()

@@ -20,6 +20,14 @@ class SpeakerDetailItem(BaseModel):
     location: str = Field(default="", description="Location or city/state of speaker/organization")
     previous_speaking_info: Optional[str] = Field(default="", description="Previous speaking information or talks if available")
 
+class AttendeeDetailItem(BaseModel):
+    expected_attendee_count: Optional[str] = Field(default="", description="Expected attendee count if available, or empty")
+    registered_attendee_count: Optional[str] = Field(default="", description="Registered attendee count if publicly available, or empty")
+    attendee_categories: Optional[str] = Field(default="", description="Attendee / participant categories")
+    target_audience: Optional[str] = Field(default="", description="Target audience description")
+    industries: Optional[str] = Field(default="", description="Industries represented")
+    job_roles: Optional[str] = Field(default="", description="Job roles and professions represented")
+
 class AIConferenceExtraction(BaseModel):
     conference_title: str = Field(description="The formal title of the conference")
     industry_category: str = Field(description="Industry or domain, e.g. Technology, AI, Healthcare, Finance, Energy")
@@ -28,6 +36,7 @@ class AIConferenceExtraction(BaseModel):
     speakers: List[str] = Field(default=[], description="List of all keynote or featured speaker names")
     speaker_titles_companies: List[str] = Field(default=[], description="List of titles/companies corresponding to speakers")
     speaker_details: List[SpeakerDetailItem] = Field(default=[], description="All extracted speaker profiles with full available details")
+    attendee_details: Optional[AttendeeDetailItem] = Field(default=None, description="Extracted attendee and participant profile info")
     speaker_talks_details: Optional[str] = Field(default="", description="Previous talks, keynotes, or speaking details")
     description: Optional[str] = Field(default="", description="Comprehensive verified conference overview")
     venue: str = Field(default="Conference Center", description="Venue name or hotel")
@@ -39,6 +48,7 @@ class AIConferenceExtraction(BaseModel):
     publication_date: Optional[str] = Field(default="", description="Original conference publication or announcement date (YYYY-MM-DD)")
     speakers_available: Optional[str] = Field(default="Yes", description="'Yes' if speakers/auditors available, 'No' otherwise")
     is_valid_usa_conference: bool = Field(description="True if this is a verified conference happening in the USA")
+
 
 class ConferenceResponse(BaseModel):
     id: int
@@ -84,6 +94,23 @@ class SpeakerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class AttendeeResponse(BaseModel):
+    id: int
+    conference_id: str
+    conference_name: str
+    expected_attendee_count: Optional[str] = ""
+    registered_attendee_count: Optional[str] = ""
+    attendee_categories: Optional[str] = ""
+    target_audience: Optional[str] = ""
+    industries: Optional[str] = ""
+    job_roles: Optional[str] = ""
+    source_url: Optional[str] = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 class DashboardStats(BaseModel):
     total_conferences: int

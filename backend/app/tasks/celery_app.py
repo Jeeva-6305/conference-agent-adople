@@ -4,9 +4,9 @@ from datetime import date, datetime, timedelta
 from celery import Celery
 from ..config import settings
 from ..database import SessionLocal
-from ..models import Conference, Speaker
+from ..models import Conference, Speaker, Attendee
 from ..scrapers.orchestrator import ScraperOrchestrator
-from ..ai.extractor import AIConferenceExtractor
+from ..ai.extractor import AIConferenceExtractor, match_target_categories
 from ..storage.excel_manager import ExcelManager
 
 logger = logging.getLogger(__name__)
@@ -77,12 +77,18 @@ def cleanup_fake_and_sample_records(db):
         # Check duplicate
         is_duplicate = title_lower in seen_titles
 
-        if is_non_conference or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable:
+        # Category check: must belong to at least one of the 6 core business categories
+        matched_cats = match_target_categories(f"{c.conference_title} {c.description or ''}")
+        is_invalid_category = (len(matched_cats) == 0)
+
+        if is_non_conference or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
+            db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
             db.delete(c)
             deleted_count += 1
         else:
             seen_titles.add(title_lower)
+            c.industry_category = " / ".join(matched_cats)
             # Update publication state according to start date
             if c.start_date == exact_t2_date:
                 c.is_published_to_excel = True
@@ -94,18 +100,20 @@ def cleanup_fake_and_sample_records(db):
                 c.is_published_to_excel = False
 
     db.commit()
-    logger.info(f"Cleaned up {deleted_count} stale/obsolete records from database.")
+    logger.info(f"Cleaned up {deleted_count} stale/obsolete/non-category records from database.")
     
-    # Sync Excel with ONLY genuine published T-2 conferences & their speakers
+    # Sync Excel with ONLY genuine published T-2 conferences & their speakers & attendees
     published_confs = db.query(Conference).filter(
         Conference.is_published_to_excel == True,
         Conference.start_date == exact_t2_date
     ).all()
     pub_ids = [conf.conference_id for conf in published_confs]
     published_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
+    published_atts = db.query(Attendee).filter(Attendee.conference_id.in_(pub_ids)).all()
     
     em = ExcelManager()
-    em.sync_published_conferences(published_confs, published_spks)
+    em.sync_published_conferences(published_confs, published_spks, published_atts)
+
 
 
 @celery_app.task(name="tasks.scrape_and_ingest")
@@ -305,6 +313,38 @@ def task_scrape_and_ingest():
             conf.speakers_available = "Yes" if len(dedup_set) > 0 else "No"
             db.commit()
 
+            # Save or update Attendee info for this conference
+            if extracted.attendee_details:
+                att_info = extracted.attendee_details
+                existing_att = db.query(Attendee).filter(Attendee.conference_id == conf.conference_id).first()
+                if not existing_att:
+                    new_att = Attendee(
+                        conference_id=conf.conference_id,
+                        conference_name=conf.conference_title,
+                        expected_attendee_count=att_info.expected_attendee_count or "",
+                        registered_attendee_count=att_info.registered_attendee_count or "",
+                        attendee_categories=att_info.attendee_categories or "",
+                        target_audience=att_info.target_audience or "",
+                        industries=att_info.industries or conf.industry_category or "",
+                        job_roles=att_info.job_roles or "",
+                        source_url=conf.source_url
+                    )
+                    db.add(new_att)
+                else:
+                    if att_info.expected_attendee_count:
+                        existing_att.expected_attendee_count = att_info.expected_attendee_count
+                    if att_info.registered_attendee_count:
+                        existing_att.registered_attendee_count = att_info.registered_attendee_count
+                    if att_info.attendee_categories:
+                        existing_att.attendee_categories = att_info.attendee_categories
+                    if att_info.target_audience:
+                        existing_att.target_audience = att_info.target_audience
+                    if att_info.industries:
+                        existing_att.industries = att_info.industries
+                    if att_info.job_roles:
+                        existing_att.job_roles = att_info.job_roles
+                db.commit()
+
             if is_exact_t2:
                 t2_published_confs.append(conf)
 
@@ -317,8 +357,9 @@ def task_scrape_and_ingest():
         ).all()
         pub_ids = [c.conference_id for c in all_published]
         all_pub_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
-        excel_manager.sync_published_conferences(all_published, all_pub_spks)
-        logger.info(f"Excel synced with {len(all_published)} published T-2 conferences and {len(all_pub_spks)} verified speakers.")
+        all_pub_atts = db.query(Attendee).filter(Attendee.conference_id.in_(pub_ids)).all()
+        excel_manager.sync_published_conferences(all_published, all_pub_spks, all_pub_atts)
+        logger.info(f"Excel synced with {len(all_published)} published T-2 conferences, {len(all_pub_spks)} verified speakers, and {len(all_pub_atts)} attendees.")
 
     except Exception as e:
         db.rollback()
@@ -335,7 +376,7 @@ def task_publish_2_days_before():
     Automated T-2 Publication Check:
     - Finds all conferences whose start date is exactly 2 days from today.
     - If not yet published, automatically marks is_published_to_excel=True and status='published'.
-    - Synchronizes Excel workbook (Conferences sheet and separate Speakers sheet) with only T-2 conferences.
+    - Synchronizes Excel workbook (Conferences sheet, Speakers sheet, and Attendees sheet) with only T-2 conferences.
     """
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
@@ -363,13 +404,14 @@ def task_publish_2_days_before():
             Conference.start_date == exact_t2_date
         ).all()
         
-        # 3. Get only speakers of the published conferences
+        # 3. Get only speakers and attendees of the published conferences
         pub_ids = [c.conference_id for c in all_published]
         published_speakers = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
+        published_attendees = db.query(Attendee).filter(Attendee.conference_id.in_(pub_ids)).all()
         
-        excel_manager.sync_published_conferences(all_published, published_speakers)
+        excel_manager.sync_published_conferences(all_published, published_speakers, published_attendees)
         published_count = len(all_published)
-        logger.info(f"Synchronized {published_count} conferences and {len(published_speakers)} speakers to Excel.")
+        logger.info(f"Synchronized {published_count} conferences, {len(published_speakers)} speakers, and {len(published_attendees)} attendees to Excel.")
     except Exception as e:
         db.rollback()
         logger.error(f"Error in task_publish_2_days_before: {e}")
@@ -377,6 +419,7 @@ def task_publish_2_days_before():
         db.close()
 
     return {"status": "success", "published_count": published_count, "target_start_date": str(exact_t2_date)}
+
 
 
 @celery_app.task(name="tasks.sync_to_google_sheets")
