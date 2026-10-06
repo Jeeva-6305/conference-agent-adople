@@ -72,3 +72,25 @@ Thumbs.db
 .cache/
 transformers_cache/
 
+# Test & Debug Scripts (development only)
+backend/test_*.py
+backend/check_*.py
+backend/diagnose_*.py
+backend/debug_*.py
+backend/analyze_*.py
+backend/fetch_and_analyze_*.py
+backend/sync_*.py
+backend/run_scheduler.py
+backend/scratch_*.py
+backend/update_*.py
+test_*.py
+
+# Markdown files (except README)
+*.md
+!README.md
+
+# Temporary files
+*.backup
+backend/apify_luma_analysis/
+
+.codegraph/

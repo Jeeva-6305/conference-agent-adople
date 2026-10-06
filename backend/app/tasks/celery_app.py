@@ -372,3 +372,227 @@ def task_publish_2_days_before():
         db.close()
 
     return {"status": "success", "published_count": published_count, "target_start_date": str(exact_t2_date)}
+
+
+@celery_app.task(name="tasks.sync_to_google_sheets")
+def task_sync_to_google_sheets():
+    """
+    Sync all conferences and speakers to Google Sheets with professional formatting.
+    - Updates Sheet1 for Conferences (14 columns)
+    - Auto-creates/updates Speakers sheet (8 columns)
+    - Applies professional formatting (dark blue + teal headers)
+    - Called by task_publish_2_days_before after Excel sync
+    """
+    from ..services.google_sheets_service import GoogleSheetsService
+
+    db = SessionLocal()
+    conference_count = 0
+    speaker_count = 0
+
+    try:
+        if not settings.GOOGLE_SHEETS_SPREADSHEET_ID:
+            logger.info("Google Sheets not configured, skipping sync")
+            return {"status": "skipped", "reason": "Google Sheets not configured"}
+
+        service = GoogleSheetsService()
+
+        # ===== CONFERENCES SHEET (Sheet1) =====
+        logger.info("Syncing conferences to Google Sheets Sheet1...")
+
+        conf_headers = [
+            "ID", "Title & Category", "Start Date", "End Date", "Speakers Available",
+            "Venue & City", "Country", "Organizer", "Source", "Status",
+            "Official URL", "Registration URL", "Source URL", "Publication Date"
+        ]
+
+        all_conferences = db.query(Conference).all()
+
+        if all_conferences:
+            conf_rows = [conf_headers]
+            for conf in all_conferences:
+                row = [
+                    conf.conference_id or "",
+                    conf.conference_title or "",
+                    conf.start_date.isoformat() if conf.start_date else "",
+                    conf.end_date.isoformat() if conf.end_date else "",
+                    conf.speakers_available or "Yes",
+                    (conf.venue or "") + (f", {conf.city}" if conf.city else ""),
+                    conf.country or "USA",
+                    conf.organizer or "",
+                    conf.source_name or "",
+                    conf.status or "scheduled",
+                    conf.official_conference_url or "",
+                    conf.registration_url or "",
+                    conf.source_url or "",
+                    conf.publication_date.isoformat() if conf.publication_date else ""
+                ]
+                conf_rows.append(row)
+
+            service.update_range("Sheet1!A1", conf_rows)
+            conference_count = len(conf_rows) - 1
+            logger.info(f"Synced {conference_count} conferences to Google Sheets")
+
+            try:
+                service.format_header_row("Sheet1", len(conf_headers))
+                service.format_data_rows("Sheet1", 1, len(conf_rows), len(conf_headers))
+                logger.info("Applied professional formatting to Sheet1")
+            except Exception as e:
+                logger.warning(f"Could not apply formatting: {e}")
+
+        # ===== SPEAKERS SHEET =====
+        logger.info("Syncing speakers to Google Sheets...")
+
+        speaker_headers = [
+            "Speaker Name", "Conference Name", "Conference ID", "Company/Organization",
+            "Job Role/Designation", "Company Name", "Location", "Previous Speaking Info"
+        ]
+
+        all_speakers = db.query(Speaker).all()
+
+        if all_speakers:
+            try:
+                service.create_professional_sheet("Speakers", speaker_headers)
+                logger.info("Created 'Speakers' sheet")
+            except Exception as e:
+                logger.debug(f"Sheet 'Speakers' may already exist: {e}")
+
+            speaker_rows = [speaker_headers]
+            for speaker in all_speakers:
+                row = [
+                    speaker.speaker_name or "",
+                    speaker.conference_name or "",
+                    speaker.conference_id or "",
+                    speaker.company_organization or "",
+                    speaker.job_role_designation or "",
+                    speaker.company_name or "",
+                    speaker.location or "",
+                    speaker.previous_speaking_info or ""
+                ]
+                speaker_rows.append(row)
+
+            service.update_range("Speakers!A1", speaker_rows)
+            speaker_count = len(speaker_rows) - 1
+            logger.info(f"Synced {speaker_count} speakers to Google Sheets")
+
+            try:
+                service.format_header_row("Speakers", len(speaker_headers), header_color={"red": 15/255, "green": 118/255, "blue": 110/255})
+                service.format_data_rows("Speakers", 1, len(speaker_rows), len(speaker_headers))
+                logger.info("Applied professional formatting to Speakers sheet")
+            except Exception as e:
+                logger.warning(f"Could not apply formatting to speakers: {e}")
+
+        return {
+            "status": "success",
+            "conferences_synced": conference_count,
+            "speakers_synced": speaker_count
+        }
+
+    except ValueError as e:
+        logger.warning(f"Google Sheets sync skipped: {e}")
+        return {"status": "skipped", "reason": str(e)}
+    except Exception as e:
+        logger.error(f"Error syncing to Google Sheets: {e}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.migrate_db_to_google_sheets")
+def task_migrate_db_to_google_sheets(clear_first: bool = False):
+    """
+    Migrate all database data to Google Sheets (like Excel does).
+    - Creates headers if needed
+    - Appends all conferences and speakers
+    - Optionally clears sheet first for clean migration
+    """
+    from ..services.google_sheets_service import GoogleSheetsService
+
+    db = SessionLocal()
+    migration_summary = {
+        "conferences_migrated": 0,
+        "speakers_migrated": 0,
+        "status": "pending",
+        "message": ""
+    }
+
+    try:
+        if not settings.GOOGLE_SHEETS_SPREADSHEET_ID:
+            logger.info("Google Sheets not configured, skipping migration")
+            migration_summary["status"] = "skipped"
+            migration_summary["message"] = "Google Sheets not configured"
+            return migration_summary
+
+        service = GoogleSheetsService()
+
+        # Get all data
+        all_conferences = db.query(Conference).all()
+        all_speakers = db.query(Speaker).all()
+
+        if all_conferences:
+            conf_headers = [
+                "ID", "Title & Category", "Start Date", "End Date", "Speakers Available",
+                "Venue & City", "Country", "Organizer", "Source", "Status",
+                "Official URL", "Registration URL", "Source URL", "Publication Date"
+            ]
+
+            conf_rows = [conf_headers]
+            for conf in all_conferences:
+                row = [
+                    conf.conference_id or "",
+                    conf.conference_title or "",
+                    conf.start_date.isoformat() if conf.start_date else "",
+                    conf.end_date.isoformat() if conf.end_date else "",
+                    conf.speakers_available or "Yes",
+                    (conf.venue or "") + (f", {conf.city}" if conf.city else ""),
+                    conf.country or "USA",
+                    conf.organizer or "",
+                    conf.source_name or "",
+                    conf.status or "scheduled",
+                    conf.official_conference_url or "",
+                    conf.registration_url or "",
+                    conf.source_url or "",
+                    conf.publication_date.isoformat() if conf.publication_date else ""
+                ]
+                conf_rows.append(row)
+
+            service.update_range("Sheet1!A1", conf_rows)
+            migration_summary["conferences_migrated"] = len(conf_rows) - 1
+            logger.info(f"Migrated {migration_summary['conferences_migrated']} conferences")
+
+        if all_speakers:
+            speaker_headers = [
+                "Speaker Name", "Conference Name", "Conference ID", "Company/Organization",
+                "Job Role/Designation", "Company Name", "Location", "Previous Speaking Info"
+            ]
+
+            speaker_rows = [speaker_headers]
+            for speaker in all_speakers:
+                row = [
+                    speaker.speaker_name or "",
+                    speaker.conference_name or "",
+                    speaker.conference_id or "",
+                    speaker.company_organization or "",
+                    speaker.job_role_designation or "",
+                    speaker.company_name or "",
+                    speaker.location or "",
+                    speaker.previous_speaking_info or ""
+                ]
+                speaker_rows.append(row)
+
+            service.update_range("Speakers!A1", speaker_rows)
+            migration_summary["speakers_migrated"] = len(speaker_rows) - 1
+            logger.info(f"Migrated {migration_summary['speakers_migrated']} speakers")
+
+        migration_summary["status"] = "success"
+        migration_summary["message"] = f"Successfully migrated {migration_summary['conferences_migrated']} conferences and {migration_summary['speakers_migrated']} speakers"
+        return migration_summary
+
+    except Exception as e:
+        logger.error(f"Error during migration: {e}")
+        migration_summary["status"] = "error"
+        migration_summary["message"] = str(e)
+        db.rollback()
+        return migration_summary
+    finally:
+        db.close()

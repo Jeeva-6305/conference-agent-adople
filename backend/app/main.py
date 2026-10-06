@@ -12,7 +12,7 @@ from .database import get_db, init_db
 from .models import Conference, Speaker
 from .schemas import ConferenceResponse, SpeakerResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
-from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records
+from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records, task_sync_to_google_sheets, task_migrate_db_to_google_sheets
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -195,3 +195,27 @@ def preview_excel(sheet: Optional[str] = Query("USA Conferences")):
             "total_rows": 0,
             "rows": []
         }
+
+
+@app.post("/api/trigger/google-sheets-sync")
+def trigger_google_sheets_sync(background_tasks: BackgroundTasks):
+    """Manually trigger Google Sheets sync for all conferences and speakers."""
+    logger.info("Manual Google Sheets sync triggered")
+    background_tasks.add_task(task_sync_to_google_sheets)
+    return {
+        "status": "sync_initiated",
+        "message": "Google Sheets sync started in background",
+        "endpoint": "/api/trigger/google-sheets-sync"
+    }
+
+
+@app.post("/api/trigger/google-sheets-migrate")
+def trigger_google_sheets_migrate(background_tasks: BackgroundTasks, clear_first: bool = False):
+    """Migrate entire database to Google Sheets (full migration)."""
+    logger.info(f"Manual Google Sheets migration triggered (clear_first={clear_first})")
+    background_tasks.add_task(task_migrate_db_to_google_sheets, clear_first=clear_first)
+    return {
+        "status": "migration_initiated",
+        "message": "Google Sheets migration started in background",
+        "endpoint": "/api/trigger/google-sheets-migrate"
+    }
