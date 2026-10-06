@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
-from .celery_app import task_scrape_and_ingest, task_publish_2_days_before
+from .celery_app import task_scrape_and_ingest, task_publish_2_days_before, task_send_conference_reminder_emails
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ def hourly_scrape_and_update_job():
     3. Updates PostgreSQL database with fresh conference & speaker records.
     4. Evaluates T-2 publication status.
     5. Updates and synchronizes the published Excel spreadsheet (both sheets).
+    6. Sends separate individual email reminders for each matching conference.
     """
     now = datetime.now()
     scheduler_state["last_scrape_time"] = now
@@ -43,10 +44,14 @@ def hourly_scrape_and_update_job():
         
         # Step 2: Also run T-2 publication check to ensure scheduled conferences reaching T-2 are promoted
         pub_res = task_publish_2_days_before()
+
+        # Step 3: Run reminder email delivery for any pending unnotified conferences
+        email_res = task_send_conference_reminder_emails()
         
         scheduler_state["total_runs"] += 1
         scheduler_state["last_status"] = "Success"
         scheduler_state["last_error"] = None
+
         
         # Calculate next scheduled run
         job = scheduler.get_job("hourly_scraper_job")

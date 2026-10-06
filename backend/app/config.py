@@ -9,6 +9,8 @@ load_dotenv()
 DATA_DIR = BASE_DIR.parent / "data"
 EXCEL_DIR = DATA_DIR / "excel"
 EXCEL_DIR.mkdir(parents=True, exist_ok=True)
+EMAILS_DIR = DATA_DIR / "emails"
+EMAILS_DIR.mkdir(parents=True, exist_ok=True)
 
 class Settings:
     PROJECT_NAME: str = "USA Conference Discovery & Publication Agent"
@@ -29,9 +31,20 @@ class Settings:
     
     # Excel storage
     EXCEL_OUTPUT_PATH: str = str(EXCEL_DIR / "usa_conferences_published.xlsx")
+    EMAILS_OUTPUT_DIR: str = str(EMAILS_DIR)
     
+    # Email Notification Settings
+    NOTIFICATION_RECIPIENT_EMAIL: str = os.getenv("NOTIFICATION_RECIPIENT_EMAIL", "jeevanandham@adople.ai")
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM: str = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@conference-agent.ai"))
+    SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "yes")
+
     # Automation intervals
     REMINDER_DAYS_BEFORE: int = int(os.getenv("REMINDER_DAYS_BEFORE", 2))
     SCRAPER_INTERVAL_MINUTES: int = int(os.getenv("SCRAPER_INTERVAL_MINUTES", 60))
 
 settings = Settings()
+

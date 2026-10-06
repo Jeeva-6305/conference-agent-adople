@@ -4,16 +4,24 @@ from datetime import date, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import get_db, init_db
-from .models import Conference, Speaker, Attendee
+from .models import Conference, Speaker, Attendee, EmailNotification
 from .schemas import ConferenceResponse, SpeakerResponse, AttendeeResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
-from .tasks.celery_app import task_scrape_and_ingest, task_publish_2_days_before, cleanup_fake_and_sample_records, task_sync_to_google_sheets, task_migrate_db_to_google_sheets
+from .tasks.celery_app import (
+    task_scrape_and_ingest,
+    task_publish_2_days_before,
+    cleanup_fake_and_sample_records,
+    task_sync_to_google_sheets,
+    task_migrate_db_to_google_sheets,
+    task_send_conference_reminder_emails
+)
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -241,3 +249,62 @@ def trigger_google_sheets_migrate(background_tasks: BackgroundTasks, clear_first
         "message": "Google Sheets migration started in background",
         "endpoint": "/api/trigger/google-sheets-migrate"
     }
+
+
+# =========================================================================
+# EMAIL NOTIFICATION ENDPOINTS
+# Recipient: jeevanandham@adople.ai
+# Rule: Separate individual email for each matching conference
+# =========================================================================
+
+@app.post("/api/notifications/send-reminders")
+def send_reminder_emails(
+    recipient: Optional[str] = Query(None, description="Recipient email (defaults to jeevanandham@adople.ai)"),
+    force: bool = Query(False, description="Resend even if already notified"),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Sends a separate individual email notification for each conference matching filtering criteria.
+    - Destination: jeevanandham@adople.ai
+    - Each conference has its own separate email (no bundling).
+    - Prevents duplicate emails across scraping cycles and application restarts.
+    """
+    target_recipient = recipient or settings.NOTIFICATION_RECIPIENT_EMAIL
+    logger.info(f"Triggering automated separate conference reminders for recipient: {target_recipient} (force={force})")
+    result = task_send_conference_reminder_emails(recipient_email=target_recipient, force=force)
+    return result
+
+
+@app.get("/api/notifications/history")
+def get_notification_history(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """Returns persistent audit log of all sent conference reminder emails."""
+    items = db.query(EmailNotification).order_by(EmailNotification.sent_at.desc()).limit(limit).all()
+    return {
+        "total_records": len(items),
+        "recipient": settings.NOTIFICATION_RECIPIENT_EMAIL,
+        "notifications": [item.to_dict() for item in items]
+    }
+
+
+@app.get("/api/notifications/preview/{conference_id}")
+def preview_notification_email(
+    conference_id: str,
+    db: Session = Depends(get_db)
+):
+    """Renders live HTML preview of the conference reminder email layout."""
+    from .services.email_service import ConferenceEmailService
+
+    conf = db.query(Conference).filter(Conference.conference_id == conference_id).first()
+    if not conf:
+        raise HTTPException(status_code=404, detail=f"Conference '{conference_id}' not found.")
+
+    speakers = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).all()
+    attendee = db.query(Attendee).filter(Attendee.conference_id == conf.conference_id).first()
+
+    service = ConferenceEmailService()
+    html_content = service.build_html_body(conf, speakers, attendee)
+    return HTMLResponse(content=html_content)
+

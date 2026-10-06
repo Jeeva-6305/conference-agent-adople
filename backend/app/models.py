@@ -39,6 +39,10 @@ class Conference(Base):
     speakers_available = Column(String(10), default="Yes")  # "Yes" or "No"
     status = Column(String(50), default="discovered")  # discovered, published
     
+    # Email Notification Tracking
+    email_sent = Column(Boolean, default=False, index=True)
+    email_sent_at = Column(DateTime, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -114,5 +118,45 @@ class Attendee(Base):
             "Industries": self.industries or "",
             "Job Roles / Professions Represented": self.job_roles or "",
             "Source URL": self.source_url or ""
+        }
+
+
+def make_conference_unique_key(title: str, start_date, venue: str) -> str:
+    """Generate persistent unique identifier: Conference Name + Conference Date + Venue"""
+    t = (title or "").strip().lower()
+    d = start_date.isoformat() if hasattr(start_date, "isoformat") else str(start_date or "").strip()
+    v = (venue or "").strip().lower()
+    return f"{t}|{d}|{v}"
+
+
+class EmailNotification(Base):
+    __tablename__ = "email_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conference_id = Column(String(50), index=True)
+    conference_unique_key = Column(String(500), unique=True, index=True)
+    conference_title = Column(String(255), nullable=False)
+    conference_date = Column(Date, nullable=False)
+    venue = Column(String(255), default="")
+    recipient_email = Column(String(255), nullable=False, default="jeevanandham@adople.ai")
+    subject = Column(String(500), nullable=False)
+    status = Column(String(50), default="sent")
+    email_body = Column(Text, default="")
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    error_message = Column(Text, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conference_id": self.conference_id,
+            "conference_unique_key": self.conference_unique_key,
+            "conference_title": self.conference_title,
+            "conference_date": self.conference_date.isoformat() if self.conference_date else "",
+            "venue": self.venue,
+            "recipient_email": self.recipient_email,
+            "subject": self.subject,
+            "status": self.status,
+            "sent_at": self.sent_at.isoformat() if self.sent_at else "",
+            "error_message": self.error_message or ""
         }
 

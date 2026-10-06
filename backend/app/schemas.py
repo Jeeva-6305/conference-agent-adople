@@ -73,10 +73,13 @@ class ConferenceResponse(BaseModel):
     publication_date: Optional[date]
     speakers_available: Optional[str] = "Yes"
     status: str
+    email_sent: Optional[bool] = False
+    email_sent_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
 
 class SpeakerResponse(BaseModel):
     id: int

@@ -6,7 +6,10 @@ from datetime import datetime, timedelta, date
 from typing import Optional
 import urllib.parse
 from bs4 import BeautifulSoup
-from curl_cffi import requests as cffi_requests
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:
+    import requests as cffi_requests
 from ..config import settings
 from ..schemas import RawEventData, AIConferenceExtraction, SpeakerDetailItem, AttendeeDetailItem
 
@@ -83,6 +86,11 @@ VERIFIED_LINKEDIN_HANDLES = {
 }
 
 COMPANY_URL_MAPPINGS = [
+    (["luma"], "https://lu.ma"),
+    (["nous research"], "https://nousresearch.com"),
+    (["novita", "novita ai"], "https://novita.ai"),
+    (["medschoolbro"], "https://www.medschoolbro.com"),
+    (["outcast", "outcast ventures"], "https://outcast.vc"),
     (["ollama"], "https://ollama.com"),
     (["trajectory"], "https://trajectory.ai"),
     (["crusoe"], "https://crusoe.ai"),
@@ -90,7 +98,6 @@ COMPANY_URL_MAPPINGS = [
     (["mywhatif", "mywhatif foundation"], "https://mywhatif.org"),
     (["aurapath", "aurapath ai"], "https://aurapath.ai"),
     (["motionsynchealth"], "https://motionsynchealth.com"),
-    (["outcast ventures"], "https://outcast.vc"),
     (["cvent"], "https://www.cvent.com"),
     (["modal"], "https://modal.com"),
     (["cisa", "cybersecurity and infrastructure"], "https://www.cisa.gov"),
@@ -451,6 +458,7 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
 
     candidates = []
     seen_urls = set()
+    # pyrefly: ignore [unexpected-keyword]
     s = cffi_requests.Session(impersonate="chrome120")
 
     for q in queries:
@@ -709,13 +717,12 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
             break
 
     if not company_url:
-        clean_comp = re.sub(r'[^a-zA-Z0-9]', '', company).lower()
-        if clean_comp:
-            company_url = f"https://www.{clean_comp}.com"
+        if "luma" in comp_lower:
+            company_url = "https://lu.ma"
         elif conf_url:
             company_url = conf_url
         else:
-            company_url = "https://www.google.com"
+            company_url = ""
 
     # 6. Discover and verify genuine LinkedIn profile URL via candidate search (No slug guessing)
     linkedin_url = discover_and_verify_linkedin_profile(name, company, role, location)
@@ -947,7 +954,7 @@ class AIConferenceExtractor:
                 venue = loc_match.group(1).strip()
 
         # Organizer
-        organizer = f"{raw_data.source_name.title()} Conference Network"
+        organizer = raw_data.source_name.title()
         org_match = re.search(r"Organizer:\s*([^.]+?)(?:\.|\n|$)", text)
         if org_match:
             organizer = org_match.group(1).strip()
@@ -1156,7 +1163,11 @@ class AIConferenceExtractor:
             if not company_name:
                 company_name = organizer or "Industry Organization"
 
-            job_role = job_role.strip().rstrip(".,;")
+            job_role = re.sub(r'&\s*$', '', job_role).strip().rstrip(".,;")
+            if job_role.lower() in ["event host", "host"]:
+                job_role = "Event Host & Organizer"
+            if "luma" in company_name.lower():
+                company_name = "Luma"
             company_name = company_name.strip().rstrip(".,;")
 
             # Determine speaker location

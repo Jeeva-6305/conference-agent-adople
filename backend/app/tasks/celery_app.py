@@ -1,7 +1,6 @@
 import logging
 import re
 from datetime import date, datetime, timedelta
-from celery import Celery
 from ..config import settings
 from ..database import SessionLocal
 from ..models import Conference, Speaker, Attendee
@@ -11,19 +10,29 @@ from ..storage.excel_manager import ExcelManager
 
 logger = logging.getLogger(__name__)
 
-celery_app = Celery(
-    "conference_tasks",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL
-)
+try:
+    from celery import Celery
+    celery_app = Celery(
+        "conference_tasks",
+        broker=settings.REDIS_URL,
+        backend=settings.REDIS_URL
+    )
+    celery_app.conf.update(
+        task_serializer="json",
+        accept_content=["json"],
+        result_serializer="json",
+        timezone="UTC",
+        enable_utc=True,
+    )
+except ImportError:
+    class DummyCelery:
+        def task(self, *args, **kwargs):
+            def decorator(fn):
+                return fn
+            return decorator
+    celery_app = DummyCelery()
 
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-)
+
 
 def cleanup_fake_and_sample_records(db):
     """
@@ -361,6 +370,12 @@ def task_scrape_and_ingest():
         excel_manager.sync_published_conferences(all_published, all_pub_spks, all_pub_atts)
         logger.info(f"Excel synced with {len(all_published)} published T-2 conferences, {len(all_pub_spks)} verified speakers, and {len(all_pub_atts)} attendees.")
 
+        # 5. Send separate individual email for each matching conference
+        from ..services.email_service import ConferenceEmailService
+        email_svc = ConferenceEmailService()
+        email_res = email_svc.send_all_pending_reminders(db, conferences=all_published)
+        logger.info(f"📧 Completed automated email reminders: {len(email_res)} conference(s) processed for recipient {email_svc.recipient_email}.")
+
     except Exception as e:
         db.rollback()
         logger.error(f"Error in task_scrape_and_ingest: {e}", exc_info=True)
@@ -377,6 +392,7 @@ def task_publish_2_days_before():
     - Finds all conferences whose start date is exactly 2 days from today.
     - If not yet published, automatically marks is_published_to_excel=True and status='published'.
     - Synchronizes Excel workbook (Conferences sheet, Speakers sheet, and Attendees sheet) with only T-2 conferences.
+    - Sends individual separate email reminders for newly published conferences.
     """
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
@@ -412,6 +428,12 @@ def task_publish_2_days_before():
         excel_manager.sync_published_conferences(all_published, published_speakers, published_attendees)
         published_count = len(all_published)
         logger.info(f"Synchronized {published_count} conferences, {len(published_speakers)} speakers, and {len(published_attendees)} attendees to Excel.")
+
+        # 4. Trigger separate reminder emails for newly published conferences
+        from ..services.email_service import ConferenceEmailService
+        email_svc = ConferenceEmailService()
+        email_svc.send_all_pending_reminders(db, conferences=all_published)
+
     except Exception as e:
         db.rollback()
         logger.error(f"Error in task_publish_2_days_before: {e}")
@@ -419,6 +441,48 @@ def task_publish_2_days_before():
         db.close()
 
     return {"status": "success", "published_count": published_count, "target_start_date": str(exact_t2_date)}
+
+
+@celery_app.task(name="tasks.send_conference_reminder_emails")
+def task_send_conference_reminder_emails(recipient_email: str = None, force: bool = False):
+    """
+    Dedicated Email Reminder Task:
+    - Queries all T-2 published conferences.
+    - Sends a separate individual email for each conference to jeevanandham@adople.ai.
+    - Enforces duplicate email prevention via unique identifier (Name + Date + Venue).
+    """
+    from ..services.email_service import ConferenceEmailService
+    logger.info("📧 [Email Task] Initiating conference reminder email delivery job...")
+    db = SessionLocal()
+    email_service = ConferenceEmailService(recipient_email=recipient_email or settings.NOTIFICATION_RECIPIENT_EMAIL)
+    sent_results = []
+
+    try:
+        today = date.today()
+        exact_t2_date = today + timedelta(days=2)
+
+        query = db.query(Conference).filter(
+            Conference.is_published_to_excel == True,
+            Conference.start_date == exact_t2_date
+        )
+        if not force:
+            query = query.filter(Conference.email_sent == False)
+
+        targets = query.all()
+        logger.info(f"📧 [Email Task] Found {len(targets)} conference(s) ready for reminder delivery.")
+        sent_results = email_service.send_all_pending_reminders(db, conferences=targets)
+        logger.info(f"📧 [Email Task] Reminder execution finished. Processed {len(sent_results)} items.")
+    except Exception as e:
+        logger.error(f"❌ [Email Task] Error during reminder delivery: {e}", exc_info=True)
+    finally:
+        db.close()
+
+    return {
+        "status": "success",
+        "recipient": email_service.recipient_email,
+        "processed_count": len(sent_results),
+        "results": sent_results
+    }
 
 
 
