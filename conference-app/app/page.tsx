@@ -50,7 +50,10 @@ interface Conference {
   status: string;
   email_sent?: boolean;
   email_sent_at?: string | null;
+  teams_webhook_sent?: boolean;
+  teams_webhook_sent_at?: string | null;
 }
+
 
 
 interface SpeakerProfile {
@@ -296,6 +299,12 @@ export default function ConferencesDashboard() {
             <span>Auto Email Notifier: Active &bull; Recipient: <strong>jeevanandham@adople.ai</strong></span>
           </div>
 
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-purple-50 border border-purple-200 text-purple-700 dark:bg-purple-950/40 dark:border-purple-800 dark:text-purple-300 text-xs font-medium">
+            <span className="h-2 w-2 rounded-full bg-purple-600"></span>
+            <span>Teams Webhook: <strong>Active (Conference Agent)</strong></span>
+          </div>
+
+
 
           <a
             href={`${API_BASE}/excel/download`}
@@ -489,24 +498,26 @@ export default function ConferencesDashboard() {
                   <th className="px-3.5 py-3 border-b">Source</th>
                   <th className="px-3.5 py-3 border-b min-w-[120px]">Publication Date</th>
                   <th className="px-3.5 py-3 border-b text-center min-w-[150px]">Email Reminder</th>
+                  <th className="px-3.5 py-3 border-b text-center min-w-[140px]">Teams Card</th>
                   <th className="px-3.5 py-3 border-b text-right pr-4">Details</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {loading ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={12} className="text-center py-12 text-muted-foreground">
                       <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-blue-600" />
                       Loading verified conferences from database...
                     </td>
                   </tr>
                 ) : filteredConferences.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={12} className="text-center py-12 text-muted-foreground">
                       No conferences found matching your criteria.
                     </td>
                   </tr>
                 ) : (
+
                   filteredConferences.map((conf) => (
                     <tr key={conf.conference_id} className="hover:bg-accent/40 transition-colors">
                       {/* 1. Conference ID */}
@@ -616,6 +627,27 @@ export default function ConferencesDashboard() {
                         ) : (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
                             <Clock className="h-3 w-3 text-amber-600" />
+                            Pending
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Teams Card Webhook Status */}
+                      <td className="px-3.5 py-3 text-center whitespace-nowrap">
+                        {conf.teams_webhook_sent ? (
+                          <a
+                            href={`${API_BASE}/notifications/teams-webhook/preview/${conf.conference_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Click to view Microsoft Teams Adaptive Card JSON dispatched to Teams group chat"
+                            className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 inline-flex items-center gap-1 border border-indigo-200 hover:bg-indigo-200 transition-colors"
+                          >
+                            <CheckCircle2 className="h-3 w-3 text-indigo-600 dark:text-indigo-400" />
+                            <span>Posted to Teams</span>
+                          </a>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center gap-1">
+                            <Clock className="h-3 w-3 text-slate-500" />
                             Pending
                           </span>
                         )}

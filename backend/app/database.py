@@ -94,6 +94,8 @@ def init_db():
             conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';"))
             conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE;"))
             conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS email_sent_at TIMESTAMP;"))
+            conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS teams_webhook_sent BOOLEAN DEFAULT FALSE;"))
+            conn.execute(text("ALTER TABLE conferences ADD COLUMN IF NOT EXISTS teams_webhook_sent_at TIMESTAMP;"))
             # Ensure email_notifications table exists
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS email_notifications (
@@ -111,9 +113,26 @@ def init_db():
                     error_message TEXT
                 );
             """))
+            # Ensure teams_notifications table exists
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS teams_notifications (
+                    id SERIAL PRIMARY KEY,
+                    conference_id VARCHAR(50),
+                    conference_unique_key VARCHAR(500) UNIQUE,
+                    conference_title VARCHAR(255) NOT NULL,
+                    conference_date DATE NOT NULL,
+                    venue VARCHAR(255) DEFAULT '',
+                    webhook_url VARCHAR(1000) NOT NULL,
+                    status VARCHAR(50) DEFAULT 'sent',
+                    card_payload TEXT DEFAULT '',
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    error_message TEXT
+                );
+            """))
             conn.commit()
         logger.debug("Auto-migrations completed")
     except Exception as e:
         logger.warning(f"Auto-migration check notice: {e}")
+
 
     logger.info("Database tables initialized successfully.")

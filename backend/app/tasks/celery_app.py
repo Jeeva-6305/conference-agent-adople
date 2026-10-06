@@ -1,3 +1,4 @@
+from typing import Optional
 import logging
 import re
 from datetime import date, datetime, timedelta
@@ -376,6 +377,12 @@ def task_scrape_and_ingest():
         email_res = email_svc.send_all_pending_reminders(db, conferences=all_published)
         logger.info(f"📧 Completed automated email reminders: {len(email_res)} conference(s) processed for recipient {email_svc.recipient_email}.")
 
+        # 6. Post separate Adaptive Cards to Microsoft Teams Webhook AUTOMATICALLY
+        from ..services.teams_service import TeamsWebhookService
+        teams_svc = TeamsWebhookService()
+        teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+        logger.info(f"📢 Completed automated Teams webhook dispatch: {len(teams_res)} conference card(s) processed.")
+
     except Exception as e:
         db.rollback()
         logger.error(f"Error in task_scrape_and_ingest: {e}", exc_info=True)
@@ -393,6 +400,7 @@ def task_publish_2_days_before():
     - If not yet published, automatically marks is_published_to_excel=True and status='published'.
     - Synchronizes Excel workbook (Conferences sheet, Speakers sheet, and Attendees sheet) with only T-2 conferences.
     - Sends individual separate email reminders for newly published conferences.
+    - Posts individual Adaptive Cards to Microsoft Teams Webhook.
     """
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
@@ -433,6 +441,11 @@ def task_publish_2_days_before():
         from ..services.email_service import ConferenceEmailService
         email_svc = ConferenceEmailService()
         email_svc.send_all_pending_reminders(db, conferences=all_published)
+
+        # 5. Trigger Microsoft Teams Webhook cards for newly published conferences
+        from ..services.teams_service import TeamsWebhookService
+        teams_svc = TeamsWebhookService()
+        teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
 
     except Exception as e:
         db.rollback()
@@ -483,6 +496,48 @@ def task_send_conference_reminder_emails(recipient_email: str = None, force: boo
         "processed_count": len(sent_results),
         "results": sent_results
     }
+
+
+@celery_app.task(name="tasks.send_teams_cards")
+def task_send_teams_cards(force: bool = False, webhook_url: Optional[str] = None):
+    """
+    Dedicated Microsoft Teams Webhook Task:
+    - Queries all T-2 published conferences.
+    - Sends a rich Adaptive Card for each conference directly to Microsoft Teams.
+    - Enforces duplicate card prevention.
+    """
+    from ..services.teams_service import TeamsWebhookService
+    logger.info("📢 [Teams Task] Initiating Teams Webhook card delivery job...")
+    db = SessionLocal()
+    teams_service = TeamsWebhookService(webhook_url=webhook_url)
+    sent_results = []
+
+    try:
+        today = date.today()
+        exact_t2_date = today + timedelta(days=2)
+
+        query = db.query(Conference).filter(
+            Conference.is_published_to_excel == True,
+            Conference.start_date == exact_t2_date
+        )
+        if not force:
+            query = query.filter(Conference.teams_webhook_sent == False)
+
+        targets = query.all()
+        logger.info(f"📢 [Teams Task] Found {len(targets)} conference(s) ready for Teams card delivery.")
+        sent_results = teams_service.send_all_pending_teams_cards(db, conferences=targets, force=force)
+        logger.info(f"📢 [Teams Task] Delivery finished. Processed {len(sent_results)} items.")
+    except Exception as e:
+        logger.error(f"❌ [Teams Task] Error during Teams delivery: {e}", exc_info=True)
+    finally:
+        db.close()
+
+    return {
+        "status": "success",
+        "processed_count": len(sent_results),
+        "results": sent_results
+    }
+
 
 
 

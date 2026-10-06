@@ -43,7 +43,12 @@ class Conference(Base):
     email_sent = Column(Boolean, default=False, index=True)
     email_sent_at = Column(DateTime, nullable=True)
     
+    # Microsoft Teams Webhook Tracking
+    teams_webhook_sent = Column(Boolean, default=False, index=True)
+    teams_webhook_sent_at = Column(DateTime, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
+
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -159,4 +164,35 @@ class EmailNotification(Base):
             "sent_at": self.sent_at.isoformat() if self.sent_at else "",
             "error_message": self.error_message or ""
         }
+
+
+class TeamsNotification(Base):
+    __tablename__ = "teams_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conference_id = Column(String(50), index=True)
+    conference_unique_key = Column(String(500), unique=True, index=True)
+    conference_title = Column(String(255), nullable=False)
+    conference_date = Column(Date, nullable=False)
+    venue = Column(String(255), default="")
+    webhook_url = Column(String(1000), nullable=False)
+    status = Column(String(50), default="sent")
+    card_payload = Column(Text, default="")
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    error_message = Column(Text, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conference_id": self.conference_id,
+            "conference_unique_key": self.conference_unique_key,
+            "conference_title": self.conference_title,
+            "conference_date": self.conference_date.isoformat() if self.conference_date else "",
+            "venue": self.venue,
+            "webhook_url": self.webhook_url,
+            "status": self.status,
+            "sent_at": self.sent_at.isoformat() if self.sent_at else "",
+            "error_message": self.error_message or ""
+        }
+
 

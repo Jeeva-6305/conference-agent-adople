@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
-from .celery_app import task_scrape_and_ingest, task_publish_2_days_before, task_send_conference_reminder_emails
+from .celery_app import task_scrape_and_ingest, task_publish_2_days_before, task_send_conference_reminder_emails, task_send_teams_cards
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ def hourly_scrape_and_update_job():
     4. Evaluates T-2 publication status.
     5. Updates and synchronizes the published Excel spreadsheet (both sheets).
     6. Sends separate individual email reminders for each matching conference.
+    7. Posts separate Adaptive Cards to Microsoft Teams Webhook.
     """
     now = datetime.now()
     scheduler_state["last_scrape_time"] = now
@@ -47,10 +48,14 @@ def hourly_scrape_and_update_job():
 
         # Step 3: Run reminder email delivery for any pending unnotified conferences
         email_res = task_send_conference_reminder_emails()
+
+        # Step 4: Run Microsoft Teams Webhook card dispatch for any pending conferences
+        teams_res = task_send_teams_cards()
         
         scheduler_state["total_runs"] += 1
         scheduler_state["last_status"] = "Success"
         scheduler_state["last_error"] = None
+
 
         
         # Calculate next scheduled run

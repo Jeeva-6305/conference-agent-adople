@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import get_db, init_db
-from .models import Conference, Speaker, Attendee, EmailNotification
+from .models import Conference, Speaker, Attendee, EmailNotification, TeamsNotification
 from .schemas import ConferenceResponse, SpeakerResponse, AttendeeResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
 from .tasks.celery_app import (
@@ -18,8 +18,10 @@ from .tasks.celery_app import (
     cleanup_fake_and_sample_records,
     task_sync_to_google_sheets,
     task_migrate_db_to_google_sheets,
-    task_send_conference_reminder_emails
+    task_send_conference_reminder_emails,
+    task_send_teams_cards
 )
+
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 
 
@@ -307,4 +309,58 @@ def preview_notification_email(
     service = ConferenceEmailService()
     html_content = service.build_html_body(conf, speakers, attendee)
     return HTMLResponse(content=html_content)
+
+
+# =========================================================================
+# MICROSOFT TEAMS WEBHOOK ENDPOINTS
+# Power Automate Workflow Direct Integration
+# Post card in a chat or channel -> Adaptive Card = triggerBody()
+# =========================================================================
+
+@app.post("/api/notifications/teams-webhook/send")
+def trigger_teams_webhook(
+    force: bool = Query(False, description="Resend cards even if already marked sent"),
+    webhook_url: Optional[str] = Query(None, description="Custom Webhook URL override")
+):
+    """
+    Sends Adaptive Cards for all matching published conferences to the Microsoft Teams Webhook.
+    """
+    logger.info(f"Triggering Teams webhook cards dispatch (force={force})...")
+    result = task_send_teams_cards(force=force, webhook_url=webhook_url)
+    return result
+
+
+@app.get("/api/notifications/teams-webhook/history")
+def get_teams_webhook_history(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """Returns persistent audit log of all sent Microsoft Teams cards."""
+    items = db.query(TeamsNotification).order_by(TeamsNotification.sent_at.desc()).limit(limit).all()
+    return {
+        "total_records": len(items),
+        "webhook_url": settings.TEAMS_WEBHOOK_URL,
+        "notifications": [item.to_dict() for item in items]
+    }
+
+
+@app.get("/api/notifications/teams-webhook/preview/{conference_id}")
+def preview_teams_adaptive_card(
+    conference_id: str,
+    db: Session = Depends(get_db)
+):
+    """Returns the exact Adaptive Card JSON payload rendered for Microsoft Teams."""
+    from .services.teams_service import TeamsWebhookService
+
+    conf = db.query(Conference).filter(Conference.conference_id == conference_id).first()
+    if not conf:
+        raise HTTPException(status_code=404, detail=f"Conference '{conference_id}' not found.")
+
+    speakers = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).all()
+    attendee = db.query(Attendee).filter(Attendee.conference_id == conf.conference_id).first()
+
+    service = TeamsWebhookService()
+    card = service.build_adaptive_card(conf, speakers, attendee)
+    return card
+
 

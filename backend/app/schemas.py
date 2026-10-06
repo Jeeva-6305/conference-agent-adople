@@ -75,10 +75,13 @@ class ConferenceResponse(BaseModel):
     status: str
     email_sent: Optional[bool] = False
     email_sent_at: Optional[datetime] = None
+    teams_webhook_sent: Optional[bool] = False
+    teams_webhook_sent_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
 
 
 class SpeakerResponse(BaseModel):
