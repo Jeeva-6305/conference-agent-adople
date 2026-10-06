@@ -17,7 +17,7 @@ class EventsInAmericaScraper(BaseScraper):
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
-            resp = requests.get("https://eventsinamerica.com/trade-shows", headers=headers, timeout=10)
+            resp = requests.get("https://eventsinamerica.com/trade-shows", headers=headers, timeout=3)
             if resp.status_code == 200:
                 pass
         except Exception as e:

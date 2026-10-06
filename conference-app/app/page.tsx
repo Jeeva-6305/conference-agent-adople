@@ -309,9 +309,9 @@ export default function ConferencesDashboard() {
             <span className="text-xs font-semibold uppercase tracking-wider">Active Verified Sources</span>
             <ShieldCheck className="h-5 w-5 text-blue-500" />
           </div>
-          <div className="text-3xl font-bold tracking-tight text-foreground">6 Sites</div>
+          <div className="text-3xl font-bold tracking-tight text-foreground">11 Sites</div>
           <p className="text-xs text-muted-foreground">
-            10times, Luma, Eventbrite, Meetup, Cvent, EIA
+            Eventbrite, Luma, EventsEye, TSNN, Tradefest, GovEvents, AllEvents, 10times, EIA, Cvent, Meetup
           </p>
         </div>
       </div>
@@ -373,10 +373,15 @@ export default function ConferencesDashboard() {
               onChange={(e) => setSourceFilter(e.target.value)}
               className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <option value="all">All Sources (6)</option>
-              <option value="10times">10times</option>
-              <option value="luma">Luma</option>
+              <option value="all">All Sources (11)</option>
               <option value="eventbrite">Eventbrite</option>
+              <option value="luma">Luma</option>
+              <option value="eventseye">EventsEye</option>
+              <option value="tsnn">TSNN</option>
+              <option value="tradefest">Tradefest</option>
+              <option value="govevents">GovEvents</option>
+              <option value="allevents">All Events</option>
+              <option value="10times">10times</option>
               <option value="cvent">Cvent</option>
               <option value="events_in_america">Events In America</option>
             </select>
