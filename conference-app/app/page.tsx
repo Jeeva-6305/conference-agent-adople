@@ -140,12 +140,12 @@ export default function ConferencesDashboard() {
 
   const triggerPublish = async () => {
     setActionLoading(true);
-    setStatusMessage("Synchronizing verified conference records & Speakers sheet into Excel...");
+    setStatusMessage("Syncing to Google Sheets...");
     try {
-      const res = await fetch(`${API_BASE}/trigger/publish`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/trigger/google-sheets-sync`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
-        setStatusMessage(`✅ Excel sync complete. Synchronized ${data.published_count || conferences.length} conferences with separate Speakers sheet.`);
+        setStatusMessage(`✅ Google Sheets sync complete. Synchronized ${data.conferences_synced || conferences.length} conferences and ${data.speakers_synced || 0} speakers.`);
         fetchConferences();
       }
     } catch (e) {
@@ -155,6 +155,7 @@ export default function ConferencesDashboard() {
       setTimeout(() => setStatusMessage(null), 6000);
     }
   };
+
 
   const filteredConferences = conferences.filter(c => {
     const matchesSearch = 
@@ -235,19 +236,19 @@ export default function ConferencesDashboard() {
             Run Discovery Cycle
           </Button>
 
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             size="sm"
             onClick={triggerPublish}
             disabled={actionLoading}
-            className="flex items-center gap-2 border-emerald-200 hover:bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300"
+            className="flex items-center gap-2 border-cyan-200 hover:bg-cyan-50 text-cyan-700 dark:border-cyan-800 dark:text-cyan-300"
           >
-            <Sparkles className="h-4 w-4 text-emerald-600" />
-            Sync to Excel
+            <FileSpreadsheet className="h-4 w-4 text-cyan-600" />
+            Sync to Google Sheets
           </Button>
 
-          <a 
-            href={`${API_BASE}/excel/download`} 
+          <a
+            href={`${API_BASE}/excel/download`}
             className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors bg-blue-600 text-white hover:bg-blue-700 h-9 px-4 py-2 gap-2 shadow-sm"
           >
             <Download className="h-4 w-4" />
