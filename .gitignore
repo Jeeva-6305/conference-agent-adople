@@ -26,6 +26,7 @@ MANIFEST
 venv/
 env/
 ENV/
+credentials/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -35,6 +36,7 @@ data/*.csv
 data/*.json
 *.csv
 *.json
+*.txt
 !conference-app/package*.json
 !conference-app/tsconfig.json
 !conference-app/components.json

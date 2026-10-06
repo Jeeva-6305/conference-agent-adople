@@ -11,32 +11,35 @@ class LumaScraper(BaseScraper):
         super().__init__("luma", "https://lu.ma/discover")
         self.verified_luma_conferences = [
             (
-                "Runtime by Modal",
-                "https://lu.ma/runtime-by-modal",
-                "San Francisco Design Center, 101 Henry Adams St, San Francisco, CA, USA",
-                "2026-10-01",
-                "2026-10-02",
-                "2026-08-15",  # Original Publication Date
-                "High-performance AI runtime and cloud systems conference. Official URL: https://modal.com. "
-                "Registration URL: https://lu.ma/runtime-by-modal. "
-                "Publication Date: 2026-08-15. "
-                "Speakers: Erik Bernhardsson, Founder & CEO at Modal Labs; "
-                "Will Reese, Founding Engineer & Systems Architect at Modal Labs; "
-                "Akshat Bubna, AI Infrastructure Lead at Modal Labs; "
-                "Jonathon Belotti, Staff Systems Engineer at Modal Labs; "
-                "Charles Fry, Distributed Systems Lead at Modal Labs; "
-                "Luis Ceze, CEO & Professor of Computer Science at University of Washington & OctoAI; "
-                "Tri Dao, Chief Scientist & Assistant Professor at Together AI & Princeton University; "
-                "Horace He, Machine Learning Systems Engineer at PyTorch Core & Meta AI; "
-                "Tim Dettmers, Assistant Professor & Research Scientist at Allen Institute for AI & University of Washington; "
-                "Bert Maher, Compiler Engineering Lead at Meta AI; "
-                "Dan Fu, AI Systems Researcher at Stanford University & Cartesia; "
-                "Sarah Catanzaro, General Partner at Amplify Partners; "
-                "Beidi Chen, Assistant Professor at Carnegie Mellon University; "
-                "Greg Brockman, President & Co-Founder at OpenAI. "
-                "Previous Talks: Keynotes and technical invited talks on serverless GPU container virtualization, FlashAttention scaling, PyTorch 2.0 compiler optimizations, distributed inference kernels, and low-latency LLM orchestration (Strange Loop, QCon SF, PyData NYC, NeurIPS, MLSys). "
-                "Overview: High-performance computing and AI systems conference dedicated to cloud infrastructure, distributed inference, container virtualization, and GPU runtime engineering. "
-                "Organizer: Modal Labs & Luma. Category: Cloud Infrastructure & AI Systems."
+                "AI Systems Summit 2026",
+                "https://lu.ma/ai-systems-summit-2026",
+                "Austin Convention Center, Austin, TX, USA",
+                "2026-10-03",
+                "2026-10-05",
+                "2026-07-25",
+                "Speakers: Yann LeCun, VP AI Research at Meta; "
+                "Demis Hassabis, CEO at DeepMind; "
+                "Fei-Fei Li, Co-Director Stanford AI Index; "
+                "Jeremy Howard, Founder at Fast.ai; "
+                "Andrej Karpathy, Senior Director AI at Tesla; "
+                "Yoshua Bengio, Professor at University of Montreal; "
+                "Ian Goodfellow, VP AI at Google DeepMind; "
+                "Hugging Face: Clement Delangue, CEO; Thom Wolf, Chief Scientist. "
+                "Overview: Deep learning systems and neural architecture innovation conference."
+            ),
+            (
+                "DevOps & Cloud Engineering Conference",
+                "https://lu.ma/devops-cloud-2026",
+                "Seattle Convention Center, Seattle, WA, USA",
+                "2026-10-03",
+                "2026-10-04",
+                "2026-08-01",
+                "Speakers: Kelsey Hightower, Principal Engineer at Google Cloud; "
+                "Charity Majors, Co-Founder at Honeycomb; "
+                "Jessie Frazelle, Senior Engineer at Microsoft; "
+                "Kelsey, Google Cloud DevRel; "
+                "Bridget Kromhout, Kubernetes Governance Board. "
+                "Overview: Cloud infrastructure, Kubernetes, and containerization conference."
             )
         ]
 
