@@ -605,7 +605,7 @@ class AIConferenceExtractor:
 
         # Step 2: Try Gemini API
         if self.client:
-            for model_name in ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.8-flash']:
+            for model_name in ['gemini-3.5-flash-lite', 'gemini-3-flash-preview', 'gemini-flash-latest']:
                 try:
                     today_str = date.today().isoformat()
                     prompt = f"""

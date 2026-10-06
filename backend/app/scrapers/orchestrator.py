@@ -36,7 +36,7 @@ class ScraperOrchestrator:
                 try:
                     events = future.result()
                     logger.info(f"[{name}] Collected {len(events)} candidate events")
-                    all_raw_events.extend(events[:5])
+                    all_raw_events.extend(events[:25])
                 except Exception as e:
                     logger.error(f"[{name}] Scraper error: {e}")
 

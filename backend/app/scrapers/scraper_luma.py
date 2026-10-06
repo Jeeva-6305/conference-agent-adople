@@ -1,4 +1,8 @@
 import logging
+import requests
+from bs4 import BeautifulSoup
+import json
+import re
 from datetime import datetime, date, timedelta
 from typing import List
 from .base_scraper import BaseScraper
@@ -6,63 +10,89 @@ from ..schemas import RawEventData
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+}
+
+LUMA_CITY_URLS = [
+    ("https://lu.ma/sf", "San Francisco, CA, USA"),
+    ("https://lu.ma/nyc", "New York, NY, USA"),
+    ("https://lu.ma/austin", "Austin, TX, USA")
+]
+
+CONFERENCE_TERMS = ["conference", "summit", "symposium", "forum", "congress", "expo", "con", "day"]
+
 class LumaScraper(BaseScraper):
     def __init__(self):
         super().__init__("luma", "https://lu.ma/discover")
-        self.verified_luma_conferences = [
-            (
-                "AI Systems Summit 2026",
-                "https://lu.ma/ai-systems-summit-2026",
-                "Austin Convention Center, Austin, TX, USA",
-                "2026-10-03",
-                "2026-10-05",
-                "2026-07-25",
-                "Speakers: Yann LeCun, VP AI Research at Meta; "
-                "Demis Hassabis, CEO at DeepMind; "
-                "Fei-Fei Li, Co-Director Stanford AI Index; "
-                "Jeremy Howard, Founder at Fast.ai; "
-                "Andrej Karpathy, Senior Director AI at Tesla; "
-                "Yoshua Bengio, Professor at University of Montreal; "
-                "Ian Goodfellow, VP AI at Google DeepMind; "
-                "Hugging Face: Clement Delangue, CEO; Thom Wolf, Chief Scientist. "
-                "Overview: Deep learning systems and neural architecture innovation conference."
-            ),
-            (
-                "DevOps & Cloud Engineering Conference",
-                "https://lu.ma/devops-cloud-2026",
-                "Seattle Convention Center, Seattle, WA, USA",
-                "2026-10-03",
-                "2026-10-04",
-                "2026-08-01",
-                "Speakers: Kelsey Hightower, Principal Engineer at Google Cloud; "
-                "Charity Majors, Co-Founder at Honeycomb; "
-                "Jessie Frazelle, Senior Engineer at Microsoft; "
-                "Kelsey, Google Cloud DevRel; "
-                "Bridget Kromhout, Kubernetes Governance Board. "
-                "Overview: Cloud infrastructure, Kubernetes, and containerization conference."
-            )
-        ]
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Scraping real USA conferences from Luma for exact T-2...")
+        logger.info(f"[{self.source_name}] Live scraping genuine tech conferences from Luma...")
         events: List[RawEventData] = []
-        today = date.today()
-        exact_t2 = today + timedelta(days=2)
+        seen_urls = set()
 
-        for title, url, venue, st_d, end_d, pub_d, details in self.verified_luma_conferences:
+        for page_url, default_loc in LUMA_CITY_URLS:
             try:
-                conf_start = datetime.strptime(st_d, "%Y-%m-%d").date()
-                if conf_start == exact_t2:
+                resp = requests.get(page_url, headers=HEADERS, timeout=12)
+                if resp.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                next_script = soup.find('script', id='__NEXT_DATA__')
+                if not next_script or not next_script.string:
+                    continue
+
+                data = json.loads(next_script.string)
+                page_data = data.get('props', {}).get('pageProps', {}).get('initialData', {}).get('data', {})
+                raw_events = page_data.get('events', [])
+
+                for item in raw_events:
+                    ev = item.get('event', {})
+                    name = ev.get('name', '').strip()
+                    url_slug = ev.get('url', '')
+                    start_at = ev.get('start_at', '')
+                    end_at = ev.get('end_at', '')
+
+                    if not name or not url_slug:
+                        continue
+
+                    full_url = f"https://lu.ma/{url_slug}"
+                    if full_url in seen_urls:
+                        continue
+
+                    # Filter for conferences, summits, and symposiums
+                    name_lower = name.lower()
+                    if not any(t in name_lower for t in CONFERENCE_TERMS):
+                        continue
+
+                    seen_urls.add(full_url)
+                    start_date = start_at[:10] if len(start_at) >= 10 else ""
+                    end_date = end_at[:10] if len(end_at) >= 10 else start_date
+
+                    raw_text = (
+                        f"Conference Title: {name}\n"
+                        f"Source: Luma Tech Discovery\n"
+                        f"Official URL: {full_url}\n"
+                        f"Registration URL: {full_url}\n"
+                        f"Start Date: {start_date}\n"
+                        f"End Date: {end_date}\n"
+                        f"Location: {default_loc}"
+                    )
+
                     events.append(RawEventData(
                         source_name=self.source_name,
-                        source_url=url,
-                        raw_title=title,
-                        raw_text=f"Conference: {title}. Venue: {venue}. Dates: {st_d} to {end_d}. Publication Date: {pub_d}. {details}",
-                        raw_location=venue,
-                        raw_date=st_d
+                        source_url=full_url,
+                        raw_title=name,
+                        raw_text=raw_text,
+                        raw_location=default_loc,
+                        raw_date=start_date
                     ))
-            except Exception as e:
-                logger.error(f"Error checking date for Luma {title}: {e}")
 
-        logger.info(f"[{self.source_name}] Successfully collected {len(events)} genuine Luma conferences for exact T-2.")
+                    logger.info(f"[{self.source_name}] Harvested genuine Luma conference: {name} ({start_date})")
+
+            except Exception as e:
+                logger.error(f"[{self.source_name}] Error crawling {page_url}: {e}")
+
+        logger.info(f"[{self.source_name}] Live Luma collection finished. Total events: {len(events)}")
         return events

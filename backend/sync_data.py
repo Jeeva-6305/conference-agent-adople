@@ -1,7 +1,11 @@
 import sys
 import io
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
+
+today = date.today()
+t2_date = today + timedelta(days=2)
+end_t2_date = t2_date + timedelta(days=1)
 
 # Force UTF-8 stdout
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -16,9 +20,9 @@ db = SessionLocal()
 # 1. Update Runtime by Modal (Published T-2)
 c1 = db.query(Conference).filter(Conference.conference_title.ilike('%Runtime by Modal%')).first()
 if c1:
-    c1.start_date = date(2026, 10, 1)
-    c1.end_date = date(2026, 10, 2)
-    c1.publication_date = date(2026, 8, 15)
+    c1.start_date = t2_date
+    c1.end_date = end_t2_date
+    c1.publication_date = today - timedelta(days=45)
     c1.speakers_available = 'Yes'
     c1.is_published_to_excel = True
     c1.status = 'published'
@@ -28,9 +32,9 @@ if c1:
 # 2. Update US National Cyber Summit (Published T-2)
 c2 = db.query(Conference).filter(Conference.conference_title.ilike('%Cyber%')).first()
 if c2:
-    c2.start_date = date(2026, 10, 1)
-    c2.end_date = date(2026, 10, 2)
-    c2.publication_date = date(2026, 7, 28)
+    c2.start_date = t2_date
+    c2.end_date = end_t2_date
+    c2.publication_date = today - timedelta(days=60)
     c2.speakers_available = 'Yes'
     c2.is_published_to_excel = True
     c2.status = 'published'
@@ -40,9 +44,9 @@ if c2:
 # 3. Update DAM New York 2026 (Published T-2)
 c4 = db.query(Conference).filter(Conference.conference_title.ilike('%DAM New York%')).first()
 if c4:
-    c4.start_date = date(2026, 10, 1)
-    c4.end_date = date(2026, 10, 2)
-    c4.publication_date = date(2026, 7, 10)
+    c4.start_date = t2_date
+    c4.end_date = end_t2_date
+    c4.publication_date = today - timedelta(days=75)
     c4.speakers_available = 'Yes'
     c4.is_published_to_excel = True
     c4.status = 'published'
@@ -55,7 +59,7 @@ if c3:
     c3.conference_title = 'Cvent CONNECT 2027'
     c3.start_date = date(2027, 4, 5)
     c3.end_date = date(2027, 4, 8)
-    c3.publication_date = date(2026, 8, 5)
+    c3.publication_date = today - timedelta(days=30)
     c3.speakers_available = 'Yes'
     c3.is_published_to_excel = False
     c3.status = 'scheduled'
@@ -169,7 +173,7 @@ db.commit()
 # Sync to Excel: Only genuine published T-2 conferences & their complete speaker roster
 published_confs = db.query(Conference).filter(
     Conference.is_published_to_excel == True,
-    Conference.start_date == date(2026, 10, 1)
+    Conference.start_date == t2_date
 ).all()
 pub_ids = [c.conference_id for c in published_confs]
 published_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()

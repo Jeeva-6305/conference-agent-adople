@@ -1,90 +1,206 @@
 import logging
+import requests
+from bs4 import BeautifulSoup
+import json
+import re
 from datetime import datetime, date, timedelta
-from typing import List
+from typing import List, Optional
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9'
+}
+
+DISCOVERY_URLS = [
+    'https://www.eventbrite.com/d/united-states/conferences/',
+    'https://www.eventbrite.com/d/united-states/business--conferences/',
+    'https://www.eventbrite.com/d/united-states/science-and-tech--conferences/',
+    'https://www.eventbrite.com/d/united-states/health--conferences/'
+]
+
+NON_CONFERENCE_KEYWORDS = [
+    "workshop", "webinar", "happy hour", "bar crawl", "speed dating",
+    "singles", "karaoke", "bootcamp", "mixer", "dinner", "party",
+    "networking lunch", "social mixer", "class", "brunch"
+]
+
 class EventbriteScraper(BaseScraper):
     def __init__(self):
-        super().__init__("eventbrite", "https://www.eventbrite.com/d/ny--new-york/dam-new-york/")
-        self.verified_eventbrite_conferences = [
-            (
-                "AASCP Fall Regenerative Medicine Conference Miami 2026",
-                "https://www.eventbrite.com/e/aascp-2026-fall-regenerative-medicine-conference-miami-tickets",
-                "Hyatt Regency Miami, 400 SE 2nd Ave, Miami, FL, USA",
-                "2026-10-02",
-                "2026-10-04",
-                "2026-06-20",  # Original Publication Date
-                "Premier International Conference on Regenerative Medicine, Cellular Therapies, and Clinical Translation. "
-                "Official URL: https://aascp.net. "
-                "Registration URL: https://www.eventbrite.com/e/aascp-2026-fall-regenerative-medicine-conference-miami-tickets. "
-                "Publication Date: 2026-06-20. "
-                "Speakers: Dr. Joseph Purita, Chief Medical Officer at The Institute of Regenerative Medicine; "
-                "Dr. Peter Verlander, Vice President of Research & Development at BioXcel Therapeutics; "
-                "Dr. Douglas Spiel, Founder & Radiologist at Spiel MD; "
-                "Dr. Sheldon Jordan, Neurologist & Director at The Regenesis Project; "
-                "Dr. Alimorad Farshchian, Medical Director & Founder at The Center for Regenerative Medicine; "
-                "Dr. Charles Runels, Clinical Researcher & Founder at Cellular Medicine Association; "
-                "Dr. Sharon McQuillan, Founder & Medical Director at Ageless Regenerative Institute. "
-                "Previous Talks: Clinical trials on stem cell therapies, PRP optimization, exosome signaling, and musculoskeletal rehabilitation (AASCP Annual World Congress, International Society for Cell & Gene Therapy). "
-                "Overview: Comprehensive multi-day clinical conference bringing together leading regenerative medicine physicians, orthopedic surgeons, and biotech researchers for accredited CME lectures and live procedure workshops. "
-                "Organizer: American Academy of Stem Cell Physicians (AASCP) & Eventbrite. Category: Healthcare & Medical Technology."
-            ),
-            (
-                "DAM New York 2026",
-                "https://www.eventbrite.com/d/ny--new-york/dam-new-york/",
-                "New York Hilton Midtown, 1335 Avenue of the Americas, New York, NY, USA",
-                "2026-10-01",
-                "2026-10-02",
-                "2026-07-10",  # Original Publication Date
-                "Premier Digital Asset Management & Intelligent Content Systems Conference. "
-                "Official URL: https://www.henrystewartconferences.com/events/dam-new-york-2026. "
-                "Registration URL: https://www.henrystewartconferences.com/events/dam-new-york-2026. "
-                "Publication Date: 2026-07-10. "
-                "Speakers: Sandra Hundacker, Creative & Operations Director at Rick Steves' Europe; "
-                "Orin Dubrow, Creative Operations & Production Specialist at Rick Steves' Europe; "
-                "Jarrod Gingras, Managing Director at Real Story Group; "
-                "Mike Szumlinski, Field CTO at Backlight; "
-                "John Horodyski, Executive Director, Information & Data Strategy at Salt Flats; "
-                "Theresa Regli, Digital Asset Strategist & Author at Independent Consultant; "
-                "Graham Allan, Senior Manager, Content Architecture & DAM at The Home Depot; "
-                "David Lipsey, Chair at The DAM Foundation; "
-                "Cynthia Simpson, Global DAM & Creative Operations Director at The Estée Lauder Companies; "
-                "Frederic Sanuy, CEO & Chief Solutions Architect at Activo DAM Consulting; "
-                "Mark Davey, Founder & Director at The CODIFY Group; "
-                "Jennifer Allen, Director of Global Asset Management & Content Systems at Sony Pictures Entertainment; "
-                "Linda Tadic, CEO & Founder at Digital Bedrock; "
-                "Craig Llewellyn, Director of Enterprise Creative Tech at Warner Bros. Discovery; "
-                "Ian Matzen, Metadata & Taxonomy Lead at NBCUniversal; "
-                "Reem El Asaleh, Associate Professor at Toronto Metropolitan University. "
-                "Previous Talks: Keynotes on AI and Metadata Automation in Global Asset Supply Chains at Henry Stewart DAM Europe, Creative Operations Exchange, and International DAM Symposium. "
-                "Overview: DAM New York 2026 is the world's leading conference dedicated to Digital Asset Management, intelligent metadata automation, enterprise AI workflows, and content supply chains. "
-                "Organizer: Henry Stewart Conferences & Eventbrite. Category: Digital Asset Management & Enterprise AI Systems."
-            )
-        ]
+        super().__init__("eventbrite", "https://www.eventbrite.com/d/united-states/conferences/")
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Scraping real USA conferences from Eventbrite for exact T-2...")
+        logger.info(f"[{self.source_name}] Live scraping genuine USA conferences from Eventbrite...")
         events: List[RawEventData] = []
-        today = date.today()
-        exact_t2 = today + timedelta(days=2)
+        seen_urls = set()
+        candidate_items = []
 
-        for title, url, venue, st_d, end_d, pub_d, details in self.verified_eventbrite_conferences:
+        # Step 1: Collect live candidate conference listings
+        for disc_url in DISCOVERY_URLS:
             try:
-                conf_start = datetime.strptime(st_d, "%Y-%m-%d").date()
-                if conf_start == exact_t2:
-                    events.append(RawEventData(
-                        source_name=self.source_name,
-                        source_url=url,
-                        raw_title=title,
-                        raw_text=f"Conference: {title}. Venue: {venue}. Dates: {st_d} to {end_d}. Publication Date: {pub_d}. {details}",
-                        raw_location=venue,
-                        raw_date=st_d
-                    ))
-            except Exception as e:
-                logger.error(f"Error checking date for Eventbrite {title}: {e}")
+                resp = requests.get(disc_url, headers=HEADERS, timeout=12)
+                if resp.status_code != 200:
+                    continue
 
-        logger.info(f"[{self.source_name}] Successfully collected {len(events)} genuine Eventbrite conferences for exact T-2.")
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                scripts = soup.find_all('script', type='application/ld+json')
+                for s in scripts:
+                    try:
+                        data = json.loads(s.string)
+                        items = []
+                        if isinstance(data, dict) and 'itemListElement' in data:
+                            items = [el.get('item', {}) for el in data['itemListElement']]
+                        elif isinstance(data, list):
+                            items = data
+
+                        for item in items:
+                            url = item.get('url')
+                            name = item.get('name', '')
+                            if not url or url in seen_urls:
+                                continue
+                            
+                            # Filter out non-conferences
+                            name_lower = name.lower()
+                            if any(k in name_lower for k in NON_CONFERENCE_KEYWORDS):
+                                continue
+
+                            seen_urls.add(url)
+                            candidate_items.append((name, url))
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"[{self.source_name}] Error crawling {disc_url}: {e}")
+
+        logger.info(f"[{self.source_name}] Found {len(candidate_items)} live candidate conference URLs. Fetching details...")
+
+        # Step 2: Fetch detailed event pages and extract structured metadata
+        for name, url in candidate_items:
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                event_data = None
+
+                for s in soup.find_all('script', type='application/ld+json'):
+                    try:
+                        d = json.loads(s.string)
+                        if d.get('@type') in ['BusinessEvent', 'Event']:
+                            event_data = d
+                            break
+                    except Exception:
+                        pass
+
+                if not event_data:
+                    continue
+
+                title = event_data.get('name', name).strip()
+                desc = event_data.get('description', '').strip()
+                start_iso = event_data.get('startDate', '')
+                end_iso = event_data.get('endDate', '')
+
+                # Parse dates to YYYY-MM-DD
+                start_date = start_iso[:10] if len(start_iso) >= 10 else ""
+                end_date = end_iso[:10] if len(end_iso) >= 10 else start_date
+
+                # Location details
+                loc = event_data.get('location', {})
+                venue_name = loc.get('name', '')
+                addr = loc.get('address', {})
+                city = addr.get('addressLocality', '')
+                state = addr.get('addressRegion', '')
+                country = addr.get('addressCountry', 'USA')
+                street = addr.get('streetAddress', '')
+                full_loc = f"{venue_name}, {street}, {city}, {state}, {country}".strip(', ')
+
+                # Verify event is in USA
+                if country not in ['US', 'USA', 'United States'] and 'US' not in state:
+                    continue
+
+                # Organizer
+                organizer_data = event_data.get('organizer', {})
+                organizer_name = organizer_data.get('name', '') if isinstance(organizer_data, dict) else ""
+                organizer_url = organizer_data.get('url', '') if isinstance(organizer_data, dict) else ""
+
+                # Performers / Speakers
+                performers = event_data.get('performer', [])
+                performer_names = []
+                performer_details = []
+                if isinstance(performers, list):
+                    for p in performers:
+                        if isinstance(p, dict):
+                            p_name = p.get('name', '').strip()
+                            p_url = p.get('url', '')
+                            if p_name and p_name.lower() not in title.lower():
+                                performer_names.append(p_name)
+                                if p_url:
+                                    performer_details.append(f"{p_name} ({p_url})")
+                                else:
+                                    performer_details.append(p_name)
+
+                # FAQ / Agenda / Description details
+                faq_text = ""
+                for s in soup.find_all('script', type='application/ld+json'):
+                    try:
+                        fd = json.loads(s.string)
+                        if fd.get('@type') == 'FAQPage':
+                            for q in fd.get('mainEntity', []):
+                                q_name = q.get('name', '')
+                                q_ans = q.get('acceptedAnswer', {}).get('text', '')
+                                faq_text += f"\n{q_name}: {q_ans}"
+                    except Exception:
+                        pass
+
+                # Ticket / Registration URL
+                offers = event_data.get('offers', [])
+                reg_url = url
+                pub_date = ""
+                if isinstance(offers, list) and len(offers) > 0:
+                    first_offer = offers[0]
+                    reg_url = first_offer.get('url', url)
+                    valid_from = first_offer.get('validFrom', '')
+                    if valid_from:
+                        pub_date = valid_from[:10]
+
+                # Compose rich raw text for AI Agent verification
+                raw_text_parts = [
+                    f"Conference Title: {title}",
+                    f"Overview & Description: {desc}",
+                    f"Venue: {venue_name}",
+                    f"Address: {street}, {city}, {state}, {country}",
+                    f"Organizer: {organizer_name}",
+                    f"Official Event URL: {url}",
+                    f"Registration URL: {reg_url}",
+                    f"Start Date: {start_date}",
+                    f"End Date: {end_date}",
+                ]
+                if pub_date:
+                    raw_text_parts.append(f"Publication / Announcement Date: {pub_date}")
+                if performer_names:
+                    raw_text_parts.append(f"Featured Speakers / Keynotes: {', '.join(performer_details)}")
+                if faq_text:
+                    raw_text_parts.append(f"Conference Schedule & FAQ Details: {faq_text}")
+
+                raw_text = "\n".join(raw_text_parts)
+
+                events.append(RawEventData(
+                    source_name=self.source_name,
+                    source_url=url,
+                    raw_title=title,
+                    raw_text=raw_text,
+                    raw_location=full_loc,
+                    raw_date=start_date
+                ))
+
+                logger.info(f"[{self.source_name}] Harvested genuine conference: {title} ({start_date}) in {city}, {state}")
+
+            except Exception as e:
+                logger.error(f"[{self.source_name}] Error parsing details for {url}: {e}")
+
+        logger.info(f"[{self.source_name}] Live collection finished. Harvested {len(events)} genuine conferences.")
         return events

@@ -63,7 +63,7 @@ interface SpeakerProfile {
   previous_speaking_info?: string;
 }
 
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001/api";
 
 export default function ConferenceDetailPage() {
   const params = useParams();

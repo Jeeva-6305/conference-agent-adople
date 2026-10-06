@@ -42,6 +42,11 @@ def cleanup_fake_and_sample_records(db):
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
 
+    OLD_MOCK_TITLES = [
+        "runtime by modal", "dam new york", "cyber & cloud security",
+        "corncon", "aascp", "cvent connect", "aap national conference"
+    ]
+
     for c in all_confs:
         title_lower = (c.conference_title or "").lower().strip()
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
@@ -53,6 +58,9 @@ def cleanup_fake_and_sample_records(db):
             "revival", "congreso", "skip the small talk", "happy hour", "sample"
         ])
 
+        # Filter out previous mock conferences
+        is_previous_mock = any(mock_term in title_lower for mock_term in OLD_MOCK_TITLES)
+
         # Check for fake/placeholder indicators
         is_placeholder_speaker = (
             "keynote speakers tbd" in speakers_lower or
@@ -60,9 +68,6 @@ def cleanup_fake_and_sample_records(db):
             "industry experts & leaders" in (getattr(c, "speaker_titles_companies", None) or "").lower()
         )
         
-        # Clean up old obsolete record with incorrect 2026 date for Cvent
-        is_obsolete_cvent_2026 = ("cvent connect 2026" in title_lower) or ("cvent" in title_lower and c.start_date == date(2026, 10, 1))
-
         # Check for dead/unreachable domains or unverified entries
         is_dead_or_unreachable = (
             "healthcare innovation" in title_lower or 
@@ -72,7 +77,7 @@ def cleanup_fake_and_sample_records(db):
         # Check duplicate
         is_duplicate = title_lower in seen_titles
 
-        if is_non_conference or is_placeholder_speaker or is_obsolete_cvent_2026 or is_duplicate or is_dead_or_unreachable:
+        if is_non_conference or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable:
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
             db.delete(c)
             deleted_count += 1
@@ -383,6 +388,7 @@ def task_sync_to_google_sheets():
     - Applies professional formatting (dark blue + teal headers)
     - Called by task_publish_2_days_before after Excel sync
     """
+    # pyrefly: ignore [missing-import]
     from ..services.google_sheets_service import GoogleSheetsService
 
     db = SessionLocal()
@@ -506,6 +512,7 @@ def task_migrate_db_to_google_sheets(clear_first: bool = False):
     - Appends all conferences and speakers
     - Optionally clears sheet first for clean migration
     """
+    # pyrefly: ignore [missing-import]
     from ..services.google_sheets_service import GoogleSheetsService
 
     db = SessionLocal()

@@ -40,10 +40,11 @@ def startup_event():
     db = next(get_db())
     # Clean up any fake, sample, or duplicate records from previous runs
     cleanup_fake_and_sample_records(db)
-    # If no genuine T-2 conferences are present, run ingestion cycle immediately
+    # If no genuine T-2 conferences are present, run ingestion cycle in background
     if db.query(Conference).count() == 0:
-        logger.info("Triggering genuine T-2 conference discovery & AI validation cycle...")
-        task_scrape_and_ingest()
+        logger.info("Triggering genuine T-2 conference discovery & AI validation cycle in background...")
+        import threading
+        threading.Thread(target=task_scrape_and_ingest, daemon=True).start()
 
 @app.on_event("shutdown")
 def shutdown_event():

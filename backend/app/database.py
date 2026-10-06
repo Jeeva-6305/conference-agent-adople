@@ -74,7 +74,7 @@ def init_db():
                 create_engine_temp = create_engine(
                     settings.DATABASE_URL,
                     poolclass=NullPool,
-                    connect_args={"connect_timeout": 2, "timeout": 5}
+                    connect_args={"connect_timeout": 2}
                 )
                 Base.metadata.create_all(bind=create_engine_temp, checkfirst=True)
                 create_engine_temp.dispose()
