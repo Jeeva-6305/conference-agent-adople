@@ -102,6 +102,7 @@ export default function ConferencesDashboard() {
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [activeSheet, setActiveSheet] = useState<"conferences" | "speakers" | "attendees">("conferences");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -109,9 +110,9 @@ export default function ConferencesDashboard() {
     setLoading(true);
     try {
       const [resConf, resSpk, resAtt, resSchedInfo] = await Promise.all([
-        fetch(`${API_BASE}/conferences?published_only=true`),
-        fetch(`${API_BASE}/speakers?published_only=true`),
-        fetch(`${API_BASE}/attendees?published_only=true`),
+        fetch(`${API_BASE}/conferences`),
+        fetch(`${API_BASE}/speakers`),
+        fetch(`${API_BASE}/attendees`),
         fetch(`${API_BASE}/scheduler/status`)
       ]);
       if (resConf.ok) {
@@ -210,8 +211,12 @@ export default function ConferencesDashboard() {
 
     const matchesSource = sourceFilter === "all" || c.source_name.toLowerCase().includes(sourceFilter.toLowerCase());
     const matchesCategory = categoryFilter === "all" || (c.industry_category || '').toLowerCase().includes(categoryFilter.toLowerCase());
+    const matchesStatus = 
+      statusFilter === "all" || 
+      (statusFilter === "published" && c.is_published_to_excel) ||
+      (statusFilter === "scheduled" && !c.is_published_to_excel);
 
-    return matchesSearch && matchesSource && matchesCategory;
+    return matchesSearch && matchesSource && matchesCategory && matchesStatus;
   });
 
   const filteredSpeakers = speakers.filter(s => {
@@ -447,6 +452,18 @@ export default function ConferencesDashboard() {
             <option value="financial">Financial Services</option>
             <option value="technology">Technology</option>
           </select>
+
+          {activeSheet === "conferences" && (
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-medium"
+            >
+              <option value="all">All Statuses ({conferences.length})</option>
+              <option value="published">Published to Excel (T-2)</option>
+              <option value="scheduled">Scheduled (Pending T-2)</option>
+            </select>
+          )}
 
           {activeSheet === "conferences" && (
             <select

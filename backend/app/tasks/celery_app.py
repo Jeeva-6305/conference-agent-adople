@@ -61,12 +61,16 @@ def cleanup_fake_and_sample_records(db):
         title_lower = (c.conference_title or "").lower().strip()
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
 
-        # Filter out non-conferences (workshops, meetups, social mixers, parties)
+        # Filter out non-conferences (workshops, meetups, social mixers, parties, brunches, walks, runs)
         is_non_conference = any(term in title_lower for term in [
             "workshop", "webinar", "meetup", "hackathon", "networking lunch",
             "networking mixer", "zoom event", "sf real estate", "bar crawl",
-            "revival", "congreso", "skip the small talk", "happy hour", "sample"
+            "revival", "congreso", "skip the small talk", "happy hour", "sample",
+            "brunch", "walk with", "mile run", "horror night", "demo night"
         ])
+
+        # Filter out past/expired events
+        is_past_event = (c.start_date is None or c.start_date < today)
 
         # Filter out previous mock conferences
         is_previous_mock = any(mock_term in title_lower for mock_term in OLD_MOCK_TITLES)
@@ -91,7 +95,7 @@ def cleanup_fake_and_sample_records(db):
         matched_cats = match_target_categories(f"{c.conference_title} {c.description or ''}")
         is_invalid_category = (len(matched_cats) == 0)
 
-        if is_non_conference or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
+        if is_non_conference or is_past_event or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
             db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
             db.delete(c)
@@ -165,6 +169,8 @@ def task_scrape_and_ingest():
 
             conf_start = date.fromisoformat(extracted.start_date)
             conf_end = date.fromisoformat(extracted.end_date)
+            if conf_start < today:
+                continue
             is_exact_t2 = (conf_start == exact_t2_date)
 
             # Check if conference exists by source_url or title
