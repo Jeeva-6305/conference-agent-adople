@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+venv/lib/
+venv/lib64/
+lib/
+lib64/
+!conference-app/lib/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+env/
+ENV/
+credentials/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files (too large for Git)
+data/*.csv
+data/*.json
+*.csv
+*.json
+*.txt
+!conference-app/package*.json
+!conference-app/tsconfig.json
+!conference-app/components.json
+
+# Checkpoints
+classification_checkpoint.csv
+conference_talks_with_topics.csv
+
+# Environment & Secrets
+.env
+*.env
+backend/.env
+*.db
+
+# Next.js
+conference-app/.next/
+conference-app/out/
+conference-app/node_modules/
+conference-app/.env*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache
+.cache/
+transformers_cache/
+
+# Test & Debug Scripts (development only)
+backend/test_*.py
+backend/check_*.py
+backend/diagnose_*.py
+backend/debug_*.py
+backend/analyze_*.py
+backend/fetch_and_analyze_*.py
+backend/sync_*.py
+backend/run_scheduler.py
+backend/scratch_*.py
+backend/update_*.py
+test_*.py
+
+# Markdown files (except README)
+*.md
+!README.md
+
+# Temporary files
+*.backup
+backend/apify_luma_analysis/
+
+.codegraph/
