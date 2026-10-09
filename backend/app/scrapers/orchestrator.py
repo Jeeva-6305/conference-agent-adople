@@ -33,10 +33,10 @@ class ScraperOrchestrator:
         ]
 
     def collect_all(self) -> List[RawEventData]:
-        logger.info(f"Starting 24/7 conference collection across all {len(self.scrapers)} sources...")
+        logger.info(f"Starting conference collection across all {len(self.scrapers)} sources...")
         all_raw_events: List[RawEventData] = []
         
-        with ThreadPoolExecutor(max_workers=len(self.scrapers)) as executor:
+        with ThreadPoolExecutor(max_workers=min(12, len(self.scrapers))) as executor:
             future_to_scraper = {
                 executor.submit(scraper.scrape): scraper.source_name
                 for scraper in self.scrapers
@@ -44,11 +44,11 @@ class ScraperOrchestrator:
             for future in as_completed(future_to_scraper):
                 name = future_to_scraper[future]
                 try:
-                    events = future.result()
+                    events = future.result(timeout=20)
                     logger.info(f"[{name}] Collected {len(events)} candidate events")
                     all_raw_events.extend(events[:25])
                 except Exception as e:
-                    logger.error(f"[{name}] Scraper error: {e}")
+                    logger.warning(f"[{name}] Scraper error or timeout: {e}")
 
         logger.info(f"Collection complete: {len(all_raw_events)} raw events harvested across {len(self.scrapers)} sources.")
         return all_raw_events

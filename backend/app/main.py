@@ -6,9 +6,8 @@ from fastapi import FastAPI, Depends, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
-
 from .config import settings
-from .database import get_db, init_db
+from .database import get_db, init_db, SessionLocal
 from .models import Conference, Speaker, Attendee, EmailNotification, TeamsNotification
 from .schemas import ConferenceResponse, SpeakerResponse, AttendeeResponse, DashboardStats
 from .storage.excel_manager import ExcelManager
@@ -48,14 +47,11 @@ app.add_middleware(
 def startup_event():
     init_db()
     start_scheduler()
-    db = next(get_db())
-    # Clean up any fake, sample, or duplicate records from previous runs
-    cleanup_fake_and_sample_records(db)
-    # If no genuine T-2 conferences are present, run ingestion cycle in background
-    if db.query(Conference).count() == 0:
-        logger.info("Triggering genuine T-2 conference discovery & AI validation cycle in background...")
-        import threading
-        threading.Thread(target=task_scrape_and_ingest, daemon=True).start()
+    db = SessionLocal()
+    try:
+        cleanup_fake_and_sample_records(db)
+    finally:
+        db.close()
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -80,7 +76,8 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     today = date.today()
     exact_2_days = today + timedelta(days=2)
     upcoming_2_days = db.query(Conference).filter(
-        Conference.start_date == exact_2_days
+        Conference.start_date >= today,
+        Conference.start_date <= exact_2_days
     ).count()
     
     sched = get_scheduler_status()
@@ -103,21 +100,24 @@ def get_scheduler_telemetry():
 
 @app.get("/api/conferences", response_model=List[ConferenceResponse])
 def get_conferences(
-    source: Optional[str] = Query(None, description="Filter by source (10times, luma, eventbrite, meetup, cvent, events_in_america)"),
+    source: Optional[str] = Query(None, description="Filter by source (10times, luma, eventbrite, meetup, cvent, events_in_america, tsnn, tradefest, govevents, eventseye)"),
     category: Optional[str] = Query(None, description="Filter by category"),
     search: Optional[str] = Query(None, description="Search by title, speaker, or city"),
-    published_only: Optional[bool] = Query(False, description="Filter only conferences published to Excel"),
+    published_only: Optional[bool] = Query(True, description="Filter only conferences adhering to strict T-2 logic"),
     status: Optional[str] = Query(None, description="Filter by status (published, scheduled)"),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Conference)
+    today = date.today()
+    exact_t2 = today + timedelta(days=2)
+    query = db.query(Conference).filter(
+        Conference.start_date >= today,
+        Conference.start_date <= exact_t2
+    )
 
     if source:
         query = query.filter(Conference.source_name.ilike(f"%{source}%"))
     if category:
         query = query.filter(Conference.industry_category.ilike(f"%{category}%"))
-    if published_only:
-        query = query.filter(Conference.is_published_to_excel == True)
     if status:
         query = query.filter(Conference.status == status)
     if search:
@@ -128,7 +128,7 @@ def get_conferences(
             (Conference.venue.ilike(search_filter))
         )
 
-    return query.order_by(Conference.start_date.asc()).all()
+    return query.order_by(Conference.start_date.asc(), Conference.conference_title.asc()).all()
 
 @app.get("/api/conferences/{identifier}", response_model=ConferenceResponse)
 def get_conference_detail(identifier: str, db: Session = Depends(get_db)):
@@ -145,37 +145,45 @@ def get_conference_detail(identifier: str, db: Session = Depends(get_db)):
 @app.get("/api/speakers", response_model=List[SpeakerResponse])
 def get_speakers(
     conference_id: Optional[str] = Query(None, description="Filter speakers by Conference ID"),
-    published_only: Optional[bool] = Query(False, description="Filter speakers of published conferences"),
+    published_only: Optional[bool] = Query(True, description="Filter speakers of verified T-2 conferences"),
     db: Session = Depends(get_db)
 ):
-    """Fetch verified speaker profiles extracted from official sources."""
+    """Fetch verified speaker profiles extracted from official sources strictly for T-2 conferences."""
+    today = date.today()
+    exact_t2 = today + timedelta(days=2)
+    t2_confs = db.query(Conference).filter(
+        Conference.start_date >= today,
+        Conference.start_date <= exact_t2
+    ).all()
+    t2_ids = [c.conference_id for c in t2_confs]
+
     query = db.query(Speaker)
     if conference_id:
         query = query.filter(Speaker.conference_id == conference_id)
-    elif published_only:
-        today = date.today()
-        exact_t2 = today + timedelta(days=2)
-        pub_confs = db.query(Conference).filter(Conference.is_published_to_excel == True, Conference.start_date == exact_t2).all()
-        pub_ids = [c.conference_id for c in pub_confs]
-        query = query.filter(Speaker.conference_id.in_(pub_ids))
+    else:
+        query = query.filter(Speaker.conference_id.in_(t2_ids))
     return query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
 
 @app.get("/api/attendees", response_model=List[AttendeeResponse])
 def get_attendees(
     conference_id: Optional[str] = Query(None, description="Filter attendees by Conference ID"),
-    published_only: Optional[bool] = Query(False, description="Filter attendees of published conferences"),
+    published_only: Optional[bool] = Query(True, description="Filter attendees of verified T-2 conferences"),
     db: Session = Depends(get_db)
 ):
-    """Fetch attendee and participant profile details."""
+    """Fetch attendee and participant profile details strictly for T-2 conferences."""
+    today = date.today()
+    exact_t2 = today + timedelta(days=2)
+    t2_confs = db.query(Conference).filter(
+        Conference.start_date >= today,
+        Conference.start_date <= exact_t2
+    ).all()
+    t2_ids = [c.conference_id for c in t2_confs]
+
     query = db.query(Attendee)
     if conference_id:
         query = query.filter(Attendee.conference_id == conference_id)
-    elif published_only:
-        today = date.today()
-        exact_t2 = today + timedelta(days=2)
-        pub_confs = db.query(Conference).filter(Conference.is_published_to_excel == True, Conference.start_date == exact_t2).all()
-        pub_ids = [c.conference_id for c in pub_confs]
-        query = query.filter(Attendee.conference_id.in_(pub_ids))
+    else:
+        query = query.filter(Attendee.conference_id.in_(t2_ids))
     return query.order_by(Attendee.conference_name.asc()).all()
 
 @app.post("/api/trigger/scrape")

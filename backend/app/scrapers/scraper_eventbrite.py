@@ -17,6 +17,7 @@ HEADERS = {
 }
 
 DISCOVERY_URLS = [
+    'https://www.eventbrite.com/d/united-states/conferences/?start_date=2026-10-11&end_date=2026-10-11',
     'https://www.eventbrite.com/d/united-states/conferences/',
     'https://www.eventbrite.com/d/united-states/business--conferences/',
     'https://www.eventbrite.com/d/united-states/science-and-tech--conferences/',
@@ -26,7 +27,8 @@ DISCOVERY_URLS = [
 NON_CONFERENCE_KEYWORDS = [
     "workshop", "webinar", "happy hour", "bar crawl", "speed dating",
     "singles", "karaoke", "bootcamp", "mixer", "dinner", "party",
-    "networking lunch", "social mixer", "class", "brunch"
+    "networking lunch", "social mixer", "class", "brunch", "walk",
+    "comic con", "comedy", "stage", "festival", "screening", "talks with"
 ]
 
 class EventbriteScraper(BaseScraper):

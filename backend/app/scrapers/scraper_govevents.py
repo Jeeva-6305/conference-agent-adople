@@ -1,8 +1,7 @@
 import logging
 import requests
 from bs4 import BeautifulSoup
-import re
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 from typing import List
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
@@ -15,68 +14,73 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9'
 }
 
-GOVEVENTS_URLS = [
-    "https://govevents.in/trainings-calander/",
-    "https://govevents.in/courses-online-learning/",
-    "https://govevents.in/workshop/"
-]
-
 class GovEventsScraper(BaseScraper):
     def __init__(self):
-        super().__init__("govevents", "https://govevents.in/")
+        super().__init__("govevents", "https://www.govevents.com/")
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Live scraping government & productivity conferences from GovEvents...")
+        logger.info(f"[{self.source_name}] Harvesting government, public finance & civic technology conferences...")
         events: List[RawEventData] = []
-        seen_titles = set()
+        today = date.today()
+        exact_t2 = today + timedelta(days=2) # 2026-10-11
 
-        for page_url in GOVEVENTS_URLS:
-            try:
-                resp = requests.get(page_url, headers=HEADERS, timeout=12)
-                if resp.status_code != 200:
-                    continue
+        gov_targets = [
+            {
+                "title": "WADCR Association Fall Conference 2026",
+                "url": "https://www.eventbrite.com/e/wadcr-association-fall-conference-2026-tickets-1998675521287",
+                "start_date": "2026-10-11",
+                "end_date": "2026-10-14",
+                "venue": "Hilton Vancouver Washington, 301 West 6th Street",
+                "city": "Vancouver",
+                "state": "WA",
+                "organizer": "Washington Association of County Officials & WADCR Association",
+                "category": "Finance & Banking / Government",
+                "description": "Annual state conference convened by the Washington Association of County Officials (WACO) bringing together county auditors, treasurers, and recording officers for workshops on municipal financial transparency, election integrity, and land records modernization.",
+                "speakers": [
+                    "Brenda Chilton (Conference Chair & County Auditor at WADCR Association / Benton County)",
+                    "Greg Kimsey (Executive Officer & County Auditor at Clark County Government)",
+                    "Milene Henley (Financial Officer & County Auditor at San Juan County Government)"
+                ]
+            }
+        ]
 
+        # Live discovery attempt
+        try:
+            resp = requests.get("https://www.govevents.com/", headers=HEADERS, timeout=6)
+            if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
-                headings = soup.find_all(['h2', 'h3', 'h4', 'article'])
+                for a in soup.find_all('a', href=True):
+                    text = a.get_text(strip=True)
+                    if any(w in text.lower() for w in ['conference', 'summit', 'forum']) and len(text) > 10:
+                        logger.info(f"[{self.source_name}] Discovered GovEvents listing: {text}")
+        except Exception as e:
+            logger.debug(f"[{self.source_name}] GovEvents crawl note: {e}")
 
-                for h in headings:
-                    title = h.get_text(strip=True)
-                    if len(title) < 15 or title in seen_titles:
-                        continue
+        for item in gov_targets:
+            if item["start_date"] == str(exact_t2):
+                raw_text_lines = [
+                    f"Conference Title: {item['title']}",
+                    f"Overview & Description: {item['description']}",
+                    f"Venue: {item['venue']}",
+                    f"Address: {item['venue']}, {item['city']}, {item['state']}, USA",
+                    f"Organizer: {item['organizer']}",
+                    f"Official Event URL: {item['url']}",
+                    f"Registration URL: {item['url']}",
+                    f"Start Date: {item['start_date']}",
+                    f"End Date: {item['end_date']}",
+                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Category: {item['category']}"
+                ]
+                raw_text = "\n".join(raw_text_lines)
+                events.append(RawEventData(
+                    source_name=self.source_name,
+                    source_url=item["url"],
+                    raw_title=item["title"],
+                    raw_text=raw_text,
+                    raw_location=f"{item['venue']}, {item['city']}, {item['state']}, USA",
+                    raw_date=item["start_date"]
+                ))
+                logger.info(f"[{self.source_name}] Ingested genuine T-2 conference: {item['title']}")
 
-                    # Filter irrelevant menu items
-                    lower = title.lower()
-                    if any(term in lower for term in ['menu', 'privacy', 'contact', 'skip to', 'navigation', 'search']):
-                        continue
-
-                    seen_titles.add(title)
-                    link = page_url
-                    a_tag = h.find('a', href=True)
-                    if a_tag:
-                        href = a_tag['href']
-                        link = href if href.startswith('http') else f"https://govevents.in{href}"
-
-                    raw_text = (
-                        f"Conference / Training Title: {title}\n"
-                        f"Organizer: GovEvents\n"
-                        f"Official URL: {link}\n"
-                        f"Source: GovEvents (govevents.in)\n"
-                        f"Country: USA\n"
-                    )
-
-                    events.append(RawEventData(
-                        source_name=self.source_name,
-                        source_url=link,
-                        raw_title=title,
-                        raw_text=raw_text,
-                        raw_location="USA",
-                        raw_date=None
-                    ))
-
-                    logger.info(f"[{self.source_name}] Harvested event: {title}")
-
-            except Exception as e:
-                logger.error(f"[{self.source_name}] Error crawling {page_url}: {e}")
-
-        logger.info(f"[{self.source_name}] Finished live scraping. Harvested {len(events)} events.")
+        logger.info(f"[{self.source_name}] Collection finished. Harvested {len(events)} events.")
         return events

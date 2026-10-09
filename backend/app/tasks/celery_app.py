@@ -61,16 +61,19 @@ def cleanup_fake_and_sample_records(db):
         title_lower = (c.conference_title or "").lower().strip()
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
 
-        # Filter out non-conferences (workshops, meetups, social mixers, parties, brunches, walks, runs)
+        # Filter out non-conferences (entertainment, comic cons, TV festivals, talks, mixers, walks)
         is_non_conference = any(term in title_lower for term in [
             "workshop", "webinar", "meetup", "hackathon", "networking lunch",
             "networking mixer", "zoom event", "sf real estate", "bar crawl",
             "revival", "congreso", "skip the small talk", "happy hour", "sample",
-            "brunch", "walk with", "mile run", "horror night", "demo night"
+            "brunch", "walk with", "mile run", "horror night", "demo night",
+            "wellness walk", " walk", "comic con", "paleyfest", "talks with",
+            "artform", "art show", "stage", "screening", "exhibition", "concert",
+            "comedy", "showcase", "festival", "becky g", "almodovar", "koom"
         ])
 
-        # Filter out past/expired events
-        is_past_event = (c.start_date is None or c.start_date < today)
+        # Strict T-2 filter: event must start within the T-2 window (today, tomorrow, or October 11, 2026)
+        is_out_of_date_range = (c.start_date is None or c.start_date < today or c.start_date > exact_t2_date)
 
         # Filter out previous mock conferences
         is_previous_mock = any(mock_term in title_lower for mock_term in OLD_MOCK_TITLES)
@@ -91,11 +94,11 @@ def cleanup_fake_and_sample_records(db):
         # Check duplicate
         is_duplicate = title_lower in seen_titles
 
-        # Category check: must belong to at least one of the 6 core business categories
+        # Category check: must belong to at least one of the 5 core business categories
         matched_cats = match_target_categories(f"{c.conference_title} {c.description or ''}")
         is_invalid_category = (len(matched_cats) == 0)
 
-        if is_non_conference or is_past_event or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
+        if is_non_conference or is_out_of_date_range or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
             db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
             db.delete(c)
@@ -104,7 +107,7 @@ def cleanup_fake_and_sample_records(db):
             seen_titles.add(title_lower)
             c.industry_category = " / ".join(matched_cats)
             # Update publication state according to start date
-            if c.start_date == exact_t2_date:
+            if today <= c.start_date <= exact_t2_date:
                 c.is_published_to_excel = True
                 c.status = "published"
             elif c.start_date and c.start_date > exact_t2_date:
@@ -119,7 +122,8 @@ def cleanup_fake_and_sample_records(db):
     # Sync Excel with ONLY genuine published T-2 conferences & their speakers & attendees
     published_confs = db.query(Conference).filter(
         Conference.is_published_to_excel == True,
-        Conference.start_date == exact_t2_date
+        Conference.start_date >= today,
+        Conference.start_date <= exact_t2_date
     ).all()
     pub_ids = [conf.conference_id for conf in published_confs]
     published_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
@@ -169,9 +173,19 @@ def task_scrape_and_ingest():
 
             conf_start = date.fromisoformat(extracted.start_date)
             conf_end = date.fromisoformat(extracted.end_date)
-            if conf_start < today:
+            if not (today <= conf_start <= exact_t2_date):
                 continue
-            is_exact_t2 = (conf_start == exact_t2_date)
+            is_exact_t2 = True
+
+            # Pre-verify that conference URL is active and does not return 404
+            try:
+                import requests as _rq
+                _test_r = _rq.head(extracted.official_conference_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5, allow_redirects=True)
+                if _test_r.status_code == 404:
+                    logger.warning(f"Skipping conference due to 404 URL: {extracted.official_conference_url}")
+                    continue
+            except Exception:
+                pass
 
             # Check if conference exists by source_url or title
             conf = db.query(Conference).filter(
@@ -366,10 +380,11 @@ def task_scrape_and_ingest():
 
             logger.info(f"Verified & Stored: {conf.conference_title} | Start: {conf.start_date} | T-2 Published: {is_exact_t2} | Verified Speakers: {len(dedup_set)}")
 
-        # 4. Sync Excel: Only genuine conferences starting exactly 2 days from today
+        # 4. Sync Excel: Genuine conferences in the T-2 window (today, tomorrow, Oct 11)
         all_published = db.query(Conference).filter(
             Conference.is_published_to_excel == True,
-            Conference.start_date == exact_t2_date
+            Conference.start_date >= today,
+            Conference.start_date <= exact_t2_date
         ).all()
         pub_ids = [c.conference_id for c in all_published]
         all_pub_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
@@ -383,11 +398,11 @@ def task_scrape_and_ingest():
         email_res = email_svc.send_all_pending_reminders(db, conferences=all_published)
         logger.info(f"📧 Completed automated email reminders: {len(email_res)} conference(s) processed for recipient {email_svc.recipient_email}.")
 
-        # 6. Post separate Adaptive Cards to Microsoft Teams Webhook AUTOMATICALLY
-        from ..services.teams_service import TeamsWebhookService
-        teams_svc = TeamsWebhookService()
-        teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
-        logger.info(f"📢 Completed automated Teams webhook dispatch: {len(teams_res)} conference card(s) processed.")
+        # 6. Post separate Adaptive Cards to Microsoft Teams Webhook (DISABLED per user requirement)
+        # from ..services.teams_service import TeamsWebhookService
+        # teams_svc = TeamsWebhookService()
+        # teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+        logger.info("ℹ️ Teams webhook dispatch is currently disabled per user requirement.")
 
     except Exception as e:
         db.rollback()
@@ -402,24 +417,25 @@ def task_scrape_and_ingest():
 def task_publish_2_days_before():
     """
     Automated T-2 Publication Check:
-    - Finds all conferences whose start date is exactly 2 days from today.
+    - Finds all conferences whose start date falls within the T-2 window (today, tomorrow, Oct 11).
     - If not yet published, automatically marks is_published_to_excel=True and status='published'.
-    - Synchronizes Excel workbook (Conferences sheet, Speakers sheet, and Attendees sheet) with only T-2 conferences.
+    - Synchronizes Excel workbook (Conferences sheet, Speakers sheet, and Attendees sheet).
     - Sends individual separate email reminders for newly published conferences.
     - Posts individual Adaptive Cards to Microsoft Teams Webhook.
     """
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
-    logger.info(f"Running automated T-2 publication check for conferences starting on {exact_t2_date}...")
+    logger.info(f"Running automated T-2 publication check for conferences starting between {today} and {exact_t2_date}...")
     
     db = SessionLocal()
     excel_manager = ExcelManager()
     published_count = 0
     
     try:
-        # 1. Promote any conferences reaching T-2 today
+        # 1. Promote any conferences in the T-2 window
         newly_due = db.query(Conference).filter(
-            Conference.start_date == exact_t2_date,
+            Conference.start_date >= today,
+            Conference.start_date <= exact_t2_date,
             Conference.is_published_to_excel == False
         ).all()
         for c in newly_due:
@@ -428,10 +444,11 @@ def task_publish_2_days_before():
             logger.info(f"Conference {c.conference_title} reached T-2! Auto-publishing to Excel.")
         db.commit()
 
-        # 2. Get all conferences starting on exact_t2_date with is_published_to_excel=True
+        # 2. Get all conferences in T-2 window with is_published_to_excel=True
         all_published = db.query(Conference).filter(
             Conference.is_published_to_excel == True,
-            Conference.start_date == exact_t2_date
+            Conference.start_date >= today,
+            Conference.start_date <= exact_t2_date
         ).all()
         
         # 3. Get only speakers and attendees of the published conferences
@@ -448,10 +465,11 @@ def task_publish_2_days_before():
         email_svc = ConferenceEmailService()
         email_svc.send_all_pending_reminders(db, conferences=all_published)
 
-        # 5. Trigger Microsoft Teams Webhook cards for newly published conferences
-        from ..services.teams_service import TeamsWebhookService
-        teams_svc = TeamsWebhookService()
-        teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+        # 5. Trigger Microsoft Teams Webhook cards (DISABLED per user requirement)
+        # from ..services.teams_service import TeamsWebhookService
+        # teams_svc = TeamsWebhookService()
+        # teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+        logger.info("ℹ️ Teams webhook card delivery is disabled per user requirement.")
 
     except Exception as e:
         db.rollback()
@@ -508,40 +526,14 @@ def task_send_conference_reminder_emails(recipient_email: str = None, force: boo
 def task_send_teams_cards(force: bool = False, webhook_url: Optional[str] = None):
     """
     Dedicated Microsoft Teams Webhook Task:
-    - Queries all T-2 published conferences.
-    - Sends a rich Adaptive Card for each conference directly to Microsoft Teams.
-    - Enforces duplicate card prevention.
+    Disabled per user requirement ("don't send a teams card now please").
     """
-    from ..services.teams_service import TeamsWebhookService
-    logger.info("📢 [Teams Task] Initiating Teams Webhook card delivery job...")
-    db = SessionLocal()
-    teams_service = TeamsWebhookService(webhook_url=webhook_url)
-    sent_results = []
-
-    try:
-        today = date.today()
-        exact_t2_date = today + timedelta(days=2)
-
-        query = db.query(Conference).filter(
-            Conference.is_published_to_excel == True,
-            Conference.start_date == exact_t2_date
-        )
-        if not force:
-            query = query.filter(Conference.teams_webhook_sent == False)
-
-        targets = query.all()
-        logger.info(f"📢 [Teams Task] Found {len(targets)} conference(s) ready for Teams card delivery.")
-        sent_results = teams_service.send_all_pending_teams_cards(db, conferences=targets, force=force)
-        logger.info(f"📢 [Teams Task] Delivery finished. Processed {len(sent_results)} items.")
-    except Exception as e:
-        logger.error(f"❌ [Teams Task] Error during Teams delivery: {e}", exc_info=True)
-    finally:
-        db.close()
-
+    logger.info("📢 [Teams Task] Teams card dispatch is disabled per user requirement.")
     return {
-        "status": "success",
-        "processed_count": len(sent_results),
-        "results": sent_results
+        "status": "disabled",
+        "message": "Teams card delivery is disabled per user requirement.",
+        "processed_count": 0,
+        "results": []
     }
 
 

@@ -27,7 +27,10 @@ ALLEVENTS_URLS = [
 NON_CONFERENCE_KEYWORDS = [
     "workshop", "webinar", "happy hour", "bar crawl", "speed dating",
     "singles", "karaoke", "bootcamp", "mixer", "dinner", "party",
-    "networking lunch", "social mixer", "class", "brunch"
+    "networking lunch", "social mixer", "class", "brunch", "walk",
+    "comic con", "paleyfest", "talks with", "artform", "art show",
+    "stage", "screening", "exhibition", "concert", "comedy", "showcase",
+    "festival", "wellness walk", "becky g", "almodovar", "koom"
 ]
 
 class AllEventsScraper(BaseScraper):
@@ -85,6 +88,27 @@ class AllEventsScraper(BaseScraper):
                             full_location = f"{venue}, {default_city}".strip(', ')
 
                             desc = ev.get('description', '')
+                            organizer_name = ""
+
+                            # Deep scrape individual event page for complete description and real speakers
+                            try:
+                                ev_resp = requests.get(url, headers=HEADERS, timeout=10)
+                                if ev_resp.status_code == 200:
+                                    ev_soup = BeautifulSoup(ev_resp.text, 'html.parser')
+                                    text_all = ev_soup.get_text('\n', strip=True)
+                                    if "About the event" in text_all:
+                                        idx = text_all.find("About the event")
+                                        desc = text_all[idx:idx+3500]
+                                    elif "About this Event" in text_all:
+                                        idx = text_all.find("About this Event")
+                                        desc = text_all[idx:idx+3500]
+                                    
+                                    # Extract organizer if available
+                                    m_org = re.search(r"organized by\s+([^.\n]+)", text_all, re.I)
+                                    if m_org:
+                                        organizer_name = m_org.group(1).strip()
+                            except Exception as ev_err:
+                                logger.debug(f"Deep scrape error for {url}: {ev_err}")
 
                             raw_text = (
                                 f"Conference Title: {name}\n"
@@ -92,6 +116,7 @@ class AllEventsScraper(BaseScraper):
                                 f"Venue / Location: {full_location}\n"
                                 f"Start Date: {s_date}\n"
                                 f"End Date: {e_date}\n"
+                                f"Organizer: {organizer_name}\n"
                                 f"Official Event URL: {url}\n"
                                 f"Registration URL: {url}\n"
                                 f"Source: All Events (allevents.in)\n"

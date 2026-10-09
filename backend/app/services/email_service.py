@@ -498,21 +498,30 @@ class ConferenceEmailService:
         with open(self.outbox_log_path, "a", encoding="utf-8") as f:
             f.write(f"[{now_iso}] TO: {self.recipient_email} | STATUS: {send_status} | ID: {conf.conference_id} | SUBJ: {subject} | FILE: {html_filename}\n")
 
-        # 4. Save to Database EmailNotification table
-        notification = EmailNotification(
-            conference_id=conf.conference_id,
-            conference_unique_key=unique_key,
-            conference_title=conf.conference_title,
-            conference_date=conf.start_date,
-            venue=conf.venue or "",
-            recipient_email=self.recipient_email,
-            subject=subject,
-            status=send_status,
-            email_body=html_body,
-            sent_at=datetime.utcnow(),
-            error_message=error_msg
-        )
-        db.add(notification)
+        # 4. Save or update Database EmailNotification table
+        existing_notif = db.query(EmailNotification).filter(
+            EmailNotification.conference_unique_key == unique_key
+        ).first()
+        if existing_notif:
+            existing_notif.status = send_status
+            existing_notif.sent_at = datetime.utcnow()
+            existing_notif.error_message = error_msg
+            existing_notif.email_body = html_body
+        else:
+            notification = EmailNotification(
+                conference_id=conf.conference_id,
+                conference_unique_key=unique_key,
+                conference_title=conf.conference_title,
+                conference_date=conf.start_date,
+                venue=conf.venue or "",
+                recipient_email=self.recipient_email,
+                subject=subject,
+                status=send_status,
+                email_body=html_body,
+                sent_at=datetime.utcnow(),
+                error_message=error_msg
+            )
+            db.add(notification)
 
         # 5. Mark Conference record as email sent ONLY if actually delivered over SMTP
         if send_status == "sent":

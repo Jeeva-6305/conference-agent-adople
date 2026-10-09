@@ -49,8 +49,9 @@ def hourly_scrape_and_update_job():
         # Step 3: Run reminder email delivery for any pending unnotified conferences
         email_res = task_send_conference_reminder_emails()
 
-        # Step 4: Run Microsoft Teams Webhook card dispatch for any pending conferences
-        teams_res = task_send_teams_cards()
+        # Step 4: Run Microsoft Teams Webhook card dispatch (DISABLED per user requirement)
+        # teams_res = task_send_teams_cards()
+        logger.info("ℹ️ Teams Webhook card delivery is disabled per user requirement.")
         
         scheduler_state["total_runs"] += 1
         scheduler_state["last_status"] = "Success"
@@ -91,7 +92,7 @@ def start_scheduler():
             id="hourly_scraper_job",
             name="Automated Hourly Conference & Speaker Scraping",
             replace_existing=True,
-            next_run_time=datetime.now()  # Run immediately on start, then every 60 minutes
+            next_run_time=datetime.now() + timedelta(minutes=interval_minutes)
         )
         
         # 2. Safety publication check running every hour at the top of the hour (:00)

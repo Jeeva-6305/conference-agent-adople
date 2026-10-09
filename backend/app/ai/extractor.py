@@ -288,32 +288,27 @@ def normalize_text(text: str) -> str:
 TARGET_CATEGORIES = {
     "Healthcare": [
         "healthcare", "health tech", "digital health", "health ai", "healthcare ai",
-        "medical technology", "healthtech", "telehealth", "health care", "patient care", "health system", "health"
+        "medical technology", "healthtech", "telehealth", "health care", "patient care", "health system"
     ],
-    "Medicine & Hospitals": [
-        "medicine", "medical", "hospitals", "hospital", "clinical", "pharmaceuticals", "pharmaceutical",
+    "Medicines & Hospitals": [
+        "medicines", "medicine", "medical", "hospitals", "hospital", "clinical", "pharmaceuticals", "pharmaceutical",
         "medical devices", "healthcare providers", "life sciences", "pharma", "biotech", "biomedical",
-        "physicians", "pediatrics", "nursing", "oncology", "therapeutics", "drug", "drugs"
+        "physicians", "pediatrics", "nursing", "oncology", "therapeutics", "neurology", "diabetes"
     ],
     "Enterprise AI": [
         "enterprise ai", "generative ai", "agentic ai", "ai agents", "enterprise automation",
         "business ai", "ai transformation", "ai for business", "genai", "llm", "large language model",
-        "agentic", "agents"
+        "agentic", "agents", "ai in business"
     ],
     "AI Solutions": [
         "artificial intelligence", "ai solutions", "machine learning", "generative ai",
         "ai platforms", "ai applications", "ai technology", "deep learning", "neural network",
-        "computer vision", "nlp", "predictive analytics", "data science", "ai"
+        "computer vision", "nlp", "predictive analytics", "data science"
     ],
     "Financial Services": [
         "financial services", "fintech", "banking", "insurance", "investment", "payments",
         "financial technology", "ai in finance", "wealth management", "insurtech", "venture capital",
-        "private equity", "asset management", "finance", "financial"
-    ],
-    "Technology": [
-        "technology", "cloud", "software", "data", "cybersecurity", "cyber security", "cyber",
-        "enterprise technology", "emerging technology", "devops", "saas", "tech",
-        "information technology", "infrastructure", "iot", "semiconductor", "quantum computing", "it"
+        "private equity", "asset management", "finance", "financial", "mortgage", "lending", "real estate finance"
     ]
 }
 
@@ -675,28 +670,10 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
         if role.lower() in ["ceo", "founder"]:
             role = "Founder & CEO"
 
-    # 4. Known speaker-specific overrides for company names
-    norm_name = name.lower().strip()
-    if norm_name == "bobby kuzma":
-        company = "Marqui Security"
-        role = "Director of Cyber Threat Intelligence / CISO"
-    elif norm_name == "matt scheurer":
-        company = "First Financial Bank"
-        role = "VP, Computer Security & Incident Response"
-    elif norm_name == "richard greenberg" and "advu" in company.lower():
-        company = "Security Advisors LLC"
-    elif norm_name == "bruce phillips" and "williston" in company.lower():
-        company = "Williston Financial Group (WFG)"
-    elif norm_name == "kristin king" and "anzensage" in company.lower():
-        company = "AnzenSage"
-    elif norm_name == "benjamin hoffman" and "oregon" in company.lower():
-        company = "Oregon Health & Science University (OHSU)"
-    elif norm_name == "moira szilagyi" and "ucla" in company.lower():
-        company = "UCLA Mattel Children's Hospital"
-    elif norm_name == "lee savio beers" and "children's national" in company.lower():
-        company = "Children's National Hospital"
-    elif norm_name == "colleen kraft" and "keck" in company.lower():
-        company = "Keck School of Medicine of USC"
+    # 4. Preserve original scraped company and designation (No hardcoded speaker overrides)
+    if not company or company.lower() in ["tbd", "none", "n/a"]:
+        company = organizer_or_conf = conf_title or "Industry Organization"
+
 
     # 5. Resolve official company website
     comp_lower = company.lower()
@@ -961,15 +938,21 @@ class AIConferenceExtractor:
 
         # Official Conference URL
         official_url = raw_data.source_url
-        url_match = re.search(r"Official URL:\s*(https?://[^\s]+)", text)
+        url_match = re.search(r"Official\s+(?:Event\s+|Conference\s+)?URL:\s*(https?://[^\s]+)", text, re.I)
         if url_match:
             official_url = url_match.group(1).strip().rstrip(".,;")
 
         # Registration URL
         registration_url = raw_data.source_url
-        reg_match = re.search(r"Registration URL:\s*(https?://[^\s]+)", text)
+        reg_match = re.search(r"Registration\s+(?:Event\s+)?URL:\s*(https?://[^\s]+)", text, re.I)
         if reg_match:
             registration_url = reg_match.group(1).strip().rstrip(".,;")
+
+        # Ensure valid URLs without 404s
+        if not official_url or not official_url.startswith("http") or len(official_url) < 12:
+            official_url = raw_data.source_url
+        if not registration_url or not registration_url.startswith("http") or len(registration_url) < 12:
+            registration_url = raw_data.source_url
 
         # Fix 404 /en/events URLs
         official_url = official_url.replace("/en/events", "/events").rstrip(".,;")
@@ -1045,7 +1028,8 @@ class AIConferenceExtractor:
             r"(?:Keynote\s+|Featured\s+(?:Guest\s+)?)?Speakers?(?:\s*& Presenters|\s*& Guests)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|Hosts|\Z))",
             r"Hosts?(?:\s*&\s*(?:Featured\s*)?Guests?)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
             r"Meet the speakers?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
-            r"Panelists?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))"
+            r"Panelists?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"(?:(?:last\s+year'?s\s+|featured\s+|keynote\s+|this\s+year'?s\s+)?speakers?(?:\s*(?:&|and)\s*(?:presenters|guests|panelists))?(?:\s*(?:will\s+include|included|include|coming\s+soon))?):?\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|Hosts|This event is|Frequently Asked|\Z))"
         ]
 
         for spat in section_patterns:
@@ -1110,18 +1094,28 @@ class AIConferenceExtractor:
             clean_name = re.sub(r"^(Dr\.|Prof\.|Mr\.|Ms\.|Mrs\.)\s+", "", name, flags=re.I).strip()
             clean_name = re.sub(r"[\s,]+(MD|PhD|JD|CISO|CISSP|Esq|Jr\.|Sr\.|III|II|IV)[\s.]*$", "", clean_name, flags=re.I).strip()
 
+            # Handle names with parenthetical roles: e.g. "Will Grannis (CTO of Google Cloud)"
+            m_paren = re.match(r"^(.*?)\s*\((.*?)\)$", clean_name)
+            if m_paren:
+                clean_name = m_paren.group(1).strip()
+                cand_role = m_paren.group(2).strip()
+                if not cand["role"]:
+                    cand["role"] = cand_role
+
             invalid_words = [
                 "conference", "summit", "keynote", "speaker", "overview", "tbd", "tba", 
                 "placeholder", "session", "tickets", "registration", "join us", "whether",
                 "ventures", "foundation", "fabrik", "med / tech", "loft", "collective", 
                 "management", "fund", "outcast", "tech@nyu", "lmsys", "aws builder",
-                "expect", "talks", "reception", "panel", "discussion", "check-in"
+                "expect", "talks", "reception", "panel", "discussion", "check-in",
+                "passes", "available", "check how", "event tags", "artificial intelligence",
+                "ticket info", "top ceos", "researchers", "physicians", "admission", "spot"
             ]
             if (
                 len(clean_name.split()) < 2
                 or len(clean_name) > 35
                 or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%"])
-                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network)\b", clean_name, re.I)
+                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure)\b", clean_name, re.I)
                 or any(w in clean_name.lower() for w in invalid_words)
             ):
                 continue

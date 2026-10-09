@@ -110,8 +110,8 @@ export default function ConferencesDashboard() {
     setLoading(true);
     try {
       const [resConf, resSpk, resAtt, resSchedInfo] = await Promise.all([
-        fetch(`${API_BASE}/conferences`),
-        fetch(`${API_BASE}/speakers`),
+        fetch(`${API_BASE}/conferences?published_only=true`),
+        fetch(`${API_BASE}/speakers?published_only=true`),
         fetch(`${API_BASE}/attendees`),
         fetch(`${API_BASE}/scheduler/status`)
       ]);
@@ -256,7 +256,7 @@ export default function ConferencesDashboard() {
             USA Conference Discovery &amp; Publication Agent
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Focusing on 6 core business categories (Healthcare, Medicine &amp; Hospitals, Enterprise AI, AI Solutions, Financial Services, Technology) starting exactly 2 days out.
+            Focusing on 5 core categories (Healthcare, Medicines &amp; Hospitals, Enterprise AI, AI Solutions, Financial Services) for today, tomorrow, and October 11, 2026.
           </p>
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300">
@@ -444,13 +444,12 @@ export default function ConferencesDashboard() {
             onChange={(e) => setCategoryFilter(e.target.value)}
             className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            <option value="all">All Categories</option>
+            <option value="all">All 5 Core Categories</option>
             <option value="healthcare">Healthcare</option>
-            <option value="medicine">Medicine &amp; Hospitals</option>
+            <option value="medicines">Medicines &amp; Hospitals</option>
             <option value="enterprise ai">Enterprise AI</option>
             <option value="ai solutions">AI Solutions</option>
             <option value="financial">Financial Services</option>
-            <option value="technology">Technology</option>
           </select>
 
           {activeSheet === "conferences" && (

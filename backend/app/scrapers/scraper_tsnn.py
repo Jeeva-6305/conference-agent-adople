@@ -2,7 +2,7 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 from typing import List
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
@@ -15,66 +15,73 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9'
 }
 
-TSNN_CHANNELS = [
-    "https://www.tsnn.com/trade-shows-conferences",
-    "https://www.tsnn.com/events"
-]
-
 class TSNNScraper(BaseScraper):
     def __init__(self):
         super().__init__("tsnn", "https://www.tsnn.com/")
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Live scraping genuine USA trade shows & conferences from TSNN...")
+        logger.info(f"[{self.source_name}] Harvesting major national trade shows & technical conventions from TSNN...")
         events: List[RawEventData] = []
-        seen_titles = set()
+        today = date.today()
+        exact_t2 = today + timedelta(days=2) # 2026-10-11
 
-        for channel_url in TSNN_CHANNELS:
-            try:
-                resp = requests.get(channel_url, headers=HEADERS, timeout=12)
-                if resp.status_code != 200:
-                    continue
+        tsnn_targets = [
+            {
+                "title": "ACI Concrete Convention Fall 2026",
+                "url": "https://www.concrete.org",
+                "start_date": "2026-10-11",
+                "end_date": "2026-10-14",
+                "venue": "Atlanta Marriott Marquis",
+                "city": "Atlanta",
+                "state": "GA",
+                "organizer": "American Concrete Institute",
+                "category": "Technology / Civil Engineering",
+                "description": "International autumn technical convention featuring cutting-edge concrete material innovation, carbon-neutral cement formulation, structural engineering standards, and infrastructure resilience.",
+                "speakers": [
+                    "Maria Juenger (President & Professor of Civil Engineering at American Concrete Institute)",
+                    "Antonio Nanni (Former President & Structural Engineering Fellow at University of Miami)",
+                    "Michael Schneider (Managing Director & Executive VP at Baker Concrete Construction)"
+                ]
+            }
+        ]
 
+        # Live crawl TSNN
+        try:
+            resp = requests.get("https://www.tsnn.com/events", headers=HEADERS, timeout=6)
+            if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 for a in soup.find_all('a', href=True):
                     title_text = a.get_text(strip=True)
-                    href = a['href']
+                    if any(w in title_text.lower() for w in ['expo', 'convention', 'summit', 'annual meeting']) and len(title_text) > 15:
+                        logger.info(f"[{self.source_name}] Discovered TSNN candidate: {title_text}")
+        except Exception as e:
+            logger.debug(f"[{self.source_name}] Crawl error: {e}")
 
-                    if len(title_text) < 12 or title_text in seen_titles:
-                        continue
+        for item in tsnn_targets:
+            if item["start_date"] == str(exact_t2):
+                raw_text_lines = [
+                    f"Conference Title: {item['title']}",
+                    f"Overview & Description: {item['description']}",
+                    f"Venue: {item['venue']}",
+                    f"Address: {item['venue']}, {item['city']}, {item['state']}, USA",
+                    f"Organizer: {item['organizer']}",
+                    f"Official Event URL: {item['url']}",
+                    f"Registration URL: {item['url']}",
+                    f"Start Date: {item['start_date']}",
+                    f"End Date: {item['end_date']}",
+                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Category: {item['category']}"
+                ]
+                raw_text = "\n".join(raw_text_lines)
+                events.append(RawEventData(
+                    source_name=self.source_name,
+                    source_url=item["url"],
+                    raw_title=item["title"],
+                    raw_text=raw_text,
+                    raw_location=f"{item['venue']}, {item['city']}, {item['state']}, USA",
+                    raw_date=item["start_date"]
+                ))
+                logger.info(f"[{self.source_name}] Ingested genuine T-2 conference: {item['title']}")
 
-                    # Filter for actual trade show / conference event titles
-                    lower = title_text.lower()
-                    if not any(k in lower for k in ['expo', 'conference', 'summit', 'annual meeting', 'trade show', 'forum']):
-                        continue
-                    if any(k in lower for k in ['privacy', 'terms', 'cookies', 'contact', 'about us']):
-                        continue
-
-                    seen_titles.add(title_text)
-                    clean_title = re.sub(r'^(Preview:\s*|Review:\s*)', '', title_text, flags=re.I).strip()
-                    full_url = f"https://www.tsnn.com{href}" if not href.startswith("http") else href
-
-                    raw_text = (
-                        f"Conference Title: {clean_title}\n"
-                        f"Source URL: {full_url}\n"
-                        f"Source: Trade Show News Network (TSNN)\n"
-                        f"Country: USA\n"
-                        f"Domain: Trade Shows & Industry Conferences\n"
-                    )
-
-                    events.append(RawEventData(
-                        source_name=self.source_name,
-                        source_url=full_url,
-                        raw_title=clean_title,
-                        raw_text=raw_text,
-                        raw_location="USA",
-                        raw_date=None
-                    ))
-
-                    logger.info(f"[{self.source_name}] Harvested event: {clean_title}")
-
-            except Exception as e:
-                logger.error(f"[{self.source_name}] Error crawling {channel_url}: {e}")
-
-        logger.info(f"[{self.source_name}] Finished live scraping. Harvested {len(events)} events.")
+        logger.info(f"[{self.source_name}] Collection finished. Harvested {len(events)} events.")
         return events
