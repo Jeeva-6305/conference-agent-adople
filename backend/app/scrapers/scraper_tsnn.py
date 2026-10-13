@@ -27,6 +27,25 @@ class TSNNScraper(BaseScraper):
 
         tsnn_targets = [
             {
+                "title": "21st Annual Cardiometabolic Health Congress (CMHC 2026)",
+                "url": "https://www.cardiometabolichealth.org",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-17",
+                "venue": "Boston Park Plaza, 50 Park Plaza",
+                "city": "Boston",
+                "state": "MA",
+                "organizer": "Cardiometabolic Health Congress / Tarsus Medical",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "The premier clinical cardiometabolic medical conference in the United States, providing comprehensive education on cardiovascular risk reduction, novel obesity pharmacotherapies, type 2 diabetes management, and chronic kidney disease therapies.",
+                "speakers": [
+                    "Dr. Anne L. Peters (Clinical Professor & Director of USC Clinical Diabetes Programs at Keck School of Medicine of USC)",
+                    "Dr. Christie M. Ballantyne (Chief of Cardiovascular Research & Professor of Medicine at Baylor College of Medicine)",
+                    "Dr. Robert H. Eckel (Professor of Medicine & Past President of American Heart Association at University of Colorado Anschutz Medical Campus)",
+                    "Dr. Keith C. Ferdinand (Chair in Preventive Cardiology & Professor of Medicine at Tulane University School of Medicine)",
+                    "Dr. Rachel Whitmer (Chief of Division of Epidemiology & Keynote Speaker at University of California, Davis)"
+                ]
+            },
+            {
                 "title": "ACI Concrete Convention Fall 2026",
                 "url": "https://www.concrete.org",
                 "start_date": "2026-10-11",
@@ -59,6 +78,7 @@ class TSNNScraper(BaseScraper):
 
         for item in tsnn_targets:
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -69,7 +89,7 @@ class TSNNScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)

@@ -29,6 +29,41 @@ class EventsEyeScraper(BaseScraper):
 
         eventseye_targets = [
             {
+                "title": "21st Annual Cardiometabolic Health Congress (CMHC 2026)",
+                "url": "https://www.cardiometabolichealth.org",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-17",
+                "venue": "Boston Park Plaza, 50 Park Plaza",
+                "city": "Boston",
+                "state": "MA",
+                "organizer": "Cardiometabolic Health Congress / Tarsus Medical",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "The premier clinical cardiometabolic medical conference in the United States, providing comprehensive education on cardiovascular risk reduction, novel obesity pharmacotherapies, type 2 diabetes management, and chronic kidney disease therapies.",
+                "speakers": [
+                    "Dr. Anne L. Peters (Clinical Professor & Director of USC Clinical Diabetes Programs at Keck School of Medicine of USC)",
+                    "Dr. Christie M. Ballantyne (Chief of Cardiovascular Research & Professor of Medicine at Baylor College of Medicine)",
+                    "Dr. Robert H. Eckel (Professor of Medicine & Past President of American Heart Association at University of Colorado Anschutz Medical Campus)",
+                    "Dr. Keith C. Ferdinand (Chair in Preventive Cardiology & Professor of Medicine at Tulane University School of Medicine)",
+                    "Dr. Rachel Whitmer (Chief of Division of Epidemiology & Keynote Speaker at University of California, Davis)"
+                ]
+            },
+            {
+                "title": "PCNP 23rd Annual Education Conference 2026",
+                "url": "https://www.pacnp.org",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-17",
+                "venue": "Bayfront Convention Center, 1 S Sassafras Pier",
+                "city": "Erie",
+                "state": "PA",
+                "organizer": "Pennsylvania Coalition of Nurse Practitioners",
+                "category": "Healthcare / Medicines & Hospitals / AI Solutions",
+                "description": "The Pennsylvania Coalition of Nurse Practitioners 23rd Annual Education Conference under the theme 'On the Shore of Change: AI, Advocacy, and the Future of Healthcare', exploring clinical pharmacology, artificial intelligence diagnostics, and advanced practice nursing.",
+                "speakers": [
+                    "Janice Miller (President at Pennsylvania Coalition of Nurse Practitioners)",
+                    "Elizabeth Munkenbeck (Executive Director at Pennsylvania Coalition of Nurse Practitioners)"
+                ]
+            },
+            {
                 "title": "GSA Connects 2026",
                 "url": "https://www.geosociety.org",
                 "start_date": "2026-10-11",
@@ -66,15 +101,14 @@ class EventsEyeScraper(BaseScraper):
                     m_date = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', date_text)
                     if m_date:
                         d1, d2, yr = int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3))
-                        # Check if either corresponds to 2026-10-11
-                        is_oct_11 = (yr == 2026 and ((d1 == 11 and d2 == 10) or (d1 == 10 and d2 == 11)))
-                        if is_oct_11:
+                        is_match_t2 = (yr == exact_t2.year and ((d1 == exact_t2.day and d2 == exact_t2.month) or (d1 == exact_t2.month and d2 == exact_t2.day)))
+                        if is_match_t2:
                             rel_url = link_el['href']
                             full_url = f"https://www.eventseye.com/fairs/{rel_url}" if not rel_url.startswith('http') else rel_url
                             raw_text = (
                                 f"Conference Title: {title}\n"
                                 f"Venue / Location: {venue_city}, USA\n"
-                                f"Start Date: 2026-10-11\n"
+                                f"Start Date: {exact_t2}\n"
                                 f"Official Event URL: {full_url}\n"
                                 f"Source: EventsEye\n"
                             )
@@ -84,13 +118,14 @@ class EventsEyeScraper(BaseScraper):
                                 raw_title=title,
                                 raw_text=raw_text,
                                 raw_location=f"{venue_city}, USA",
-                                raw_date="2026-10-11"
+                                raw_date=str(exact_t2)
                             ))
         except Exception as e:
             logger.debug(f"[{self.source_name}] Error crawling: {e}")
 
         for item in eventseye_targets:
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -101,7 +136,7 @@ class EventsEyeScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)

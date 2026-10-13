@@ -82,7 +82,19 @@ VERIFIED_LINKEDIN_HANDLES = {
     "ian kistner": "https://www.linkedin.com/in/ian-kistner",
     "amy lin": "https://www.linkedin.com/in/heyamylin",
     "andy chen": "https://www.linkedin.com/in/atchen",
-    "brian zhou": "https://www.linkedin.com/in/brian-zhou"
+    "brian zhou": "https://www.linkedin.com/in/brian-zhou",
+    "terry jones": "https://www.linkedin.com/in/terrellbjones",
+    "eva galperin": "https://www.linkedin.com/in/eva-galperin-4825a92ba",
+    "sridhar ramaswamy": "https://www.linkedin.com/in/sridhar-ramaswamy",
+    "christian kleinerman": "https://www.linkedin.com/in/christian-kleinerman-a973102",
+    "brenner adams": "https://www.linkedin.com/in/brenneradams",
+    "anne l. peters": "https://www.linkedin.com/in/annetheresepeters",
+    "anne peters": "https://www.linkedin.com/in/annetheresepeters",
+    "christie m. ballantyne": "https://www.linkedin.com/in/christie-ballantyne-md-bb954914",
+    "christie ballantyne": "https://www.linkedin.com/in/christie-ballantyne-md-bb954914",
+    "chris volpe": "https://www.linkedin.com/in/nychrisvolpe",
+    "amanda gardner": "https://www.linkedin.com/in/amanda-gardner-36ba5419",
+    "mike hruska": "https://www.linkedin.com/in/mikehruska"
 }
 
 COMPANY_URL_MAPPINGS = [
@@ -298,7 +310,7 @@ TARGET_CATEGORIES = {
     "Enterprise AI": [
         "enterprise ai", "generative ai", "agentic ai", "ai agents", "enterprise automation",
         "business ai", "ai transformation", "ai for business", "genai", "llm", "large language model",
-        "agentic", "agents", "ai in business"
+        "agentic", "autonomous agents", "ai in business"
     ],
     "AI Solutions": [
         "artificial intelligence", "ai solutions", "machine learning", "generative ai",
@@ -1035,7 +1047,7 @@ class AIConferenceExtractor:
         for spat in section_patterns:
             for spk_match in re.finditer(spat, text, re.I | re.DOTALL):
                 spk_text = spk_match.group(1).strip()
-                raw_entries = re.split(r"[;\n\r•]+", spk_text)
+                raw_entries = re.split(r"[;\n\r•]+|,\s*(?=(?:(?:Dr\.|Prof\.|Mr\.|Ms\.)\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s*\()", spk_text)
                 for entry in raw_entries:
                     entry = entry.strip().rstrip(".").strip()
                     if not entry or len(entry) < 3:

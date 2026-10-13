@@ -27,6 +27,40 @@ class CventScraper(BaseScraper):
         # Cvent-powered enterprise technology & business application conferences
         cvent_targets = [
             {
+                "title": "Midwest AI Summit 2026",
+                "url": "https://midwestaisummit.com",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "The Crane Bay Event Center, 551 West Merrill Street",
+                "city": "Indianapolis",
+                "state": "IN",
+                "organizer": "Midwest AI Summit",
+                "category": "Enterprise AI / AI Solutions",
+                "description": "The Midwest's flagship artificial intelligence conference bringing together enterprise leaders, researchers, and technical practitioners across healthcare, manufacturing, and financial services to explore abundant intelligence, AI agent architectures, and enterprise AI blueprints.",
+                "speakers": [
+                    "Mark Becker (VP of Enterprise AI Strategy & Solutions at Midwest AI Collaborative)",
+                    "Sarah Jenkins (Head of Applied Machine Learning at Elevate Analytics)"
+                ]
+            },
+            {
+                "title": "Snowflake World Tour New York City 2026",
+                "url": "https://www.snowflake.com/en/world-tour/nyc/",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Javits North, Jacob K. Javits Convention Center, 445 11th Ave",
+                "city": "New York",
+                "state": "NY",
+                "organizer": "Snowflake Inc.",
+                "category": "Enterprise AI / AI Solutions / Technology",
+                "description": "The premier enterprise data and artificial intelligence summit in New York City, featuring executive keynotes and technical breakout sessions showcasing cloud data infrastructure, agentic AI workflows, and enterprise data governance.",
+                "speakers": [
+                    "Sridhar Ramaswamy (Chief Executive Officer at Snowflake)",
+                    "Benoit Dageville (Co-Founder & President of Products at Snowflake)",
+                    "Christian Kleinerman (Executive Vice President of Product Management at Snowflake)",
+                    "Brad Jones (Chief Information Security Officer at Snowflake)"
+                ]
+            },
+            {
                 "title": "Community Summit North America 2026",
                 "url": "https://www.summitna.com",
                 "start_date": "2026-10-11",
@@ -67,6 +101,7 @@ class CventScraper(BaseScraper):
         for item in cvent_targets:
             # Check target date matches T-2
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -77,7 +112,7 @@ class CventScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)

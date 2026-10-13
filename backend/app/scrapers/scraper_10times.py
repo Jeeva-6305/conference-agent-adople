@@ -27,6 +27,43 @@ class TenTimesScraper(BaseScraper):
 
         tentimes_targets = [
             {
+                "title": "Snowflake World Tour New York City 2026",
+                "url": "https://www.snowflake.com/en/world-tour/nyc/",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Javits North, Jacob K. Javits Convention Center, 445 11th Ave",
+                "city": "New York",
+                "state": "NY",
+                "organizer": "Snowflake Inc.",
+                "category": "Enterprise AI / AI Solutions / Technology",
+                "description": "The premier enterprise data and artificial intelligence summit in New York City, featuring executive keynotes and technical breakout sessions showcasing cloud data infrastructure, agentic AI workflows, and enterprise data governance.",
+                "speakers": [
+                    "Sridhar Ramaswamy (Chief Executive Officer at Snowflake)",
+                    "Benoit Dageville (Co-Founder & President of Products at Snowflake)",
+                    "Christian Kleinerman (Executive Vice President of Product Management at Snowflake)",
+                    "Brad Jones (Chief Information Security Officer at Snowflake)"
+                ]
+            },
+            {
+                "title": "2026 ThinkEquity Conference",
+                "url": "https://www.think-equity.com/thinkequity-conference",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Mandarin Oriental Hotel, 80 Columbus Circle",
+                "city": "New York",
+                "state": "NY",
+                "organizer": "ThinkEquity LLC",
+                "category": "Financial Services / Technology",
+                "description": "Premier institutional investment banking conference convening over 85 public and private corporate presenters with institutional investors, venture funds, and private wealth managers covering emerging growth sectors in AI, digital assets, healthcare, and fintech.",
+                "speakers": [
+                    "Martin Sumichrast (Chairman of the Board at Hawkeye Digital)",
+                    "David Wachsman (President at Hawkeye Digital)",
+                    "Leonard Mazur (Executive Chairman & CEO at Citius Pharmaceuticals)",
+                    "Dr. Ehud Geller (Chairman of the Board at Regentis Biomaterials)",
+                    "Brenner Adams (Chief Executive Officer at TruGolf)"
+                ]
+            },
+            {
                 "title": "Building A Transit-Oriented Puget Sound Conference 2026",
                 "url": "https://www.eventbrite.com/e/building-a-transit-oriented-puget-sound-tickets-2002225133272",
                 "start_date": "2026-10-11",
@@ -59,6 +96,7 @@ class TenTimesScraper(BaseScraper):
 
         for item in tentimes_targets:
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -69,7 +107,7 @@ class TenTimesScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)

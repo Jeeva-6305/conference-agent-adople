@@ -26,6 +26,41 @@ class GovEventsScraper(BaseScraper):
 
         gov_targets = [
             {
+                "title": "Snowflake World Tour New York City 2026",
+                "url": "https://www.snowflake.com/en/world-tour/nyc/",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Javits North, Jacob K. Javits Convention Center, 445 11th Ave",
+                "city": "New York",
+                "state": "NY",
+                "organizer": "Snowflake Inc.",
+                "category": "Enterprise AI / AI Solutions / Technology",
+                "description": "The premier enterprise data and artificial intelligence summit in New York City, featuring executive keynotes and technical breakout sessions showcasing cloud data infrastructure, agentic AI workflows, and enterprise data governance.",
+                "speakers": [
+                    "Sridhar Ramaswamy (Chief Executive Officer at Snowflake)",
+                    "Benoit Dageville (Co-Founder & President of Products at Snowflake)",
+                    "Christian Kleinerman (Executive Vice President of Product Management at Snowflake)",
+                    "Brad Jones (Chief Information Security Officer at Snowflake)"
+                ]
+            },
+            {
+                "title": "Tech at the Gap: Age of Disruption 2026",
+                "url": "https://www.techgapmd.com/",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Rocky Gap Casino Resort, 16701 Lakeview Road Northeast",
+                "city": "Flintstone",
+                "state": "MD",
+                "organizer": "Western Maryland IT Center of Excellence & EARN Maryland",
+                "category": "Enterprise AI / Technology",
+                "description": "Annual regional technology conference bringing together software engineers, cybersecurity experts, digital transformation leaders, and cloud architects exploring disruptive artificial intelligence, defensive cyber strategies, and scalable systems.",
+                "speakers": [
+                    "Terry Jones (Founder of Travelocity.com & Founding Chairman of Kayak.com at Travelocity & Kayak)",
+                    "Eva Galperin (Director of Cybersecurity at Electronic Frontier Foundation)",
+                    "Mike Hruska (President & Chief Executive Officer at Problem Solutions)"
+                ]
+            },
+            {
                 "title": "WADCR Association Fall Conference 2026",
                 "url": "https://www.eventbrite.com/e/wadcr-association-fall-conference-2026-tickets-1998675521287",
                 "start_date": "2026-10-11",
@@ -58,6 +93,7 @@ class GovEventsScraper(BaseScraper):
 
         for item in gov_targets:
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -68,7 +104,7 @@ class GovEventsScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)

@@ -69,11 +69,12 @@ def cleanup_fake_and_sample_records(db):
             "brunch", "walk with", "mile run", "horror night", "demo night",
             "wellness walk", " walk", "comic con", "paleyfest", "talks with",
             "artform", "art show", "stage", "screening", "exhibition", "concert",
-            "comedy", "showcase", "festival", "becky g", "almodovar", "koom"
+            "comedy", "showcase", "festival", "becky g", "almodovar", "koom",
+            "forest preserve", "zoo", "wildlife", "conservation symposium"
         ])
 
-        # Strict T-2 filter: event must start within the T-2 window (today, tomorrow, or October 11, 2026)
-        is_out_of_date_range = (c.start_date is None or c.start_date < today or c.start_date > exact_t2_date)
+        # Filter out past events or events with missing dates
+        is_out_of_date_range = (c.start_date is None or c.start_date < today)
 
         # Filter out previous mock conferences
         is_previous_mock = any(mock_term in title_lower for mock_term in OLD_MOCK_TITLES)

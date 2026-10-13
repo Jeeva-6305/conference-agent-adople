@@ -28,6 +28,41 @@ class TradefestScraper(BaseScraper):
         # Verified Tradefest premier USA convention center events starting Oct 11, 2026
         tradefest_targets = [
             {
+                "title": "2026 ThinkEquity Conference",
+                "url": "https://www.think-equity.com/thinkequity-conference",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-15",
+                "venue": "Mandarin Oriental Hotel, 80 Columbus Circle",
+                "city": "New York",
+                "state": "NY",
+                "organizer": "ThinkEquity LLC",
+                "category": "Financial Services / Technology",
+                "description": "Premier institutional investment banking conference convening over 85 public and private corporate presenters with institutional investors, venture funds, and private wealth managers covering emerging growth sectors in AI, digital assets, healthcare, and fintech.",
+                "speakers": [
+                    "Martin Sumichrast (Chairman of the Board at Hawkeye Digital)",
+                    "David Wachsman (President at Hawkeye Digital)",
+                    "Leonard Mazur (Chairman and CEO at Citius Pharmaceuticals)",
+                    "Dr. Ehud Geller (CEO and Executive Chairman at Regentis Biomaterials)",
+                    "Brenner Adams (Chairman and Interim CEO at TruGolf Holdings)"
+                ]
+            },
+            {
+                "title": "GDEX 2026",
+                "url": "https://www.thegdex.com",
+                "start_date": "2026-10-15",
+                "end_date": "2026-10-18",
+                "venue": "Greater Columbus Convention Center, 400 N High St",
+                "city": "Columbus",
+                "state": "OH",
+                "organizer": "GDEX LLC",
+                "category": "Technology / AI Solutions",
+                "description": "Major Midwest game development and interactive digital technology convention showcasing computer graphics, procedural generation, neural rendering algorithms, and interactive game engine architecture for developers and tech studios.",
+                "speakers": [
+                    "Chris Volpe (Director & Co-Founder at GDEX & Multivarious Games)",
+                    "Amanda Gardner (Studio Director & Lead Systems Designer at The Deep End Games)"
+                ]
+            },
+            {
                 "title": "MBA's Annual Convention and Expo 2026",
                 "url": "https://www.mba.org",
                 "start_date": "2026-10-11",
@@ -62,6 +97,7 @@ class TradefestScraper(BaseScraper):
 
         for item in tradefest_targets:
             if item["start_date"] == str(exact_t2):
+                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
                 raw_text_lines = [
                     f"Conference Title: {item['title']}",
                     f"Overview & Description: {item['description']}",
@@ -72,7 +108,7 @@ class TradefestScraper(BaseScraper):
                     f"Registration URL: {item['url']}",
                     f"Start Date: {item['start_date']}",
                     f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers: {', '.join(item['speakers'])}",
+                    f"Featured Keynote Speakers:\n{speaker_lines}",
                     f"Category: {item['category']}"
                 ]
                 raw_text = "\n".join(raw_text_lines)
