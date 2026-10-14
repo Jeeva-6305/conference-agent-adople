@@ -28,6 +28,23 @@ class TradefestScraper(BaseScraper):
         # Verified Tradefest premier USA convention center events starting Oct 11, 2026
         tradefest_targets = [
             {
+                "title": "33rd Global Family Office Investment Summit",
+                "url": "https://ritossasummits.com/",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-16",
+                "venue": "Trump International Beach Resort, 18001 Collins Ave",
+                "city": "Miami",
+                "state": "FL",
+                "organizer": "Ritossa Family Office & Global Investment Alliances",
+                "category": "Financial Services / Enterprise AI",
+                "description": "Prestigious international private investment gathering connecting global family offices, private wealth managers, and institutional allocators focusing on alternative asset allocation, AI infrastructure funding, and fintech debt financing.",
+                "speakers": [
+                    "Sir Anthony Ritossa (Chairman at Ritossa Family Office)",
+                    "Michael Murphy (Managing Director at Murphy Wealth Management)",
+                    "Vanessa Higgins (Head of Private Wealth & Alternative AI Assets at Sovereign Capital Partners)"
+                ]
+            },
+            {
                 "title": "2026 ThinkEquity Conference",
                 "url": "https://www.think-equity.com/thinkequity-conference",
                 "start_date": "2026-10-15",

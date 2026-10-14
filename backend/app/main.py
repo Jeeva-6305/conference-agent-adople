@@ -76,8 +76,8 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     today = date.today()
     exact_2_days = today + timedelta(days=2)
     upcoming_2_days = db.query(Conference).filter(
-        Conference.start_date >= today,
-        Conference.start_date <= exact_2_days
+        Conference.is_published_to_excel == True,
+        Conference.start_date == exact_2_days
     ).count()
     
     sched = get_scheduler_status()
@@ -109,10 +109,15 @@ def get_conferences(
 ):
     today = date.today()
     exact_t2 = today + timedelta(days=2)
-    query = db.query(Conference).filter(
-        Conference.start_date >= today,
-        Conference.start_date <= exact_t2
-    )
+    query = db.query(Conference)
+
+    if published_only:
+        query = query.filter(
+            Conference.is_published_to_excel == True,
+            Conference.start_date == exact_t2
+        )
+    else:
+        query = query.filter(Conference.start_date >= today)
 
     if source:
         query = query.filter(Conference.source_name.ilike(f"%{source}%"))
@@ -151,16 +156,16 @@ def get_speakers(
     """Fetch verified speaker profiles extracted from official sources strictly for T-2 conferences."""
     today = date.today()
     exact_t2 = today + timedelta(days=2)
-    t2_confs = db.query(Conference).filter(
-        Conference.start_date >= today,
-        Conference.start_date <= exact_t2
-    ).all()
-    t2_ids = [c.conference_id for c in t2_confs]
 
     query = db.query(Speaker)
     if conference_id:
         query = query.filter(Speaker.conference_id == conference_id)
-    else:
+    elif published_only:
+        t2_confs = db.query(Conference.conference_id).filter(
+            Conference.is_published_to_excel == True,
+            Conference.start_date == exact_t2
+        ).all()
+        t2_ids = [c[0] for c in t2_confs]
         query = query.filter(Speaker.conference_id.in_(t2_ids))
     return query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
 
@@ -173,16 +178,16 @@ def get_attendees(
     """Fetch attendee and participant profile details strictly for T-2 conferences."""
     today = date.today()
     exact_t2 = today + timedelta(days=2)
-    t2_confs = db.query(Conference).filter(
-        Conference.start_date >= today,
-        Conference.start_date <= exact_t2
-    ).all()
-    t2_ids = [c.conference_id for c in t2_confs]
 
     query = db.query(Attendee)
     if conference_id:
         query = query.filter(Attendee.conference_id == conference_id)
-    else:
+    elif published_only:
+        t2_confs = db.query(Conference.conference_id).filter(
+            Conference.is_published_to_excel == True,
+            Conference.start_date == exact_t2
+        ).all()
+        t2_ids = [c[0] for c in t2_confs]
         query = query.filter(Attendee.conference_id.in_(t2_ids))
     return query.order_by(Attendee.conference_name.asc()).all()
 

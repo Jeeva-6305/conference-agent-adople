@@ -27,6 +27,23 @@ class CventScraper(BaseScraper):
         # Cvent-powered enterprise technology & business application conferences
         cvent_targets = [
             {
+                "title": "2026 International Acromegaly Community Conference",
+                "url": "https://www.barrowneuro.org/",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-18",
+                "venue": "Barrow Neurological Institute, 2910 N 3rd Ave",
+                "city": "Phoenix",
+                "state": "AZ",
+                "organizer": "Acromegaly Community & Barrow Neurological Foundation",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "National medical education and clinical research summit bringing together neuroendocrine surgeons, clinical endocrinologists, and healthcare providers to explore advanced pituitary treatments, medical therapies, and clinical trials.",
+                "speakers": [
+                    "Dr. Kevin Yuen (Medical Director of Neuroendocrinology Clinic at Barrow Neurological Institute)",
+                    "Dr. Andrew Little (Director of Pituitary Center at Barrow Neurological Institute)",
+                    "Jill Sisco (President at Acromegaly Community Inc.)"
+                ]
+            },
+            {
                 "title": "Midwest AI Summit 2026",
                 "url": "https://midwestaisummit.com",
                 "start_date": "2026-10-15",

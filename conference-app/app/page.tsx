@@ -256,7 +256,7 @@ export default function ConferencesDashboard() {
             USA Conference Discovery &amp; Publication Agent
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Focusing on 5 core categories (Healthcare, Medicines &amp; Hospitals, Enterprise AI, AI Solutions, Financial Services) for today, tomorrow, and October 11, 2026.
+            Focusing on 5 core categories (Healthcare, Medicines &amp; Hospitals, Enterprise AI, AI Solutions, Financial Services) strictly 2 days in advance (T-2 Logic).
           </p>
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300">

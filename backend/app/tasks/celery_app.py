@@ -107,8 +107,8 @@ def cleanup_fake_and_sample_records(db):
         else:
             seen_titles.add(title_lower)
             c.industry_category = " / ".join(matched_cats)
-            # Update publication state according to start date
-            if today <= c.start_date <= exact_t2_date:
+            # Update publication state according to exact T-2 start date
+            if c.start_date == exact_t2_date:
                 c.is_published_to_excel = True
                 c.status = "published"
             elif c.start_date and c.start_date > exact_t2_date:
@@ -116,6 +116,7 @@ def cleanup_fake_and_sample_records(db):
                 c.status = "scheduled"
             else:
                 c.is_published_to_excel = False
+                c.status = "past" if c.start_date < today else "completed"
 
     db.commit()
     logger.info(f"Cleaned up {deleted_count} stale/obsolete/non-category records from database.")
@@ -123,8 +124,7 @@ def cleanup_fake_and_sample_records(db):
     # Sync Excel with ONLY genuine published T-2 conferences & their speakers & attendees
     published_confs = db.query(Conference).filter(
         Conference.is_published_to_excel == True,
-        Conference.start_date >= today,
-        Conference.start_date <= exact_t2_date
+        Conference.start_date == exact_t2_date
     ).all()
     pub_ids = [conf.conference_id for conf in published_confs]
     published_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
@@ -174,9 +174,9 @@ def task_scrape_and_ingest():
 
             conf_start = date.fromisoformat(extracted.start_date)
             conf_end = date.fromisoformat(extracted.end_date)
-            if not (today <= conf_start <= exact_t2_date):
+            if conf_start < today:
                 continue
-            is_exact_t2 = True
+            is_exact_t2 = (conf_start == exact_t2_date)
 
             # Pre-verify that conference URL is active and does not return 404
             try:
@@ -291,7 +291,16 @@ def task_scrape_and_ingest():
             # Insert or update speakers, guaranteeing 100% deduplication
             seen_in_batch = set()
             for cand in candidate_speakers:
-                n_key = cand["name"].lower()
+                spk_name = cand["name"].strip()
+                if (
+                    not spk_name 
+                    or len(spk_name) < 3 
+                    or len(spk_name) > 40
+                    or any(c in spk_name for c in ["?", ":", "$", "%", "\\", "/"])
+                    or any(bad in spk_name.lower() for bad in ["refund", "ticket", "hotel", "options?", "fee", "mola will", "face value", "policy", "transfer your"])
+                ):
+                    continue
+                n_key = spk_name.lower()
                 if n_key in seen_in_batch:
                     continue
                 seen_in_batch.add(n_key)
@@ -381,11 +390,10 @@ def task_scrape_and_ingest():
 
             logger.info(f"Verified & Stored: {conf.conference_title} | Start: {conf.start_date} | T-2 Published: {is_exact_t2} | Verified Speakers: {len(dedup_set)}")
 
-        # 4. Sync Excel: Genuine conferences in the T-2 window (today, tomorrow, Oct 11)
+        # 4. Sync Excel: Genuine conferences strictly matching the exact T-2 date
         all_published = db.query(Conference).filter(
             Conference.is_published_to_excel == True,
-            Conference.start_date >= today,
-            Conference.start_date <= exact_t2_date
+            Conference.start_date == exact_t2_date
         ).all()
         pub_ids = [c.conference_id for c in all_published]
         all_pub_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
@@ -433,23 +441,31 @@ def task_publish_2_days_before():
     published_count = 0
     
     try:
-        # 1. Promote any conferences in the T-2 window
+        # 1. Promote any conferences strictly matching exact T-2 date
         newly_due = db.query(Conference).filter(
-            Conference.start_date >= today,
-            Conference.start_date <= exact_t2_date,
+            Conference.start_date == exact_t2_date,
             Conference.is_published_to_excel == False
         ).all()
         for c in newly_due:
             c.is_published_to_excel = True
             c.status = "published"
             logger.info(f"Conference {c.conference_title} reached T-2! Auto-publishing to Excel.")
+
+        # Demote any conferences that are not exact T-2
+        non_t2 = db.query(Conference).filter(
+            Conference.start_date != exact_t2_date,
+            Conference.is_published_to_excel == True
+        ).all()
+        for p in non_t2:
+            p.is_published_to_excel = False
+            p.status = "scheduled" if p.start_date and p.start_date > exact_t2_date else "completed"
+
         db.commit()
 
-        # 2. Get all conferences in T-2 window with is_published_to_excel=True
+        # 2. Get all conferences strictly matching exact T-2 date
         all_published = db.query(Conference).filter(
             Conference.is_published_to_excel == True,
-            Conference.start_date >= today,
-            Conference.start_date <= exact_t2_date
+            Conference.start_date == exact_t2_date
         ).all()
         
         # 3. Get only speakers and attendees of the published conferences

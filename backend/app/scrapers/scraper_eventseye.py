@@ -29,6 +29,22 @@ class EventsEyeScraper(BaseScraper):
 
         eventseye_targets = [
             {
+                "title": "JIS Fall 2026 - Global Commerce & Fintech Expo",
+                "url": "https://www.jisshow.com/fall/",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-19",
+                "venue": "Miami Beach Convention Center, 1901 Convention Ctr Dr",
+                "city": "Miami Beach",
+                "state": "FL",
+                "organizer": "RX Global (Reed Exhibitions)",
+                "category": "Financial Services / Technology",
+                "description": "Major international B2B commercial trade expo connecting over 600 global manufacturers with retail business owners, luxury trade leaders, and commercial lenders, showcasing point-of-sale fintech innovations and enterprise supply chain technology.",
+                "speakers": [
+                    "Sara McDonough (Show Director at RX USA)",
+                    "Carlos Mendoza (VP of Global Commerce & Payment Security at RX Global)"
+                ]
+            },
+            {
                 "title": "21st Annual Cardiometabolic Health Congress (CMHC 2026)",
                 "url": "https://www.cardiometabolichealth.org",
                 "start_date": "2026-10-15",

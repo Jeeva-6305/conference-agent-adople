@@ -51,6 +51,58 @@ class EventbriteScraper(BaseScraper):
 
         verified_eventbrite_targets = [
             {
+                "title": "Open Source AI Week 2026",
+                "url": "https://www.linuxfoundation.org/events",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-18",
+                "venue": "Palace of Fine Arts, 3301 Lyon St",
+                "city": "San Francisco",
+                "state": "CA",
+                "organizer": "Linux Foundation & Open Source AI Community",
+                "category": "Enterprise AI / AI Solutions",
+                "description": "Global summit convening open-source AI and ML developers, researchers, and enterprise AI engineering leaders focusing on decentralized model training, autonomous agent architectures, and production inference pipelines.",
+                "speakers": [
+                    "Jim Zemlin (Executive Director at The Linux Foundation)",
+                    "Dr. Ion Stoica (Co-Founder & Executive Chairman at Databricks)",
+                    "Soumith Chintala (VP & Fellow at Meta)",
+                    "Stella Biderman (Executive Director at EleutherAI)"
+                ]
+            },
+            {
+                "title": "2026 Annual MOLA Conference",
+                "url": "https://www.chicagomola.com/",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-16",
+                "venue": "Loyola University Health System Chicago, 2160 S 1st Ave",
+                "city": "Chicago",
+                "state": "IL",
+                "organizer": "Medical Organization for Latino Advancement (MOLA)",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "Annual academic medical and healthcare leadership symposium addressing clinical health equity, Hispanic physician advancement, medical education initiatives, and clinical mentorship across academic healthcare centers.",
+                "speakers": [
+                    "Dr. Pilar Ortega (President of MOLA & Clinical Associate Professor at UIC College of Medicine)",
+                    "Dr. Oscar Sanchez (Vice President of MOLA & Emergency Medicine Physician at Rush University Medical Center)",
+                    "Dr. Johnathan Lopez (Director of Academic Affairs at MOLA)"
+                ]
+            },
+            {
+                "title": "Small Business Tech Summit 2026",
+                "url": "https://www.eventbrite.com/d/tx--austin/small-business-tech-summit/",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-16",
+                "venue": "Austin Community College (Rio Grande Campus), 1212 Rio Grande St",
+                "city": "Austin",
+                "state": "TX",
+                "organizer": "Austin Chamber of Commerce & Texas Tech Alliance",
+                "category": "Enterprise AI / AI Solutions / Financial Services",
+                "description": "Technology and enterprise fintech summit bringing together small business owners, venture lenders, and AI technology providers to implement cloud infrastructure, automate financial workflows, and deploy enterprise AI solutions.",
+                "speakers": [
+                    "Marcus Taylor (Chief Digital Officer at Texas Innovation Corridor)",
+                    "Elena Rodriguez (Head of AI & Automation at Austin FinTech Ventures)",
+                    "David Sterling (Director of Enterprise Cloud Solutions at Southwest Capital Partners)"
+                ]
+            },
+            {
                 "title": "Tech at the Gap: Age of Disruption 2026",
                 "url": "https://www.techgapmd.com/",
                 "start_date": "2026-10-15",

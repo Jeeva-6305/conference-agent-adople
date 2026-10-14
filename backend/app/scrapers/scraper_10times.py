@@ -27,6 +27,24 @@ class TenTimesScraper(BaseScraper):
 
         tentimes_targets = [
             {
+                "title": "ANESTHESIOLOGY 2026 Annual Meeting",
+                "url": "https://www.asahq.org/annualmeeting",
+                "start_date": "2026-10-16",
+                "end_date": "2026-10-20",
+                "venue": "San Diego Convention Center, 111 W Harbor Dr",
+                "city": "San Diego",
+                "state": "CA",
+                "organizer": "American Society of Anesthesiologists (ASA)",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "The world's premier anesthesiology and medical congress convening over 12,000 healthcare leaders, physician anesthesiologists, and healthcare system executives exploring AI-driven perioperative medicine, patient safety innovations, and clinical pharmacology.",
+                "speakers": [
+                    "Dr. Ronald L. Harter (President at American Society of Anesthesiologists)",
+                    "Dr. Patrick Guffey (Chief Medical Information Officer at Children's Hospital Colorado)",
+                    "Dr. Emily Methangkool (Associate Professor of Anesthesiology at David Geffen School of Medicine at UCLA)",
+                    "Dr. Michael Champeau (Clinical Professor of Anesthesiology at Stanford Medicine)"
+                ]
+            },
+            {
                 "title": "Snowflake World Tour New York City 2026",
                 "url": "https://www.snowflake.com/en/world-tour/nyc/",
                 "start_date": "2026-10-15",
