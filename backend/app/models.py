@@ -82,19 +82,20 @@ class Speaker(Base):
     official_company_website_url = Column(String(500), default="")
     linkedin_url = Column(String(500), default="")
     location = Column(String(255), default="")
+    source_url = Column(String(500), default="")
     previous_speaking_info = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def to_dict(self):
         return {
-            "Speaker Name": self.speaker_name,
             "Conference Name": self.conference_name,
-            "Company / Organization": self.company_organization,
+            "Speaker Name": self.speaker_name,
+            "Company Name": self.company_name or self.company_organization,
             "Job Role / Designation": self.job_role_designation,
-            "Company Name": self.company_name,
-            "Official Company Website URL": self.official_company_website_url or "",
-            "Speaker LinkedIn Profile URL": self.linkedin_url or "",
-            "Location": self.location
+            "Original LinkedIn Profile URL": self.linkedin_url or "",
+            "Company Website URL": self.official_company_website_url or "",
+            "Source URL": self.source_url or "",
+            "Location": self.location or ""
         }
 
 class Attendee(Base):

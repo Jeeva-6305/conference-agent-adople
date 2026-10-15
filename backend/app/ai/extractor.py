@@ -310,12 +310,12 @@ TARGET_CATEGORIES = {
     "Enterprise AI": [
         "enterprise ai", "generative ai", "agentic ai", "ai agents", "enterprise automation",
         "business ai", "ai transformation", "ai for business", "genai", "llm", "large language model",
-        "agentic", "autonomous agents", "ai in business"
+        "agentic", "autonomous agents", "ai in business", "ai", "mitai", "mit ai"
     ],
     "AI Solutions": [
         "artificial intelligence", "ai solutions", "machine learning", "generative ai",
         "ai platforms", "ai applications", "ai technology", "deep learning", "neural network",
-        "computer vision", "nlp", "predictive analytics", "data science"
+        "computer vision", "nlp", "predictive analytics", "data science", "ai", "mitai"
     ],
     "Financial Services": [
         "financial services", "fintech", "banking", "insurance", "investment", "payments",

@@ -118,6 +118,15 @@ def cleanup_fake_and_sample_records(db):
                 c.is_published_to_excel = False
                 c.status = "past" if c.start_date < today else "completed"
 
+    # Purge any invalid speakers that slipped into the speakers table
+    invalid_speakers = db.query(Speaker).all()
+    for s in invalid_speakers:
+        s_name_lower = (s.speaker_name or "").lower().strip()
+        if (
+            len(s_name_lower) < 3 or len(s_name_lower) > 45 or
+            any(bad in s_name_lower for bad in ["for more", "information", "mitas", "visit", "ticket", "refund", "hotel", "policy", "fee", "options?"])
+        ):
+            db.delete(s)
     db.commit()
     logger.info(f"Cleaned up {deleted_count} stale/obsolete/non-category records from database.")
     
@@ -258,6 +267,7 @@ def task_scrape_and_ingest():
                         "company": spk_d.company_name or spk_d.company_organization or conf.organizer or "Industry Organization",
                         "company_website": getattr(spk_d, "official_company_website_url", "") or "",
                         "linkedin": getattr(spk_d, "linkedin_url", "") or "",
+                        "source_url": getattr(spk_d, "source_url", "") or conf.official_conference_url or conf.source_url,
                         "location": spk_d.location or f"{conf.city}, {conf.country}",
                         "prev_talks": spk_d.previous_speaking_info or extracted.speaker_talks_details or f"Featured speaker at {conf.conference_title}"
                     })
@@ -284,6 +294,7 @@ def task_scrape_and_ingest():
                         "company": company_name,
                         "company_website": "",
                         "linkedin": "",
+                        "source_url": conf.official_conference_url or conf.source_url,
                         "location": f"{conf.city}, {conf.country}",
                         "prev_talks": extracted.speaker_talks_details or f"Featured speaker at {conf.conference_title}"
                     })
@@ -295,9 +306,13 @@ def task_scrape_and_ingest():
                 if (
                     not spk_name 
                     or len(spk_name) < 3 
-                    or len(spk_name) > 40
-                    or any(c in spk_name for c in ["?", ":", "$", "%", "\\", "/"])
-                    or any(bad in spk_name.lower() for bad in ["refund", "ticket", "hotel", "options?", "fee", "mola will", "face value", "policy", "transfer your"])
+                    or len(spk_name) > 45
+                    or any(c in spk_name for c in ["?", ":", "$", "%", "\\", "/", "@", "<", ">"])
+                    or any(bad in spk_name.lower() for bad in [
+                        "refund", "ticket", "hotel", "options?", "fee", "mola will", "face value",
+                        "policy", "transfer your", "for more", "information", "visit", "mitas",
+                        "alumni", "network", "community", "register"
+                    ])
                 ):
                     continue
                 n_key = spk_name.lower()
@@ -315,6 +330,7 @@ def task_scrape_and_ingest():
                         company_name=cand["company"],
                         official_company_website_url=cand.get("company_website", "") or "",
                         linkedin_url=cand.get("linkedin", "") or "",
+                        source_url=cand.get("source_url") or conf.official_conference_url or conf.source_url,
                         location=cand["location"],
                         previous_speaking_info=cand["prev_talks"]
                     )

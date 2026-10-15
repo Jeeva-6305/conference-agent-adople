@@ -31,14 +31,13 @@ EXCEL_COLUMNS = [
 ]
 
 SPEAKER_COLUMNS = [
-    "Speaker Name",
     "Conference Name",
-    "Company / Organization",
-    "Job Role / Designation",
+    "Speaker Name",
     "Company Name",
-    "Official Company Website URL",
-    "Speaker LinkedIn Profile URL",
-    "Location"
+    "Job Role / Designation",
+    "Original LinkedIn Profile URL",
+    "Company Website URL",
+    "Source URL"
 ]
 
 ATTENDEE_COLUMNS = [
@@ -265,14 +264,13 @@ class ExcelManager:
                 key = (spk.speaker_name.strip().lower(), spk.conference_name.strip().lower())
                 if key not in existing_speakers:
                     ws_spk.append([
-                        spk.speaker_name,
                         spk.conference_name,
-                        spk.company_organization or spk.company_name,
-                        spk.job_role_designation,
-                        spk.company_name,
-                        getattr(spk, "official_company_website_url", "") or "",
+                        spk.speaker_name,
+                        spk.company_name or spk.company_organization or "Not Verified",
+                        spk.job_role_designation or "Not Verified",
                         getattr(spk, "linkedin_url", "") or "",
-                        spk.location
+                        getattr(spk, "official_company_website_url", "") or "",
+                        getattr(spk, "source_url", "") or ""
                     ])
                     existing_speakers.add(key)
                     added_spk_count += 1

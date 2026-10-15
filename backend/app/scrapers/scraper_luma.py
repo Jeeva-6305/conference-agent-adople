@@ -135,10 +135,33 @@ class LumaScraper(BaseScraper):
                     except Exception as ev_err:
                         logger.debug(f"[{self.source_name}] Detailed fetch error for {full_url}: {ev_err}")
 
+                    # Detect official conference website mentioned in description
+                    official_site_url = ""
+                    url_matches = re.findall(r"https?://(?:www\.)?[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}(?:/[^\s\)\"\']*)?", detailed_desc)
+                    for um in url_matches:
+                        um_clean = um.rstrip(".,;)\"\'")
+                        if not any(ign in um_clean.lower() for ign in ["lu.ma", "luma.com", "google.com", "twitter.com", "x.com", "instagram.com"]):
+                            official_site_url = um_clean
+                            break
+
+                    if official_site_url:
+                        try:
+                            from .live_speaker_scraper import fetch_official_site_speakers
+                            off_spks = fetch_official_site_speakers(official_site_url, name)
+                            if off_spks:
+                                spk_formatted = []
+                                for ospk in off_spks:
+                                    spk_formatted.append(f"- {ospk['speaker_name']}, {ospk['job_role_designation']} at {ospk['company_name']} | LinkedIn: {ospk['linkedin_url']} | Source: {ospk['source_url']}")
+                                detailed_speakers_text = "Featured Speakers:\n" + "\n".join(spk_formatted)
+                        except Exception as e:
+                            logger.debug(f"Official site speaker fetch error: {e}")
+
+                    primary_url = official_site_url if official_site_url else full_url
+
                     raw_text_parts = [
                         f"Conference Title: {name}",
                         f"Source: Luma Tech Discovery",
-                        f"Official URL: {full_url}",
+                        f"Official URL: {primary_url}",
                         f"Registration URL: {full_url}",
                         f"Start Date: {start_date}",
                         f"End Date: {end_date}",
@@ -155,7 +178,7 @@ class LumaScraper(BaseScraper):
 
                     events.append(RawEventData(
                         source_name=self.source_name,
-                        source_url=full_url,
+                        source_url=primary_url,
                         raw_title=name,
                         raw_text=raw_text,
                         raw_location=default_loc,

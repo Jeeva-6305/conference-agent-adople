@@ -66,6 +66,7 @@ interface SpeakerProfile {
   company_name: string;
   official_company_website_url?: string;
   linkedin_url?: string;
+  source_url?: string;
   location: string;
   previous_speaking_info?: string;
 }
@@ -706,48 +707,39 @@ export default function ConferencesDashboard() {
             <table className="w-full text-left text-xs">
               <thead className="bg-emerald-900 text-white sticky top-0 z-10 font-semibold uppercase tracking-wider text-[11px]">
                 <tr>
-                  <th className="px-3.5 py-3 border-b">Speaker Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[200px]">Conference Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[160px]">Company / Organization</th>
-                  <th className="px-3.5 py-3 border-b min-w-[160px]">Job Role / Designation</th>
-                  <th className="px-3.5 py-3 border-b min-w-[140px]">Company Name</th>
-                  <th className="px-3.5 py-3 border-b min-w-[180px]">Official Company Website</th>
-                  <th className="px-3.5 py-3 border-b min-w-[170px]">LinkedIn Profile</th>
-                  <th className="px-3.5 py-3 border-b min-w-[130px]">Location</th>
+                  <th className="px-3.5 py-3 border-b min-w-[220px]">Conference Name</th>
+                  <th className="px-3.5 py-3 border-b min-w-[180px]">Speaker Name</th>
+                  <th className="px-3.5 py-3 border-b min-w-[170px]">Company Name</th>
+                  <th className="px-3.5 py-3 border-b min-w-[190px]">Job Role / Designation</th>
+                  <th className="px-3.5 py-3 border-b min-w-[180px]">Original LinkedIn Profile URL</th>
+                  <th className="px-3.5 py-3 border-b min-w-[170px]">Company Website URL</th>
+                  <th className="px-3.5 py-3 border-b min-w-[170px]">Source URL</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
                       <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600" />
                       Loading speaker profiles...
                     </td>
                   </tr>
                 ) : filteredSpeakers.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
                       No speakers found matching your search.
                     </td>
                   </tr>
                 ) : (
                   filteredSpeakers.map((spk, idx) => (
                     <tr key={idx} className="hover:bg-accent/40 transition-colors">
-                      {/* Speaker Name */}
-                      <td className="px-3.5 py-3 font-semibold text-foreground whitespace-nowrap flex items-center gap-2">
-                        <div className="h-7 w-7 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs shrink-0 shadow-sm">
-                          {spk.speaker_name.charAt(0)}
-                        </div>
-                        <span>{spk.speaker_name}</span>
-                      </td>
-
-                      {/* Conference Name: Directly opens official conference website */}
+                      {/* 1. Conference Name: Directly opens official conference website */}
                       <td className="px-3.5 py-3 font-medium text-slate-800 dark:text-slate-200">
                         <a 
                           href={conferences.find(c => c.conference_id === spk.conference_id)?.official_conference_url || "#"}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="hover:text-blue-600 hover:underline inline-flex items-center gap-1 group"
+                          className="hover:text-blue-600 hover:underline inline-flex items-center gap-1 group font-semibold"
                           title={`Open ${spk.conference_name} official website`}
                         >
                           <span>{spk.conference_name}</span>
@@ -755,41 +747,27 @@ export default function ConferencesDashboard() {
                         </a>
                       </td>
 
-                      {/* Company / Organization */}
-                      <td className="px-3.5 py-3 text-slate-700 dark:text-slate-300">
-                        {spk.company_organization}
+                      {/* 2. Speaker Name */}
+                      <td className="px-3.5 py-3 font-semibold text-foreground whitespace-nowrap flex items-center gap-2">
+                        <div className="h-7 w-7 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs shrink-0 shadow-sm">
+                          {spk.speaker_name.charAt(0)}
+                        </div>
+                        <span className="text-slate-900 dark:text-slate-100">{spk.speaker_name}</span>
                       </td>
 
-                      {/* Job Role / Designation */}
+                      {/* 3. Company Name */}
+                      <td className="px-3.5 py-3 text-slate-700 dark:text-slate-300 font-medium">
+                        {spk.company_name || spk.company_organization || <span className="text-muted-foreground italic">Not Verified</span>}
+                      </td>
+
+                      {/* 4. Job Role / Designation */}
                       <td className="px-3.5 py-3 font-medium text-slate-900 dark:text-slate-100">
-                        {spk.job_role_designation}
+                        {spk.job_role_designation || <span className="text-muted-foreground italic">Not Verified</span>}
                       </td>
 
-                      {/* Company Name */}
-                      <td className="px-3.5 py-3 text-slate-600 dark:text-slate-400">
-                        {spk.company_name}
-                      </td>
-
-                      {/* Official Company Website */}
+                      {/* 5. Original LinkedIn Profile URL */}
                       <td className="px-3.5 py-3 whitespace-nowrap">
-                        {spk.official_company_website_url ? (
-                          <a
-                            href={spk.official_company_website_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1 font-medium"
-                          >
-                            <span>{spk.official_company_website_url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}</span>
-                            <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
-                      </td>
-
-                      {/* Speaker LinkedIn Profile */}
-                      <td className="px-3.5 py-3 whitespace-nowrap">
-                        {spk.linkedin_url ? (
+                        {spk.linkedin_url && spk.linkedin_url.includes("linkedin.com") ? (
                           <a
                             href={spk.linkedin_url}
                             target="_blank"
@@ -803,16 +781,43 @@ export default function ConferencesDashboard() {
                             <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                           </a>
                         ) : (
-                          <span className="text-muted-foreground">-</span>
+                          <span className="text-muted-foreground italic">Not Verified</span>
                         )}
                       </td>
 
-                      {/* Location */}
+                      {/* 6. Company Website URL */}
                       <td className="px-3.5 py-3 whitespace-nowrap">
-                        <div className="flex items-center gap-1 text-slate-700 dark:text-slate-300">
-                          <MapPin className="h-3 w-3 text-red-500 shrink-0" />
-                          <span>{spk.location}</span>
-                        </div>
+                        {spk.official_company_website_url ? (
+                          <a
+                            href={spk.official_company_website_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1 font-medium"
+                          >
+                            <span>{spk.official_company_website_url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}</span>
+                            <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground italic">-</span>
+                        )}
+                      </td>
+
+                      {/* 7. Source URL */}
+                      <td className="px-3.5 py-3 whitespace-nowrap">
+                        {spk.source_url ? (
+                          <a
+                            href={spk.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-emerald-700 dark:text-emerald-400 hover:underline inline-flex items-center gap-1 font-medium text-[11px]"
+                            title="Official page confirming speaker participation"
+                          >
+                            <span>Official Source</span>
+                            <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground italic">-</span>
+                        )}
                       </td>
                     </tr>
                   ))

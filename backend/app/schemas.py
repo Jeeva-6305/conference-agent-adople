@@ -19,6 +19,7 @@ class SpeakerDetailItem(BaseModel):
     linkedin_url: Optional[str] = Field(default="", description="Speaker's original LinkedIn profile URL")
     location: str = Field(default="", description="Location or city/state of speaker/organization")
     previous_speaking_info: Optional[str] = Field(default="", description="Previous speaking information or talks if available")
+    source_url: Optional[str] = Field(default="", description="Official conference page or source confirming participation")
 
 class AttendeeDetailItem(BaseModel):
     expected_attendee_count: Optional[str] = Field(default="", description="Expected attendee count if available, or empty")
@@ -96,6 +97,7 @@ class SpeakerResponse(BaseModel):
     linkedin_url: Optional[str] = ""
     location: str
     previous_speaking_info: Optional[str] = ""
+    source_url: Optional[str] = ""
     created_at: datetime
 
     class Config:

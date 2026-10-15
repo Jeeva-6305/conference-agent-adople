@@ -59,6 +59,7 @@ interface SpeakerProfile {
   company_name: string;
   official_company_website_url?: string;
   linkedin_url?: string;
+  source_url?: string;
   location: string;
   previous_speaking_info?: string;
 }
@@ -404,6 +405,20 @@ export default function ConferenceDetailPage() {
                           className="text-blue-600 hover:underline inline-flex items-center gap-1 font-medium text-[11px]"
                         >
                           <span>{spk.official_company_website_url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                        </a>
+                      </div>
+                    )}
+                    {spk.source_url && (
+                      <div>
+                        <span className="text-muted-foreground font-semibold block text-[10px] uppercase">Official Source</span>
+                        <a 
+                          href={spk.source_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-emerald-600 hover:underline inline-flex items-center gap-1 font-medium text-[11px]"
+                        >
+                          <span>Official Speaker Page</span>
                           <ExternalLink className="h-2.5 w-2.5 opacity-70" />
                         </a>
                       </div>
