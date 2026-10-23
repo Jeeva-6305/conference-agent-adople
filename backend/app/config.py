@@ -41,9 +41,11 @@ class Settings:
         "TEAMS_WEBHOOK_URL",
         "https://defaultbea3524823744c5c95d34a5f7071d9.88.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/02/workflows/65dbfcbeb4244e48bbbdc8efb8e55874/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=X5RzCAGsf3_Dr9hw_yIC1Lbp26SuS3bBuJebBHnPLEY"
     )
+    TEAMS_CARD_ENABLED: bool = os.getenv("TEAMS_CARD_ENABLED", "false").lower() in ("true", "1", "yes")
 
     # Email Notification Settings
     NOTIFICATION_RECIPIENT_EMAIL: str = os.getenv("NOTIFICATION_RECIPIENT_EMAIL", "jeevanandham@adople.ai")
+    EMAIL_REMINDER_ENABLED: bool = os.getenv("EMAIL_REMINDER_ENABLED", "false").lower() in ("true", "1", "yes")
     SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
     SMTP_USER: str = os.getenv("SMTP_USER", "")
@@ -55,6 +57,19 @@ class Settings:
 
     REMINDER_DAYS_BEFORE: int = int(os.getenv("REMINDER_DAYS_BEFORE", 2))
     SCRAPER_INTERVAL_MINUTES: int = int(os.getenv("SCRAPER_INTERVAL_MINUTES", 60))
+
+    # Microsoft Graph & OneDrive Excel Settings
+    SHAREPOINT_CLIENT_ID: str = os.getenv("SHAREPOINT_CLIENT_ID", "")
+    SHAREPOINT_CLIENT_SECRET: str = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
+    SHAREPOINT_TENANT_ID: str = os.getenv("SHAREPOINT_TENANT_ID", "")
+    CONFERENCE_ONEDRIVE_HOSTNAME: str = os.getenv("CONFERENCE_ONEDRIVE_HOSTNAME", "adopleaiinf-my.sharepoint.com")
+    CONFERENCE_ONEDRIVE_USER: str = os.getenv("CONFERENCE_ONEDRIVE_USER", "jeevanandham_adople_ai")
+    CONFERENCE_EXCEL_FILE_NAME: str = os.getenv("CONFERENCE_EXCEL_FILE_NAME", "Conference_Agent_Conferences.xlsx")
+    CONFERENCE_EXCEL_WORKSHEET_NAME: str = os.getenv("CONFERENCE_EXCEL_WORKSHEET_NAME", "conferences")
+    CONFERENCE_EXCEL_TABLE_NAME: str = os.getenv("CONFERENCE_EXCEL_TABLE_NAME", "tbl_conferences")
+    CONFERENCE_SPEAKERS_WORKSHEET_NAME: str = os.getenv("CONFERENCE_SPEAKERS_WORKSHEET_NAME", "speakers")
+    CONFERENCE_SPEAKERS_TABLE_NAME: str = os.getenv("CONFERENCE_SPEAKERS_TABLE_NAME", "tbl_speakers")
+    MICROSOFT_GRAPH_BASE_URL: str = os.getenv("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0")
 
 settings = Settings()
 

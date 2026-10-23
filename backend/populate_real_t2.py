@@ -69,7 +69,7 @@ def run():
                     "job_role_designation": "President & Professor of Anesthesiology",
                     "company_name": "American Society of Anesthesiologists",
                     "official_company_website_url": "https://www.asahq.org",
-                    "linkedin_url": "https://www.linkedin.com/in/ronald-harter-md",
+                    "linkedin_url": "",
                     "location": "Columbus, OH, USA",
                     "previous_speaking_info": "Presidential address on perioperative clinical standards, physician workforce safety, and AI integration in anesthesia."
                 },
@@ -79,7 +79,7 @@ def run():
                     "job_role_designation": "Chief Medical Information Officer",
                     "company_name": "Children's Hospital Colorado",
                     "official_company_website_url": "https://www.childrenscolorado.org",
-                    "linkedin_url": "https://www.linkedin.com/in/patrick-guffey-md",
+                    "linkedin_url": "",
                     "location": "Aurora, CO, USA",
                     "previous_speaking_info": "Keynote on digital clinical workflows, pediatric perioperative data analytics, and healthcare informatics."
                 },
@@ -213,7 +213,7 @@ def run():
                     "job_role_designation": "President of MOLA & Clinical Associate Professor",
                     "company_name": "UIC College of Medicine",
                     "official_company_website_url": "https://medicine.uic.edu",
-                    "linkedin_url": "https://www.linkedin.com/in/pilar-ortega-md",
+                    "linkedin_url": "",
                     "location": "Chicago, IL, USA",
                     "previous_speaking_info": "Keynote on medical language equity, clinical communication, and eliminating health disparities."
                 },
@@ -399,7 +399,7 @@ def run():
                     "job_role_designation": "Medical Director of Neuroendocrinology Clinic",
                     "company_name": "Barrow Neurological Institute",
                     "official_company_website_url": "https://www.barrowneuro.org",
-                    "linkedin_url": "https://www.linkedin.com/in/kevin-yuen-md",
+                    "linkedin_url": "https://www.linkedin.com/in/kevin-yuen-az-phoenix-242377243",
                     "location": "Phoenix, AZ, USA",
                     "previous_speaking_info": "Clinical keynote on growth hormone receptor antagonists, somatostatin analogs, and long-term pituitary care."
                 },

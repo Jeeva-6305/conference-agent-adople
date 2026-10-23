@@ -35,6 +35,24 @@ except ImportError:
 
 
 
+def validate_personal_linkedin_url(url: Optional[str]) -> str:
+    """
+    Enforces strictly personal LinkedIn profile URLs (https://www.linkedin.com/in/...).
+    Rejects company pages, school pages, showcase pages, or invalid formats.
+    """
+    if not url:
+        return ""
+    clean = url.strip()
+    clean_lower = clean.lower()
+    if any(blocked in clean_lower for blocked in ["/company/", "/school/", "/showcase/"]):
+        return ""
+    if "linkedin.com/in/" in clean_lower:
+        if not clean.startswith("http://") and not clean.startswith("https://"):
+            clean = "https://" + clean
+        return clean
+    return ""
+
+
 def cleanup_fake_and_sample_records(db):
     """
     Purges all sample, mock, placeholder, non-conference (workshops, meetups, webinars),
@@ -59,17 +77,25 @@ def cleanup_fake_and_sample_records(db):
 
     for c in all_confs:
         title_lower = (c.conference_title or "").lower().strip()
+
+        # Protect verified existing published records from deletion
+        if c.is_published_to_excel:
+            seen_titles.add(title_lower)
+            continue
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
 
-        # Filter out non-conferences (entertainment, comic cons, TV festivals, talks, mixers, walks)
+        # Filter out non-conferences (entertainment, comic cons, TV festivals, talks, mixers, walks, author talks)
         is_non_conference = any(term in title_lower for term in [
             "workshop", "webinar", "meetup", "hackathon", "networking lunch",
             "networking mixer", "zoom event", "sf real estate", "bar crawl",
             "revival", "congreso", "skip the small talk", "happy hour", "sample",
             "brunch", "walk with", "mile run", "horror night", "demo night",
             "wellness walk", " walk", "comic con", "paleyfest", "talks with",
+            "talk with", "talk with ", "author", "book signing", "reading",
             "artform", "art show", "stage", "screening", "exhibition", "concert",
             "comedy", "showcase", "festival", "becky g", "almodovar", "koom",
+            "theatre", "theater", "beacon theatre", "radio city", "webster hall",
+            "father mike", "podcast", "beehiiv",
             "forest preserve", "zoo", "wildlife", "conservation symposium"
         ])
 
@@ -107,7 +133,7 @@ def cleanup_fake_and_sample_records(db):
         else:
             seen_titles.add(title_lower)
             c.industry_category = " / ".join(matched_cats)
-            # Update publication state according to exact T-2 start date
+            # Strict T-2 publication logic based on EVENT start date (today + 2 days)
             if c.start_date == exact_t2_date:
                 c.is_published_to_excel = True
                 c.status = "published"
@@ -130,11 +156,11 @@ def cleanup_fake_and_sample_records(db):
     db.commit()
     logger.info(f"Cleaned up {deleted_count} stale/obsolete/non-category records from database.")
     
-    # Sync Excel with ONLY genuine published T-2 conferences & their speakers & attendees
+    # Sync Excel strictly with genuine published T-2 conferences (start_date == exact_t2_date) & their speakers & attendees
     published_confs = db.query(Conference).filter(
-        Conference.is_published_to_excel == True,
-        Conference.start_date == exact_t2_date
-    ).all()
+        Conference.start_date == exact_t2_date,
+        Conference.is_published_to_excel == True
+    ).order_by(Conference.conference_title.asc()).all()
     pub_ids = [conf.conference_id for conf in published_confs]
     published_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
     published_atts = db.query(Attendee).filter(Attendee.conference_id.in_(pub_ids)).all()
@@ -329,7 +355,7 @@ def task_scrape_and_ingest():
                         job_role_designation=cand["job_role"],
                         company_name=cand["company"],
                         official_company_website_url=cand.get("company_website", "") or "",
-                        linkedin_url=cand.get("linkedin", "") or "",
+                        linkedin_url=validate_personal_linkedin_url(cand.get("linkedin", "")) or "",
                         source_url=cand.get("source_url") or conf.official_conference_url or conf.source_url,
                         location=cand["location"],
                         previous_speaking_info=cand["prev_talks"]
@@ -341,8 +367,9 @@ def task_scrape_and_ingest():
                     existing_spk = existing_by_name[n_key]
                     if cand.get("company_website") and not existing_spk.official_company_website_url:
                         existing_spk.official_company_website_url = cand["company_website"]
-                    if cand.get("linkedin") and not existing_spk.linkedin_url:
-                        existing_spk.linkedin_url = cand["linkedin"]
+                    clean_li = validate_personal_linkedin_url(cand.get("linkedin"))
+                    if clean_li and not existing_spk.linkedin_url:
+                        existing_spk.linkedin_url = clean_li
                     if cand["job_role"] and existing_spk.job_role_designation in ["", "Keynote Speaker", "Speaker"]:
                         existing_spk.job_role_designation = cand["job_role"]
                     if cand["company"] and existing_spk.company_name in ["", "Industry Organization"]:
@@ -417,17 +444,29 @@ def task_scrape_and_ingest():
         excel_manager.sync_published_conferences(all_published, all_pub_spks, all_pub_atts)
         logger.info(f"Excel synced with {len(all_published)} published T-2 conferences, {len(all_pub_spks)} verified speakers, and {len(all_pub_atts)} attendees.")
 
+        # 4b. Sync to Work OneDrive Excel workbook via Microsoft Graph
+        try:
+            from ..services.onedrive_excel_service import OneDriveExcelService
+            onedrive_svc = OneDriveExcelService()
+            onedrive_res = onedrive_svc.sync_all(conferences=all_published, speakers=all_pub_spks)
+            logger.info(f"☁️ OneDrive Excel synced: {onedrive_res}")
+        except Exception as e:
+            logger.error(f"OneDrive Excel sync error: {e}", exc_info=True)
+
         # 5. Send separate individual email for each matching conference
         from ..services.email_service import ConferenceEmailService
         email_svc = ConferenceEmailService()
         email_res = email_svc.send_all_pending_reminders(db, conferences=all_published)
         logger.info(f"📧 Completed automated email reminders: {len(email_res)} conference(s) processed for recipient {email_svc.recipient_email}.")
 
-        # 6. Post separate Adaptive Cards to Microsoft Teams Webhook (DISABLED per user requirement)
-        # from ..services.teams_service import TeamsWebhookService
-        # teams_svc = TeamsWebhookService()
-        # teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
-        logger.info("ℹ️ Teams webhook dispatch is currently disabled per user requirement.")
+        # 6. Post separate Adaptive Cards to Microsoft Teams Webhook
+        if getattr(settings, "TEAMS_CARD_ENABLED", False):
+            from ..services.teams_service import TeamsWebhookService
+            teams_svc = TeamsWebhookService()
+            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+            logger.info(f"📢 Posted Teams cards: {len(teams_res)} processed.")
+        else:
+            logger.info("ℹ️ Teams webhook dispatch is currently disabled (TEAMS_CARD_ENABLED=false).")
 
     except Exception as e:
         db.rollback()
@@ -457,7 +496,7 @@ def task_publish_2_days_before():
     published_count = 0
     
     try:
-        # 1. Promote any conferences strictly matching exact T-2 date
+        # 1. Promote conferences strictly matching exact T-2 event date (today + 2 days)
         newly_due = db.query(Conference).filter(
             Conference.start_date == exact_t2_date,
             Conference.is_published_to_excel == False
@@ -482,7 +521,7 @@ def task_publish_2_days_before():
         all_published = db.query(Conference).filter(
             Conference.is_published_to_excel == True,
             Conference.start_date == exact_t2_date
-        ).all()
+        ).order_by(Conference.conference_title.asc()).all()
         
         # 3. Get only speakers and attendees of the published conferences
         pub_ids = [c.conference_id for c in all_published]
@@ -493,16 +532,30 @@ def task_publish_2_days_before():
         published_count = len(all_published)
         logger.info(f"Synchronized {published_count} conferences, {len(published_speakers)} speakers, and {len(published_attendees)} attendees to Excel.")
 
-        # 4. Trigger separate reminder emails for newly published conferences
-        from ..services.email_service import ConferenceEmailService
-        email_svc = ConferenceEmailService()
-        email_svc.send_all_pending_reminders(db, conferences=all_published)
+        # 3b. Sync to Work OneDrive Excel workbook via Microsoft Graph
+        try:
+            from ..services.onedrive_excel_service import OneDriveExcelService
+            onedrive_svc = OneDriveExcelService()
+            onedrive_res = onedrive_svc.sync_all(conferences=all_published, speakers=published_speakers)
+            logger.info(f"☁️ OneDrive Excel synced: {onedrive_res}")
+        except Exception as e:
+            logger.error(f"OneDrive Excel sync error: {e}", exc_info=True)
 
-        # 5. Trigger Microsoft Teams Webhook cards (DISABLED per user requirement)
-        # from ..services.teams_service import TeamsWebhookService
-        # teams_svc = TeamsWebhookService()
-        # teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
-        logger.info("ℹ️ Teams webhook card delivery is disabled per user requirement.")
+        # 4. Trigger separate reminder emails specifically for conferences due in 2 days (T-2)
+        due_t2 = [c for c in all_published if c.start_date == exact_t2_date]
+        if due_t2:
+            from ..services.email_service import ConferenceEmailService
+            email_svc = ConferenceEmailService()
+            email_svc.send_all_pending_reminders(db, conferences=due_t2)
+
+        # 5. Trigger Microsoft Teams Webhook cards
+        if getattr(settings, "TEAMS_CARD_ENABLED", False):
+            from ..services.teams_service import TeamsWebhookService
+            teams_svc = TeamsWebhookService()
+            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+            logger.info(f"📢 Posted Teams cards: {len(teams_res)} processed.")
+        else:
+            logger.info("ℹ️ Teams webhook card delivery is disabled (TEAMS_CARD_ENABLED=false).")
 
     except Exception as e:
         db.rollback()
@@ -521,6 +574,15 @@ def task_send_conference_reminder_emails(recipient_email: str = None, force: boo
     - Sends a separate individual email for each conference to jeevanandham@adople.ai.
     - Enforces duplicate email prevention via unique identifier (Name + Date + Venue).
     """
+    if not getattr(settings, "EMAIL_REMINDER_ENABLED", False):
+        logger.info("📧 [Email Task] Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).")
+        return {
+            "status": "disabled",
+            "message": "Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).",
+            "processed_count": 0,
+            "results": []
+        }
+
     from ..services.email_service import ConferenceEmailService
     logger.info("📧 [Email Task] Initiating conference reminder email delivery job...")
     db = SessionLocal()
@@ -559,15 +621,34 @@ def task_send_conference_reminder_emails(recipient_email: str = None, force: boo
 def task_send_teams_cards(force: bool = False, webhook_url: Optional[str] = None):
     """
     Dedicated Microsoft Teams Webhook Task:
-    Disabled per user requirement ("don't send a teams card now please").
+    - Checks TEAMS_CARD_ENABLED configuration setting.
+    - If True, dispatches Adaptive Cards to Microsoft Teams.
+    - If False, safely skips card delivery.
     """
-    logger.info("📢 [Teams Task] Teams card dispatch is disabled per user requirement.")
-    return {
-        "status": "disabled",
-        "message": "Teams card delivery is disabled per user requirement.",
-        "processed_count": 0,
-        "results": []
-    }
+    if not getattr(settings, "TEAMS_CARD_ENABLED", False):
+        logger.info("📢 [Teams Task] Teams card dispatch is disabled (TEAMS_CARD_ENABLED=false).")
+        return {
+            "status": "disabled",
+            "message": "Teams card delivery is disabled (TEAMS_CARD_ENABLED=false).",
+            "processed_count": 0,
+            "results": []
+        }
+
+    from ..services.teams_service import TeamsWebhookService
+    db = SessionLocal()
+    try:
+        service = TeamsWebhookService(webhook_url=webhook_url)
+        results = service.send_all_pending_teams_cards(db, force=force)
+        return {
+            "status": "success",
+            "processed_count": len(results),
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Error in task_send_teams_cards: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 
 
 

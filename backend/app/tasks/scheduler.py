@@ -47,11 +47,18 @@ def hourly_scrape_and_update_job():
         pub_res = task_publish_2_days_before()
 
         # Step 3: Run reminder email delivery for any pending unnotified conferences
-        email_res = task_send_conference_reminder_emails()
+        if getattr(settings, "EMAIL_REMINDER_ENABLED", False):
+            email_res = task_send_conference_reminder_emails()
+            logger.info("📧 Completed scheduled email reminder delivery.")
+        else:
+            logger.info("ℹ️ Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).")
 
-        # Step 4: Run Microsoft Teams Webhook card dispatch (DISABLED per user requirement)
-        # teams_res = task_send_teams_cards()
-        logger.info("ℹ️ Teams Webhook card delivery is disabled per user requirement.")
+        # Step 4: Run Microsoft Teams Webhook card dispatch
+        if getattr(settings, "TEAMS_CARD_ENABLED", False):
+            teams_res = task_send_teams_cards()
+            logger.info("📢 Completed scheduled Teams Webhook card dispatch.")
+        else:
+            logger.info("ℹ️ Teams Webhook card delivery is disabled (TEAMS_CARD_ENABLED=false).")
         
         scheduler_state["total_runs"] += 1
         scheduler_state["last_status"] = "Success"

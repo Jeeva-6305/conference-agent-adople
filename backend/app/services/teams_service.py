@@ -3,7 +3,7 @@ import re
 import json
 import logging
 import urllib.request
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -47,119 +47,216 @@ class TeamsWebhookService:
             (TeamsNotification.status == "sent")
         ).first()
 
-        return existing is not None
+    def build_consolidated_adaptive_card(
+        self,
+        conferences: List[Conference],
+        db: Optional[Session] = None
+    ) -> Dict[str, Any]:
+        """
+        Builds ONE clean, well-organized consolidated summary Adaptive Card (v1.4)
+        combining all eligible conferences.
+        Displays ONLY:
+        - Total Number of Conferences
+        - Conference Name
+        - Industry
+        - Starting Date
+        - Speaker Details Available: Yes or No
+        """
+        total_conferences = len(conferences)
+
+        card_body: List[Dict[str, Any]] = [
+            {
+                "type": "Container",
+                "style": "emphasis",
+                "bleed": True,
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "Upcoming Conferences Summary (T-2)",
+                        "size": "Medium",
+                        "weight": "Bolder",
+                        "color": "Accent"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"Total Number of Conferences: {total_conferences}",
+                        "size": "Default",
+                        "weight": "Bolder",
+                        "spacing": "Small"
+                    }
+                ]
+            }
+        ]
+
+        if not conferences:
+            card_body.append({
+                "type": "TextBlock",
+                "text": "No upcoming conferences found for this period.",
+                "isSubtle": True,
+                "spacing": "Medium"
+            })
+        else:
+            conference_items: List[Dict[str, Any]] = []
+            for idx, conf in enumerate(conferences, 1):
+                conf_name = conf.conference_title or "Untitled Conference"
+                industry = conf.industry_category or "Not available"
+                start_date_str = conf.start_date.isoformat() if conf.start_date else "Not available"
+
+                # Check if speaker details are available: Yes or No
+                spk_avail = "No"
+                if conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]:
+                    spk_avail = "Yes"
+                elif db:
+                    spk_cnt = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).count()
+                    spk_avail = "Yes" if spk_cnt > 0 else "No"
+                elif conf.speakers and conf.speakers.strip():
+                    spk_avail = "Yes"
+
+                conf_container = {
+                    "type": "Container",
+                    "separator": True,
+                    "spacing": "Medium",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": f"{idx}. {conf_name}",
+                            "weight": "Bolder",
+                            "size": "Default",
+                            "wrap": True
+                        },
+                        {
+                            "type": "FactSet",
+                            "spacing": "Small",
+                            "facts": [
+                                {
+                                    "title": "Industry:",
+                                    "value": industry
+                                },
+                                {
+                                    "title": "Starting Date:",
+                                    "value": start_date_str
+                                },
+                                {
+                                    "title": "Speaker Details Available:",
+                                    "value": spk_avail
+                                }
+                            ]
+                        }
+                    ]
+                }
+                conference_items.append(conf_container)
+
+            card_body.append({
+                "type": "Container",
+                "spacing": "Medium",
+                "items": conference_items
+            })
+
+        adaptive_card = {
+            "type": "AdaptiveCard",
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "version": "1.4",
+            "body": card_body
+        }
+
+        return adaptive_card
 
     def build_adaptive_card(
         self,
         conf: Conference,
         speakers: List[Speaker],
-        attendee: Optional[Attendee]
+        attendee: Optional[Attendee] = None
     ) -> Dict[str, Any]:
         """
-        Builds a rich Adaptive Card JSON payload.
-        Power Automate's 'Post card in a chat or channel' receives triggerBody()
-        and renders this natively in the Teams group chat.
+        Builds a clean Adaptive Card JSON payload containing ONLY the 9 required fields:
+        1. Conference ID
+        2. Conference Name
+        3. Conference Date
+        4. Speaker Details
+        5. Industry
+        6. Platform / Source Platform
+        7. Venue
+        8. City
+        9. Original Source URL (Clickable)
         """
-        date_str = conf.start_date.isoformat() if conf.start_date else datetime.now().strftime("%Y-%m-%d")
-        end_date_str = conf.end_date.isoformat() if conf.end_date else date_str
-        date_display = date_str if end_date_str == date_str else f"{date_str} to {end_date_str}"
-        state_str = extract_us_state(conf.venue or "", conf.city or "")
-        full_address = f"{conf.venue or 'Venue TBA'}, {conf.city or ''}, {state_str}, {conf.country or 'USA'}".replace(", ,", ",")
+        # 1. Conference ID
+        conf_id = conf.conference_id or "Not available"
 
-        # Conference Details FactSet
+        # 2. Conference Name
+        conf_title = conf.conference_title or "Not available"
+
+        # 3. Conference Date
+        if conf.start_date:
+            date_str = conf.start_date.isoformat()
+            if conf.end_date and conf.end_date != conf.start_date:
+                date_display = f"{date_str} to {conf.end_date.isoformat()}"
+            else:
+                date_display = date_str
+        else:
+            date_display = "Not available"
+
+        # 4. Speaker Details
+        if speakers:
+            speaker_lines = []
+            for spk in speakers:
+                parts = [spk.speaker_name]
+                role_parts = []
+                if spk.job_role_designation:
+                    role_parts.append(spk.job_role_designation)
+                org = spk.company_organization or spk.company_name
+                if org and org not in (spk.job_role_designation or ""):
+                    role_parts.append(org)
+                if role_parts:
+                    parts.append(f"({', '.join(role_parts)})")
+                if spk.linkedin_url:
+                    parts.append(f"- [LinkedIn]({spk.linkedin_url})")
+                speaker_lines.append(f"• {' '.join(parts)}")
+            speakers_value = "\n\n".join(speaker_lines)
+        else:
+            speakers_value = "Not available"
+
+        # 5. Industry
+        industry = conf.industry_category or "Not available"
+
+        # 6. Platform / Source Platform
+        source_platform = conf.source_name or "Not available"
+
+        # 7. Venue
+        venue = conf.venue or "Not available"
+
+        # 8. City
+        city = conf.city or "Not available"
+
+        # 9. Original Source URL (Clickable link)
+        source_url = conf.source_url or conf.official_conference_url or ""
+        if source_url:
+            source_url_display = f"[{source_url}]({source_url})"
+        else:
+            source_url_display = "Not available"
+
         facts = [
-            {"title": "Conference:", "value": conf.conference_title},
-            {"title": "Category:", "value": conf.industry_category or "Technology & AI"},
-            {"title": "Date:", "value": date_display},
-            {"title": "Timing:", "value": "9:00 AM EDT (Start) – 5:00 PM EDT (End)"},
-            {"title": "Venue:", "value": conf.venue or "Conference Center"},
-            {"title": "Full Address:", "value": full_address},
-            {"title": "Location:", "value": f"{conf.city}, {state_str}, {conf.country or 'USA'}"},
-            {"title": "Organizer:", "value": conf.organizer or "Conference Organizer"},
-            {"title": "Source:", "value": f"{conf.source_name} ({conf.source_url})"}
+            {"title": "Conference ID:", "value": conf_id},
+            {"title": "Conference Name:", "value": conf_title},
+            {"title": "Conference Date:", "value": date_display},
+            {"title": "Speaker Details:", "value": speakers_value},
+            {"title": "Industry:", "value": industry},
+            {"title": "Platform / Source Platform:", "value": source_platform},
+            {"title": "Venue:", "value": venue},
+            {"title": "City:", "value": city},
+            {"title": "Original Source URL:", "value": source_url_display}
         ]
 
         card_body: List[Dict[str, Any]] = [
-            # Header Container with accent background styling
             {
                 "type": "Container",
-                "style": "accent",
-                "bleed": True,
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": "🏛️ USA CONFERENCE REMINDER NOTIFICATION",
-                        "size": "Small",
-                        "weight": "Bolder",
-                        "color": "Light",
-                        "spacing": "None"
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": conf.conference_title,
+                        "text": conf_title,
                         "size": "Large",
                         "weight": "Bolder",
                         "wrap": True,
-                        "color": "Light",
-                        "spacing": "Small"
-                    },
-                    {
-                        "type": "ColumnSet",
-                        "spacing": "Small",
-                        "columns": [
-                            {
-                                "type": "Column",
-                                "width": "auto",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": f"📅 {date_display}",
-                                        "weight": "Bolder",
-                                        "color": "Light",
-                                        "size": "Small"
-                                    }
-                                ]
-                            },
-                            {
-                                "type": "Column",
-                                "width": "auto",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": f"📍 {conf.city}, {state_str}",
-                                        "weight": "Bolder",
-                                        "color": "Light",
-                                        "size": "Small"
-                                    }
-                                ]
-                            },
-                            {
-                                "type": "Column",
-                                "width": "auto",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": f"🏷️ {conf.industry_category}",
-                                        "weight": "Bolder",
-                                        "color": "Light",
-                                        "size": "Small"
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-            # Section 1: Overview & Details
-            {
-                "type": "Container",
-                "items": [
-                    {
-                        "type": "TextBlock",
-                        "text": "📋 Conference Information",
-                        "size": "Medium",
-                        "weight": "Bolder",
-                        "separator": True
+                        "color": "Accent"
                     },
                     {
                         "type": "FactSet",
@@ -169,110 +266,12 @@ class TeamsWebhookService:
             }
         ]
 
-        # Add Description if present
-        if conf.description:
-            card_body.append({
-                "type": "Container",
-                "items": [
-                    {
-                        "type": "TextBlock",
-                        "text": f"**Description:** {conf.description[:400]}" + ("..." if len(conf.description) > 400 else ""),
-                        "wrap": True,
-                        "size": "Small",
-                        "isSubtle": True
-                    }
-                ]
-            })
-
-        # Section 2: Speakers Section
-        speaker_elements: List[Dict[str, Any]] = [
-            {
-                "type": "TextBlock",
-                "text": f"🎤 Verified Speakers ({len(speakers)})",
-                "size": "Medium",
-                "weight": "Bolder",
-                "separator": True
-            }
-        ]
-
-        if speakers:
-            speaker_facts = []
-            for idx, spk in enumerate(speakers[:10], 1):  # Limit to 10 for clean layout
-                role_company = f"{spk.job_role_designation or 'Speaker'} @ {spk.company_organization or spk.company_name or 'Independent'}"
-                linkedin_text = f" ({spk.linkedin_url})" if spk.linkedin_url else ""
-                speaker_facts.append({
-                    "title": f"[{idx}] {spk.speaker_name}:",
-                    "value": f"{role_company}{linkedin_text}"
-                })
-            speaker_elements.append({
-                "type": "FactSet",
-                "facts": speaker_facts
-            })
-            if len(speakers) > 10:
-                speaker_elements.append({
-                    "type": "TextBlock",
-                    "text": f"*...and {len(speakers) - 10} additional speakers listed in Excel & UI.*",
-                    "isSubtle": True,
-                    "size": "Small"
-                })
-        else:
-            speaker_elements.append({
-                "type": "TextBlock",
-                "text": "_No speakers publicly announced for this event at time of scraping._",
-                "isSubtle": True,
-                "size": "Small"
-            })
-
-        card_body.append({
-            "type": "Container",
-            "items": speaker_elements
-        })
-
-        # Section 3: Attendee Information
-        att_facts = [
-            {"title": "Expected Attendees:", "value": (attendee.expected_attendee_count if attendee and attendee.expected_attendee_count else "Not publicly disclosed")},
-            {"title": "Registered Attendees:", "value": (attendee.registered_attendee_count if attendee and attendee.registered_attendee_count else "Not publicly disclosed")},
-            {"title": "Categories:", "value": (attendee.attendee_categories if attendee and attendee.attendee_categories else "Industry Executives & Practitioners")},
-            {"title": "Target Audience:", "value": (attendee.target_audience if attendee and attendee.target_audience else "Founders, Engineers, Researchers & Investors")},
-            {"title": "Industries:", "value": (attendee.industries if attendee and attendee.industries else conf.industry_category)}
-        ]
-
-        card_body.append({
-            "type": "Container",
-            "items": [
-                {
-                    "type": "TextBlock",
-                    "text": "👥 Attendee Demographics",
-                    "size": "Medium",
-                    "weight": "Bolder",
-                    "separator": True
-                },
-                {
-                    "type": "FactSet",
-                    "facts": att_facts
-                }
-            ]
-        })
-
-        # Section 4: Action Buttons
         actions: List[Dict[str, Any]] = []
-        if conf.official_conference_url:
+        if source_url:
             actions.append({
                 "type": "Action.OpenUrl",
-                "title": "🌐 Official Website",
-                "url": conf.official_conference_url
-            })
-        if conf.registration_url:
-            actions.append({
-                "type": "Action.OpenUrl",
-                "title": "📝 Register / RSVP",
-                "url": conf.registration_url
-            })
-        if conf.source_url:
-            actions.append({
-                "type": "Action.OpenUrl",
-                "title": "🔗 Source Listing",
-                "url": conf.source_url
+                "title": "Open Original Source URL",
+                "url": source_url
             })
 
         adaptive_card = {
@@ -297,6 +296,15 @@ class TeamsWebhookService:
         Sends an Adaptive Card for a single conference to the Teams Webhook.
         Enforces deduplication, audit logging, and database tracking.
         """
+        if not getattr(settings, "TEAMS_CARD_ENABLED", False):
+            logger.info(f"Teams card delivery is disabled (TEAMS_CARD_ENABLED=false). Skipping '{conf.conference_title}'.")
+            return {
+                "status": "disabled",
+                "reason": "TEAMS_CARD_ENABLED is false",
+                "conference_id": conf.conference_id,
+                "conference_title": conf.conference_title
+            }
+
         unique_key = make_conference_unique_key(
             conf.conference_title,
             conf.start_date,
@@ -358,20 +366,31 @@ class TeamsWebhookService:
         with open(self.outbox_log_path, "a", encoding="utf-8") as f:
             f.write(f"[{now_iso}] TEAMS WEBHOOK | STATUS: {send_status} | CODE: {http_code} | ID: {conf.conference_id} | TITLE: {conf.conference_title} | FILE: {json_filename}\n")
 
-        # Record in database
-        notification = TeamsNotification(
-            conference_id=conf.conference_id,
-            conference_unique_key=unique_key,
-            conference_title=conf.conference_title,
-            conference_date=conf.start_date,
-            venue=conf.venue or "",
-            webhook_url=self.webhook_url,
-            status=send_status,
-            card_payload=json.dumps(card),
-            sent_at=datetime.utcnow(),
-            error_message=error_msg
-        )
-        db.add(notification)
+        # Record in database (upsert by conference_unique_key to prevent constraint collision)
+        existing_notif = db.query(TeamsNotification).filter(
+            TeamsNotification.conference_unique_key == unique_key
+        ).first()
+
+        if existing_notif:
+            existing_notif.status = send_status
+            existing_notif.card_payload = json.dumps(card)
+            existing_notif.sent_at = datetime.utcnow()
+            existing_notif.error_message = error_msg
+            existing_notif.webhook_url = self.webhook_url
+        else:
+            notification = TeamsNotification(
+                conference_id=conf.conference_id,
+                conference_unique_key=unique_key,
+                conference_title=conf.conference_title,
+                conference_date=conf.start_date,
+                venue=conf.venue or "",
+                webhook_url=self.webhook_url,
+                status=send_status,
+                card_payload=json.dumps(card),
+                sent_at=datetime.utcnow(),
+                error_message=error_msg
+            )
+            db.add(notification)
 
         if send_status == "sent":
             conf.teams_webhook_sent = True
@@ -387,6 +406,146 @@ class TeamsWebhookService:
             "error": error_msg
         }
 
+    def send_consolidated_teams_card(
+        self,
+        db: Session,
+        conferences: Optional[List[Conference]] = None,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Sends ONE single consolidated summary Adaptive Card containing all eligible T-2 conferences
+        to the configured Microsoft Teams group/webhook.
+        """
+        if not getattr(settings, "TEAMS_CARD_ENABLED", False):
+            logger.info("📢 [Teams Service] Teams card delivery is disabled (TEAMS_CARD_ENABLED=false). Skipping.")
+            return {
+                "status": "disabled",
+                "reason": "TEAMS_CARD_ENABLED is false",
+                "total_conferences": 0
+            }
+
+        if conferences is None:
+            today = date.today()
+            exact_t2_date = today + timedelta(days=2)
+            query = db.query(Conference).filter(
+                Conference.is_published_to_excel == True,
+                Conference.start_date == exact_t2_date
+            )
+            conferences = query.all()
+
+        if not conferences:
+            logger.info("📢 [Teams Service] No eligible T-2 conferences found to send.")
+            return {
+                "status": "skipped",
+                "reason": "no_eligible_conferences",
+                "total_conferences": 0
+            }
+
+        today_str = date.today().isoformat()
+        conf_ids_str = "_".join(sorted([c.conference_id for c in conferences]))
+        unique_key = f"consolidated_t2_{today_str}_{len(conferences)}_{conf_ids_str[:100]}"
+
+        if not force:
+            existing = db.query(TeamsNotification).filter(
+                (TeamsNotification.conference_unique_key == unique_key) &
+                (TeamsNotification.status == "sent")
+            ).first()
+            if existing:
+                logger.info(f"📢 [Teams Service] Consolidated card for today's T-2 batch ({len(conferences)} conferences) already sent. Skipping.")
+                return {
+                    "status": "skipped",
+                    "reason": "duplicate_prevented",
+                    "total_conferences": len(conferences)
+                }
+
+        card = self.build_consolidated_adaptive_card(conferences, db=db)
+        payload_bytes = json.dumps(card, ensure_ascii=False).encode("utf-8")
+
+        send_status = "sent"
+        error_msg = None
+        http_code = 0
+
+        try:
+            logger.info(f"Posting consolidated Adaptive Card ({len(conferences)} conferences) to Teams webhook...")
+            req = urllib.request.Request(
+                self.webhook_url,
+                data=payload_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                http_code = resp.status
+                resp_body = resp.read().decode("utf-8", errors="ignore")
+                logger.info(f"✅ Teams webhook accepted consolidated card for {len(conferences)} conferences (HTTP {http_code})")
+
+            send_status = "sent"
+
+        except urllib.error.HTTPError as e:
+            http_code = e.code
+            err_body = e.read().decode("utf-8", errors="ignore")
+            logger.error(f"❌ Teams webhook HTTP error {http_code}: {err_body}")
+            send_status = "failed"
+            error_msg = f"HTTP {http_code}: {err_body}"
+
+        except Exception as e:
+            logger.error(f"❌ Teams webhook network exception: {e}", exc_info=True)
+            send_status = "failed"
+            error_msg = str(e)
+
+        # Archive card JSON locally
+        json_filename = f"TeamsConsolidatedCard_{today_str}_{len(conferences)}_confs.json"
+        json_path = self.outbox_dir / json_filename
+        with open(json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(card, indent=2, ensure_ascii=False))
+
+        # Append to audit log
+        now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        with open(self.outbox_log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{now_iso}] TEAMS CONSOLIDATED CARD | STATUS: {send_status} | CODE: {http_code} | TOTAL: {len(conferences)} | FILE: {json_filename}\n")
+
+        # Record in database (upsert by unique_key to prevent unique collision)
+        existing_notif = db.query(TeamsNotification).filter(
+            TeamsNotification.conference_unique_key == unique_key
+        ).first()
+
+        target_date = conferences[0].start_date if conferences and conferences[0].start_date else date.today()
+
+        if existing_notif:
+            existing_notif.status = send_status
+            existing_notif.card_payload = json.dumps(card)
+            existing_notif.sent_at = datetime.utcnow()
+            existing_notif.error_message = error_msg
+            existing_notif.webhook_url = self.webhook_url
+        else:
+            notification = TeamsNotification(
+                conference_id="CONSOLIDATED",
+                conference_unique_key=unique_key,
+                conference_title=f"Consolidated T-2 Summary ({len(conferences)} Conferences)",
+                conference_date=target_date,
+                venue="Consolidated Summary",
+                webhook_url=self.webhook_url,
+                status=send_status,
+                card_payload=json.dumps(card),
+                sent_at=datetime.utcnow(),
+                error_message=error_msg
+            )
+            db.add(notification)
+
+        if send_status == "sent":
+            for conf in conferences:
+                conf.teams_webhook_sent = True
+                conf.teams_webhook_sent_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "status": send_status,
+            "http_code": http_code,
+            "total_conferences": len(conferences),
+            "archive_path": str(json_path),
+            "error": error_msg
+        }
+
     def send_all_pending_teams_cards(
         self,
         db: Session,
@@ -394,28 +553,13 @@ class TeamsWebhookService:
         force: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        Sends individual Adaptive Cards to Microsoft Teams for each matching published conference.
-        If 5 conferences match, sends 5 cards.
+        Sends ONE consolidated summary Adaptive Card containing all eligible published conferences
+        to Microsoft Teams.
+        Returns a list containing the single summary dispatch result (for full compatibility with existing callers).
         """
-        if conferences is None:
-            today = date.today()
-            exact_t2_date = today.fromordinal(today.toordinal() + 2)
-            query = db.query(Conference).filter(
-                Conference.is_published_to_excel == True,
-                Conference.start_date == exact_t2_date
-            )
-            if not force:
-                query = query.filter(Conference.teams_webhook_sent == False)
-            conferences = query.all()
+        if not getattr(settings, "TEAMS_CARD_ENABLED", False):
+            logger.info("📢 [Teams Service] Teams card delivery is disabled (TEAMS_CARD_ENABLED=false).")
+            return []
 
-        results = []
-        logger.info(f"📢 [Teams Service] Processing {len(conferences)} conference card(s) for Teams Webhook...")
-
-        for conf in conferences:
-            speakers = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).all()
-            attendee = db.query(Attendee).filter(Attendee.conference_id == conf.conference_id).first()
-            res = self.send_conference_teams_card(db, conf, speakers, attendee, force=force)
-            results.append(res)
-
-        logger.info(f"📢 [Teams Service] Completed Teams webhook delivery: {len(results)} processed.")
-        return results
+        res = self.send_consolidated_teams_card(db, conferences=conferences, force=force)
+        return [res] if res.get("status") != "skipped" or force else []

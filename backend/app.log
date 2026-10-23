@@ -1,0 +1,436 @@
+INFO:     Will watch for changes in these directories: ['/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     Started reloader process [1578708] using WatchFiles
+INFO:     Started server process [1578716]
+INFO:     Waiting for application startup.
+2026-10-23 17:33:27,097 [INFO] app.database: Database tables initialized successfully.
+2026-10-23 17:33:27,097 [INFO] app.tasks.scheduler: Starting automated background scheduler (Interval: once every 10 minutes)...
+2026-10-23 17:33:27,097 [INFO] apscheduler.scheduler: Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-10-23 17:33:27,106 [INFO] apscheduler.scheduler: Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-10-23 17:33:27,106 [INFO] apscheduler.scheduler: Added job "Automated Hourly Conference & Speaker Scraping" to job store "default"
+2026-10-23 17:33:27,106 [INFO] apscheduler.scheduler: Added job "Hourly 2-Day Excel Publication Engine" to job store "default"
+2026-10-23 17:33:27,106 [INFO] apscheduler.scheduler: Scheduler started
+2026-10-23 17:33:27,107 [INFO] app.tasks.scheduler: ✅ Automated Hourly Scheduler started successfully. Next execution scheduled at: 2026-10-23 17:43:27.097710+05:30
+2026-10-23 17:33:27,107 [INFO] app.tasks.celery_app: Cleaning up fake, sample, non-conference, and obsolete records...
+2026-10-23 17:33:27,141 [INFO] app.tasks.celery_app: Cleaned up 0 stale/obsolete/non-category records from database.
+2026-10-23 17:33:27,170 [INFO] app.storage.excel_manager: Initialized blank Excel workbook with 'USA Conferences', 'Speakers', and 'Attendees' sheets at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:33:27,250 [INFO] app.storage.excel_manager: Published 8 conferences, 25 speakers, and 8 attendee records to Excel at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+INFO:     Application startup complete.
+INFO:     127.0.0.1:50132 - "GET /api/speakers?conference_id=CONF-2026-OSAI01 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54780 - "GET /api/speakers?conference_id=CONF-2026-MOLA01 HTTP/1.1" 200 OK
+2026-10-23 17:43:27,098 [INFO] apscheduler.executors.default: Running job "Automated Hourly Conference & Speaker Scraping (trigger: interval[0:10:00], next run at: 2026-10-23 17:43:27 IST)" (scheduled at 2026-10-23 17:43:27.097710+05:30)
+2026-10-23 17:43:27,099 [INFO] app.tasks.scheduler: ⏰ [Hourly Automation] Starting scheduled scraping & data update at 2026-10-23 17:43:27...
+2026-10-23 17:43:27,099 [INFO] app.tasks.celery_app: T-2 Ingestion: Target T-2 start date is 2026-10-25 (2 days from 2026-10-23)...
+2026-10-23 17:43:27,100 [INFO] app.scrapers.orchestrator: Starting conference collection across all 11 sources...
+2026-10-23 17:43:27,101 [INFO] app.scrapers.scraper_10times: [10times] Checking 10times live conferences...
+2026-10-23 17:43:27,102 [INFO] app.scrapers.scraper_luma: [luma] Live scraping genuine tech conferences from Luma...
+2026-10-23 17:43:27,198 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Live scraping genuine USA conferences from Eventbrite...
+2026-10-23 17:43:27,203 [INFO] app.scrapers.scraper_meetup: [meetup] Scanning Meetup for genuine USA conferences (strictly excluding workshops/meetups)...
+2026-10-23 17:43:27,204 [INFO] app.scrapers.scraper_cvent: [cvent] Harvesting enterprise conferences and summits from Cvent...
+2026-10-23 17:43:27,205 [INFO] app.scrapers.scraper_eventsinamerica: [events_in_america] Checking Events in America live conferences...
+2026-10-23 17:43:27,205 [INFO] app.scrapers.scraper_eventseye: [eventseye] Live scraping genuine USA trade shows & conferences from EventsEye...
+2026-10-23 17:43:27,208 [INFO] app.scrapers.scraper_tsnn: [tsnn] Harvesting major national trade shows & technical conventions from TSNN...
+2026-10-23 17:43:27,210 [INFO] app.scrapers.scraper_tradefest: [tradefest] Harvesting major USA trade shows & conventions from Tradefest...
+2026-10-23 17:43:27,211 [INFO] app.scrapers.scraper_govevents: [govevents] Harvesting government, public finance & civic technology conferences...
+2026-10-23 17:43:27,212 [INFO] app.scrapers.scraper_allevents: [allevents] Live scraping genuine USA conferences from AllEvents...
+2026-10-23 17:43:27,214 [INFO] app.scrapers.orchestrator: [meetup] Collected 0 candidate events
+2026-10-23 17:43:27,290 [INFO] app.scrapers.scraper_eventsinamerica: [events_in_america] Harvested 0 events from Events in America.
+2026-10-23 17:43:27,292 [INFO] app.scrapers.orchestrator: [events_in_america] Collected 0 candidate events
+2026-10-23 17:43:27,293 [INFO] app.scrapers.scraper_10times: [10times] Harvested 0 events from 10times.
+2026-10-23 17:43:27,294 [INFO] app.scrapers.orchestrator: [10times] Collected 0 candidate events
+2026-10-23 17:43:27,317 [INFO] app.scrapers.scraper_govevents: [govevents] Collection finished. Harvested 0 events.
+2026-10-23 17:43:27,319 [INFO] app.scrapers.orchestrator: [govevents] Collected 0 candidate events
+2026-10-23 17:43:28,051 [INFO] app.scrapers.scraper_eventseye: [eventseye] Finished collection. Harvested 0 events.
+2026-10-23 17:43:28,053 [INFO] app.scrapers.orchestrator: [eventseye] Collected 0 candidate events
+2026-10-23 17:43:28,178 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:43:28,183 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:43:28,189 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Executive Interview Series: Las Vegas Convention & Visitors Authority's Rebecca DeLuca
+2026-10-23 17:43:28,194 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Executive Interview Series: Las Vegas Convention & Visitors Authority's Rebecca DeLuca
+2026-10-23 17:43:28,199 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Inside Natural Products Expo West & SupplySide Global with Jeff D'Entremont
+2026-10-23 17:43:28,205 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Inside Natural Products Expo West & SupplySide Global with Jeff D'Entremont
+2026-10-23 17:43:28,209 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:43:28,209 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:43:28,210 [INFO] app.scrapers.scraper_tsnn: [tsnn] Collection finished. Harvested 0 events.
+2026-10-23 17:43:28,211 [INFO] app.scrapers.orchestrator: [tsnn] Collected 0 candidate events
+2026-10-23 17:43:28,327 [INFO] app.scrapers.scraper_tradefest: [tradefest] Finished collection. Harvested 0 events.
+2026-10-23 17:43:28,329 [INFO] app.scrapers.orchestrator: [tradefest] Collected 0 candidate events
+2026-10-23 17:43:28,677 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Entertainment Industry Networking Event: Actors, TV, Movie, Music Network (2026-11-13) in Pod Times Square, USA
+2026-10-23 17:43:28,705 [INFO] app.scrapers.scraper_cvent: [cvent] Harvested 0 events from Cvent.
+2026-10-23 17:43:28,707 [INFO] app.scrapers.orchestrator: [cvent] Collected 0 candidate events
+2026-10-23 17:43:29,286 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Social Media Networking for Creators, Influencers, Advertisers | Pod Hotel (2026-11-13) in Pod Times Square, USA
+2026-10-23 17:43:29,397 [INFO] app.scrapers.scraper_luma: [luma] Harvested genuine Luma conference: SEV0 - The reliability conference (SF) (2026-10-27)
+2026-10-23 17:43:30,185 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Found 5 live candidate conference URLs. Fetching details...
+2026-10-23 17:43:30,232 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: NexGen Banking Summit USA 2026 – AI &amp; Banking Innovation Conference, New York (2026-11-17) in New York, USA
+2026-10-23 17:43:30,294 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: 84th ANNUAL PAWC CONFERENCE (2026-10-25) in Montgomery, AL
+2026-10-23 17:43:30,486 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: 2026 RMS-AAPG Annual Meeting (2026-10-25) in Butte, MT
+2026-10-23 17:43:30,622 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: Third Anishinaabe Law Conference (2026-10-25) in Mahnomen, MN
+2026-10-23 17:43:30,694 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: Leading Through Technology, Shaping What’s Next (2026-10-25) in Myrtle Beach, SC
+2026-10-23 17:43:30,766 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: EconDev Camp 2026 (2026-10-25) in New Orleans, LA
+2026-10-23 17:43:30,766 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Live collection finished. Harvested 5 genuine conferences.
+2026-10-23 17:43:30,768 [INFO] app.scrapers.orchestrator: [eventbrite] Collected 5 candidate events
+2026-10-23 17:43:31,193 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: AI Search &amp; Measurement: Free NYC Digital Marketing Seminar + Networking (2026-11-10) in Jay Conference Empire - Meetings and Events Space in Midtown NYC, USA
+2026-10-23 17:43:31,409 [INFO] app.scrapers.scraper_luma: [luma] Live Luma collection finished. Total events: 1
+2026-10-23 17:43:31,414 [INFO] app.scrapers.orchestrator: [luma] Collected 1 candidate events
+2026-10-23 17:43:32,688 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Pivot with Kara Swisher and Scott Galloway presented by beehiiv (2026-11-02) in Beacon Theatre, New York, NY, USA
+2026-10-23 17:43:33,094 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Stanley Kubrick: A Life in Cinema (2026-10-29) in Nine Orchard, New York, NY, USA
+2026-10-23 17:43:33,538 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Ann Patchett and Louise Erdrich talk with Deborah Treisman (2026-10-24) in Webster Hall, New York, NY, USA
+2026-10-23 17:43:33,944 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Ghana  Tech Summit - 2026 Ai  Edition (2026-11-19) in Fordham University School of Law, New York, NY, USA
+2026-10-23 17:43:34,884 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Min Jin Lee and Elizabeth Strout talk with Katy Waldman (2026-10-25) in Webster Hall, New York, NY, USA
+2026-10-23 17:43:35,284 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Event Planner Expo SuperPass - 4:30PM ACCESS Trade Show Floor Only - Oscar (2026-10-29) in The Metropolitan Pavilion, New York, NY, USA
+2026-10-23 17:43:35,953 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: 29th Annual Wall Street Project Economic Impact Summit (2026-10-23) in New York Stock Exchange, New York, NY, USA
+2026-10-23 17:43:36,287 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: (IN-PERSON) Women on the Move with Ann Patchett (2026-10-27) in The Temple Emanu-El Streicker Center, New York, NY, USA
+2026-10-23 17:43:36,648 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Event Planner Expo 2026 - Jessica  Super Pass - 5PM Entry (2026-10-29) in The Metropolitan Pavilion, New York, NY, USA
+2026-10-23 17:43:37,056 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Father Mike Schmitz (2026-11-16) in Radio City Music Hall, New York, NY, USA
+2026-10-23 17:43:38,614 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Startup World Cup Grand Finale 2026 (2026-11-06) in Hilton San Francisco Union Square, San Francisco, CA, USA
+2026-10-23 17:43:39,010 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: One Way Summit 2026: The Flagship Event for Immigrant Entrepreneurship (2026-10-28) in The Commonwealth Club, San Francisco, CA, USA
+2026-10-23 17:43:39,526 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: SFSBK - San Francisco Salsa Bachata Kizomba Congress 2026 w 15 Percent Promo Code SkyDANCE Discount (2026-11-20) in Hyatt Regency San Francisco , San Francisco, CA, USA
+2026-10-23 17:43:39,931 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Women's Emerging Leadership Forum (WELF) 2026 (2026-10-23) in VISA Global Headquarters, San Francisco, CA, USA
+2026-10-23 17:43:40,350 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Panel and Pitch Fintech Startup. Founders and Investors. (2026-10-29) in San Francisco Downtown, San Francisco, CA, USA
+2026-10-23 17:43:40,848 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: UXDX San Francisco 2026 (2026-11-05) in August Hall, San Francisco, CA, USA
+2026-10-23 17:43:41,313 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: IIEX West 2026 - Market Research, Insights &amp; Analytics Conference (2026-10-27) in Pier 27, San Francisco, CA, USA
+2026-10-23 17:43:41,672 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: SF Summit: Leading the Future of Real Estate (2026-10-26) in Hyatt Regency San Francisco Downtown SOMA, San Francisco, CA, USA
+2026-10-23 17:43:42,272 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Startup World Cup Corporate Innovation Seminar 2026 (2026-11-05) in Hilton San Francisco Union Square, San Francisco, CA, USA
+2026-10-23 17:43:42,673 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: ATA's 67th Annual Conference (2026-10-27) in Hyatt Regency San Francisco, San Francisco, CA, USA
+2026-10-23 17:43:43,044 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Yerba Buena Speaker Series: DJ Artistry Craft Culture &amp; Legacy (2026-10-27) in 221 4th St, San Francisco, CA, USA
+2026-10-23 17:43:43,447 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Separating the Signal from the Noise: AI in Biology (2026-11-12) in Mission Bay Conference Center, San Francisco, CA, USA
+2026-10-23 17:43:43,810 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Innovation for Patients Gala (2026-11-13) in California Academy of Sciences, San Francisco, CA, USA
+2026-10-23 17:43:44,182 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Zero Trust for AI: Securing Models, Data, and Autonomous Agents (2026-10-29) in Cloudflare, San Francisco, CA, USA
+2026-10-23 17:43:45,168 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Chicago Build (2026-10-28) in McCormick Place, Chicago, IL, USA
+2026-10-23 17:43:45,514 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Sustainable Futures: Where Sustainability Leaders Connect (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:45,855 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Construction Industry Welcome - Panel and Networking Event (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:46,224 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Meet the Speakers! (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:46,610 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Neil deGrasse Tyson (2026-11-09) in Auditorium Theatre - IL, Chicago, IL, USA
+2026-10-23 17:43:46,981 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The HVACR Networking Exchange (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:47,395 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: In Conversation with Neil deGrasse Tyson - Delusions of Space Enthusiasts at Auditorium Theatre Chicago (2026-11-12) in Auditorium Theatre Chicago, Chicago, IL, USA
+2026-10-23 17:43:47,942 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Midwest Builders &amp; Contractors Connect (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:48,304 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Connecting The Architecture &amp; Design Community (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:48,652 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Connecting Real Estate &amp; Facilities Leaders (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:49,024 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Midwest's Largest Networking Event for Women in Construction (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:49,418 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Safe &amp; Sound: Where Fire &amp; Security Connect (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:43:49,872 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Latina Expo 2026 – Chicago | Empowerment, Innovation &amp; Community (2026-10-23) in Malcolm X College, Chicago, IL, USA
+2026-10-23 17:43:50,321 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Beyond Lifestyle™ — Wellness Travel &amp; Biohacking Expo in Chicago (2026-10-29) in Marriott Marquis Chicago, Chicago, IL, USA
+2026-10-23 17:43:51,337 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: OWASP LASCON 2026 (2026-10-29) in Norris Conference Centers - Austin, Austin, TX, USA
+2026-10-23 17:43:51,706 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: TSSA's 2026 Big Ideas in Storage Annual Conference &amp; Trade Show 40th Anniversary Celebration (2026-11-04) in JW Marriott Austin, Austin, TX, USA
+2026-10-23 17:43:52,093 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: LASCON 2026 Training (2026-10-27) in Norris Conference Centers - Austin, Austin, TX, USA
+2026-10-23 17:43:52,464 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Road So Far... The Road Ahead Tour - Austin, TX (2026-11-20) in Austin Marriott Downtown, Austin, TX, USA
+2026-10-23 17:43:52,890 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The New Capital Rules: Building &amp; Funding Defensible Tech in 2026 (2026-10-29) in SXSW Center, Austin, TX, USA
+2026-10-23 17:43:53,295 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Patrick Radden Keefe in Conversation About London Falling (2026-11-14) in First Baptist Church of Austin, Austin, TX, USA
+2026-10-23 17:43:53,830 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: AI Engineering Summit | Austin | 2026 (2026-11-12) in AT&amp;T Hotel and Conference Center, Austin, TX, USA
+2026-10-23 17:43:54,224 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: 7th Ann. MLOps World | GenAI Conference &amp; Expo (2026-11-17) in Etter-Harbin Alumni Center, Austin, TX, USA
+2026-10-23 17:43:54,592 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Software Quality Summit | Austin| 2026 (2026-10-23) in Austin-Bergstrom International Airport, Austin, TX, USA
+2026-10-23 17:43:54,940 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: US Mid-Term Election Tour (2026-10-30) in Hyatt House Austin/Downtown, Austin, TX, USA
+2026-10-23 17:43:54,940 [INFO] app.scrapers.scraper_allevents: [allevents] Finished live scraping. Harvested 52 events.
+2026-10-23 17:43:54,944 [INFO] app.scrapers.orchestrator: [allevents] Collected 52 candidate events
+2026-10-23 17:43:54,946 [INFO] app.scrapers.orchestrator: Collection complete: 31 raw events harvested across 11 sources.
+2026-10-23 17:43:55,381 [INFO] app.ai.extractor: Gemini AI Agent initialized successfully with API key.
+2026-10-23 17:43:55,382 [INFO] app.tasks.celery_app: Cleaning up fake, sample, non-conference, and obsolete records...
+2026-10-23 17:43:55,551 [INFO] app.tasks.celery_app: Cleaned up 0 stale/obsolete/non-category records from database.
+2026-10-23 17:43:55,570 [INFO] app.storage.excel_manager: Initialized blank Excel workbook with 'USA Conferences', 'Speakers', and 'Attendees' sheets at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:43:55,640 [INFO] app.storage.excel_manager: Published 8 conferences, 25 speakers, and 8 attendee records to Excel at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:43:55,659 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+2026-10-23 17:43:56,077 [INFO] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent "HTTP/1.1 429 Too Many Requests"
+2026-10-23 17:43:56,078 [WARNING] app.ai.extractor: Gemini API (gemini-3.5-flash-lite) error (429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 500, model: gemini-3.5-flash-lite\nPlease retry in 18h46m3.954558546s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3.5-flash-lite'}, 'quotaValue': '500'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '67563s'}]}}), trying fallback parser...
+2026-10-23 17:43:56,467 [INFO] app.tasks.celery_app: Verified & Stored: NexGen Banking Summit USA 2026 – AI & Banking Innovation Conference | Start: 2026-11-17 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:43:57,458 [INFO] app.ai.extractor: LinkedIn verification: Score 50 < 65 for 'Ray Grieselhuber'. Reasons: Name matched ('ray grieselhuber'); Exact full name in profile title. Kept empty (needs_review).
+2026-10-23 17:43:58,803 [INFO] app.ai.extractor: LinkedIn verification: Score 40 < 65 for 'Founder & CEO'. Reasons: Name matched ('founder ceo'). Kept empty (needs_review).
+2026-10-23 17:43:59,789 [INFO] app.ai.extractor: LinkedIn verification: Score 50 < 65 for 'Naohiro Yamaura'. Reasons: Name matched ('naohiro yamaura'); Exact full name in profile title. Kept empty (needs_review).
+2026-10-23 17:44:00,772 [INFO] app.ai.extractor: LinkedIn verification: Score 50 < 65 for 'Director & COO'. Reasons: Name matched ('director coo'); Company 'Inc' is too generic - ignored for strong identity verification; Location keywords matched (['new', 'york']). Kept empty (needs_review).
+2026-10-23 17:44:01,741 [INFO] app.ai.extractor: LinkedIn verification: Score 40 < 65 for 'Chairman & CEO'. Reasons: Name matched ('chairman ceo'). Kept empty (needs_review).
+2026-10-23 17:44:04,698 [INFO] app.ai.extractor: LinkedIn verification: Score 40 < 65 for 'WHO SHOULD ATTEND'. Reasons: Name matched ('who attend'). Kept empty (needs_review).
+2026-10-23 17:44:05,667 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Marketing managers' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:07,979 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Light refreshments will be provided' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:08,957 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'EVENT DETAILS' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:11,020 [INFO] app.ai.extractor: LinkedIn verification: Candidates for '8 W 38th St' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:13,310 [INFO] app.ai.extractor: LinkedIn verification: Score 60 < 65 for 'New York'. Reasons: Name matched ('new york'); Exact full name in profile title; Location keywords matched (['new', 'york']). Kept empty (needs_review).
+2026-10-23 17:44:14,902 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'To reserve your seat' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:16,215 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Hosted by Ayudante' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:16,573 [INFO] app.tasks.celery_app: Verified & Stored: AI Search & Measurement: Free NYC Digital Marketing Seminar + Networking | Start: 2026-11-10 | T-2 Published: False | Verified Speakers: 13
+2026-10-23 17:44:16,903 [INFO] app.tasks.celery_app: Verified & Stored: Pivot with Kara Swisher and Scott Galloway presented by beehiiv | Start: 2026-11-02 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:17,223 [INFO] app.tasks.celery_app: Verified & Stored: Ann Patchett and Louise Erdrich talk with Deborah Treisman | Start: 2026-10-24 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:18,897 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'edition welcomed over 11' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:20,272 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'For ways to partner' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:22,207 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Also check out other' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:23,203 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'in New York' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:24,870 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Business events in New York' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:26,778 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Workshops in New York' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:27,745 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'How abou' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:28,056 [INFO] app.tasks.celery_app: Verified & Stored: Ghana Tech Summit - 2026 Ai Edition | Start: 2026-11-19 | T-2 Published: False | Verified Speakers: 7
+2026-10-23 17:44:28,363 [INFO] app.tasks.celery_app: Verified & Stored: Min Jin Lee and Elizabeth Strout talk with Katy Waldman | Start: 2026-10-25 | T-2 Published: True | Verified Speakers: 3
+2026-10-23 17:44:28,774 [INFO] app.tasks.celery_app: Verified & Stored: 29th Annual Wall Street Project Economic Impact Summit | Start: 2026-10-23 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:29,075 [INFO] app.tasks.celery_app: Verified & Stored: (IN-PERSON) Women on the Move with Ann Patchett | Start: 2026-10-27 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:29,373 [INFO] app.tasks.celery_app: Verified & Stored: Father Mike Schmitz | Start: 2026-11-16 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:30,339 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Daymond John' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:31,693 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Marc Turpenning' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:32,633 [INFO] app.ai.extractor: LinkedIn verification: Selected 'https://www.linkedin.com/in/wgrannis' for 'Will Grannis' (Google Cloud) with score 93. Reasons: Name matched ('will grannis'); Exact full name in profile title; Full distinctive company match ('Google Cloud'); Single job title keyword matched (['cto'])
+2026-10-23 17:44:33,603 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Suzanne Phillion' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:34,948 [INFO] app.ai.extractor: LinkedIn verification: Score 55 < 65 for 'Paul Fipps (President'. Reasons: Name matched ('paul president'); Job title keywords matched (['global', 'operations']). Kept empty (needs_review).
+2026-10-23 17:44:35,972 [INFO] app.ai.extractor: LinkedIn verification: Selected 'https://www.linkedin.com/in/sachinkansal' for 'Sachin Kansal' (Uber) with score 85. Reasons: Name matched ('sachin kansal'); Exact full name in profile title; Full distinctive company match ('Uber')
+2026-10-23 17:44:36,285 [INFO] app.tasks.celery_app: Verified & Stored: Startup World Cup Grand Finale 2026 | Start: 2026-11-04 | T-2 Published: False | Verified Speakers: 7
+2026-10-23 17:44:37,884 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'including founders of Slack' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:39,858 [INFO] app.ai.extractor: LinkedIn verification: Candidates for '​🚪 Intimate' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:40,153 [INFO] app.tasks.celery_app: Verified & Stored: One Way Summit 2026: The Flagship Event for Immigrant Entrepreneurship | Start: 2026-10-28 | T-2 Published: False | Verified Speakers: 2
+2026-10-23 17:44:42,254 [INFO] app.ai.extractor: LinkedIn verification: Score 50 < 65 for 'Armin Wasicek'. Reasons: Name matched ('armin wasicek'); Exact full name in profile title. Kept empty (needs_review).
+2026-10-23 17:44:44,277 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Co-Founder & CTO' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:46,335 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Co-inventor of' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:48,885 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Norton Genie' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:49,179 [INFO] app.tasks.celery_app: Verified & Stored: Panel and Pitch Fintech Startup. Founders and Investors. | Start: 2026-10-29 | T-2 Published: False | Verified Speakers: 4
+2026-10-23 17:44:49,497 [INFO] app.tasks.celery_app: Verified & Stored: UXDX San Francisco 2026 | Start: 2026-11-05 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:49,789 [INFO] app.tasks.celery_app: Verified & Stored: IIEX West 2026 - Market Research, Insights & Analytics Conference | Start: 2026-10-27 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:44:50,767 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Sherry Chris' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:52,589 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'Explore the economic' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:53,518 [INFO] app.ai.extractor: LinkedIn verification: Score 60 < 65 for 'Vanessa Gamp'. Reasons: Name matched ('vanessa gamp'); Exact full name in profile title; Location keywords matched (['san', 'francisco']). Kept empty (needs_review).
+2026-10-23 17:44:54,945 [INFO] app.ai.extractor: LinkedIn verification: Candidates for 'FREE H' failed identity checks. Kept empty (needs_review).
+2026-10-23 17:44:55,280 [ERROR] app.tasks.celery_app: Error in task_scrape_and_ingest: (psycopg2.errors.StringDataRightTruncation) value too long for type character varying(255)
+
+[SQL: INSERT INTO speakers (conference_id, conference_name, speaker_name, company_organization, job_role_designation, company_name, official_company_website_url, linkedin_url, location, source_url, previous_speaking_info, created_at) SELECT p0::VARCHAR, p1 ... 1390 characters truncated ...  p7, p8, p9, p10, p11, sen_counter) ORDER BY sen_counter RETURNING speakers.id, speakers.id AS id__1]
+[parameters: {'conference_id__0': 'CONF-2026-18AB76', 'job_role_designation__0': 'Keynote Speaker', 'company_name__0': 'San Francisco Association of REALTORS® (SFAR)', 'location__0': 'San Francisco, CA, USA', 'previous_speaking_info__0': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__0': datetime.datetime(2026, 10, 23, 12, 14, 55, 278334), 'company_organization__0': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__0': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__0': '', 'speaker_name__0': 'Sherry Chris', 'official_company_website_url__0': 'https://www.cisco.com', 'conference_name__0': 'SF Summit: Leading the Future of Real Estate', 'conference_id__1': 'CONF-2026-18AB76', 'job_role_designation__1': 'political and development trends shaping San Francisco and the broader real estate market. The Global Business Summit and Governmental Affairs Track  ... (9 characters truncated) ... sessions on Global and Economic Development, The Policy Pulse: Housing, Elections and What’s Ahead, and From Office Space to Living Space: The Future', 'company_name__1': 'San Francisco Conversions', 'location__1': 'San Francisco, CA, USA', 'previous_speaking_info__1': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__1': datetime.datetime(2026, 10, 23, 12, 14, 55, 278340), 'company_organization__1': 'San Francisco Conversions', 'source_url__1': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__1': '', 'speaker_name__1': 'Explore the economic', 'official_company_website_url__1': 'https://www.cisco.com', 'conference_name__1': 'SF Summit: Leading the Future of Real Estate', 'conference_id__2': 'CONF-2026-18AB76', 'job_role_designation__2': 'Keynote Speaker', 'company_name__2': 'San Francisco Association of REALTORS® (SFAR)', 'location__2': 'San Francisco, CA, USA', 'previous_speaking_info__2': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__2': datetime.datetime(2026, 10, 23, 12, 14, 55, 278343), 'company_organization__2': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__2': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__2': '', 'speaker_name__2': 'Vanessa Gamp', 'official_company_website_url__2': 'https://www.cisco.com', 'conference_name__2': 'SF Summit: Leading the Future of Real Estate', 'conference_id__3': 'CONF-2026-18AB76', 'job_role_designation__3': 'Keynote Speaker', 'company_name__3': 'San Francisco Association of REALTORS® (SFAR)', 'location__3': 'San Francisco, CA, USA', 'previous_speaking_info__3': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__3': datetime.datetime(2026, 10, 23, 12, 14, 55, 278346), 'company_organization__3': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__3': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__3': '', 'speaker_name__3': 'FREE H', 'official_company_website_url__3': 'https://www.cisco.com', 'conference_name__3': 'SF Summit: Leading the Future of Real Estate'}]
+(Background on this error at: https://sqlalche.me/e/21/9h9h)
+Traceback (most recent call last):
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2097, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 1192, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.StringDataRightTruncation: value too long for type character varying(255)
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/app/tasks/celery_app.py", line 384, in task_scrape_and_ingest
+    db.flush()
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 4536, in flush
+    self._flush(objects)
+  File "<sqlalchemy generated warned() wrapper for sqlalchemy.orm.session.Session._flush>", line 2, in _flush
+    return target(fn, self, objects=objects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 4679, in _flush
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 166, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 4640, in _flush
+    flush_context.execute()
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py", line 467, in execute
+    rec.execute(self)
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py", line 643, in execute
+    util.preloaded.orm_persistence._save_obj(
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py", line 92, in _save_obj
+    _emit_insert_statements(
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py", line 1147, in _emit_insert_statements
+    result = connection.execute(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1451, in execute
+    return meth(
+           ^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 533, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1671, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1823, in _execute_context
+    return self._exec_insertmany_context(dialect, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2114, in _exec_insertmany_context
+    self._handle_dbapi_exception(
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2335, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2097, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 1192, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.DataError: (psycopg2.errors.StringDataRightTruncation) value too long for type character varying(255)
+
+[SQL: INSERT INTO speakers (conference_id, conference_name, speaker_name, company_organization, job_role_designation, company_name, official_company_website_url, linkedin_url, location, source_url, previous_speaking_info, created_at) SELECT p0::VARCHAR, p1 ... 1390 characters truncated ...  p7, p8, p9, p10, p11, sen_counter) ORDER BY sen_counter RETURNING speakers.id, speakers.id AS id__1]
+[parameters: {'conference_id__0': 'CONF-2026-18AB76', 'job_role_designation__0': 'Keynote Speaker', 'company_name__0': 'San Francisco Association of REALTORS® (SFAR)', 'location__0': 'San Francisco, CA, USA', 'previous_speaking_info__0': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__0': datetime.datetime(2026, 10, 23, 12, 14, 55, 278334), 'company_organization__0': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__0': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__0': '', 'speaker_name__0': 'Sherry Chris', 'official_company_website_url__0': 'https://www.cisco.com', 'conference_name__0': 'SF Summit: Leading the Future of Real Estate', 'conference_id__1': 'CONF-2026-18AB76', 'job_role_designation__1': 'political and development trends shaping San Francisco and the broader real estate market. The Global Business Summit and Governmental Affairs Track  ... (9 characters truncated) ... sessions on Global and Economic Development, The Policy Pulse: Housing, Elections and What’s Ahead, and From Office Space to Living Space: The Future', 'company_name__1': 'San Francisco Conversions', 'location__1': 'San Francisco, CA, USA', 'previous_speaking_info__1': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__1': datetime.datetime(2026, 10, 23, 12, 14, 55, 278340), 'company_organization__1': 'San Francisco Conversions', 'source_url__1': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__1': '', 'speaker_name__1': 'Explore the economic', 'official_company_website_url__1': 'https://www.cisco.com', 'conference_name__1': 'SF Summit: Leading the Future of Real Estate', 'conference_id__2': 'CONF-2026-18AB76', 'job_role_designation__2': 'Keynote Speaker', 'company_name__2': 'San Francisco Association of REALTORS® (SFAR)', 'location__2': 'San Francisco, CA, USA', 'previous_speaking_info__2': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__2': datetime.datetime(2026, 10, 23, 12, 14, 55, 278343), 'company_organization__2': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__2': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__2': '', 'speaker_name__2': 'Vanessa Gamp', 'official_company_website_url__2': 'https://www.cisco.com', 'conference_name__2': 'SF Summit: Leading the Future of Real Estate', 'conference_id__3': 'CONF-2026-18AB76', 'job_role_designation__3': 'Keynote Speaker', 'company_name__3': 'San Francisco Association of REALTORS® (SFAR)', 'location__3': 'San Francisco, CA, USA', 'previous_speaking_info__3': 'Featured speaker at SF Summit: Leading the Future of Real Estate addressing key industry architectures, technologies, and executive insights.', 'created_at__3': datetime.datetime(2026, 10, 23, 12, 14, 55, 278346), 'company_organization__3': 'San Francisco Association of REALTORS® (SFAR)', 'source_url__3': 'https://allevents.in/san-francisco/sf-summit-leading-the-future-of-real-estate/100001996277151699', 'linkedin_url__3': '', 'speaker_name__3': 'FREE H', 'official_company_website_url__3': 'https://www.cisco.com', 'conference_name__3': 'SF Summit: Leading the Future of Real Estate'}]
+(Background on this error at: https://sqlalche.me/e/21/9h9h)
+2026-10-23 17:44:55,287 [INFO] app.tasks.celery_app: Running automated T-2 publication check for conferences starting between 2026-10-23 and 2026-10-25...
+2026-10-23 17:44:55,320 [INFO] app.storage.excel_manager: Initialized blank Excel workbook with 'USA Conferences', 'Speakers', and 'Attendees' sheets at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:44:55,390 [INFO] app.storage.excel_manager: Published 8 conferences, 25 speakers, and 8 attendee records to Excel at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:44:55,390 [INFO] app.tasks.celery_app: Synchronized 8 conferences, 25 speakers, and 8 attendees to Excel.
+2026-10-23 17:44:55,653 [INFO] app.services.onedrive_excel_service: Successfully acquired Microsoft Graph access token.
+2026-10-23 17:44:55,803 [INFO] app.services.onedrive_excel_service: Resolved OneDrive drive ID for jeevanandham@adople.ai: b!THk8iAow-k-UHvJEn2ldjAlozCJdrctHrySbNc-GRGpwC46uh6HARYZTlCYAC_ef
+2026-10-23 17:44:56,634 [INFO] app.services.onedrive_excel_service: Found workbook item ID via root children: 014XWL5K2LITWRXKTOS5EIQGEF2ZSG3DMP
+2026-10-23 17:44:57,181 [INFO] app.services.onedrive_excel_service: ✅ OneDrive Excel conferences sync: 0 inserted, 0 updated, 8 skipped.
+2026-10-23 17:44:58,136 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Pilar Ortega' at row 15 with verified links...
+2026-10-23 17:44:59,269 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Oscar Sanchez' at row 16 with verified links...
+2026-10-23 17:45:00,574 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Johnathan Lopez' at row 17 with verified links...
+2026-10-23 17:45:02,056 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Marcus Taylor' at row 18 with verified links...
+2026-10-23 17:45:03,639 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Sir Anthony Ritossa' at row 21 with verified links...
+2026-10-23 17:45:04,659 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Vanessa Higgins' at row 1 with verified links...
+2026-10-23 17:45:05,736 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Andrew Little' at row 3 with verified links...
+2026-10-23 17:45:07,570 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Elena Rodriguez' at row 19 with verified links...
+2026-10-23 17:45:08,882 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Sara McDonough' at row 5 with verified links...
+2026-10-23 17:45:10,172 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Carlos Mendoza' at row 6 with verified links...
+2026-10-23 17:45:11,392 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Ronald L. Harter' at row 7 with verified links...
+2026-10-23 17:45:12,697 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Patrick Guffey' at row 8 with verified links...
+INFO:     127.0.0.1:38472 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38496 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38492 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38476 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+2026-10-23 17:45:13,817 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Emily Methangkool' at row 9 with verified links...
+2026-10-23 17:45:15,101 [INFO] app.services.onedrive_excel_service: OneDrive Excel: Updating speaker 'Dr. Michael Champeau' at row 10 with verified links...
+INFO:     127.0.0.1:38510 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38520 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38526 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38530 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+2026-10-23 17:45:16,436 [INFO] app.services.onedrive_excel_service: ✅ OneDrive Excel speakers sync: 0 inserted, 14 updated, 11 skipped.
+2026-10-23 17:45:16,436 [INFO] app.tasks.celery_app: ☁️ OneDrive Excel synced: {'status': 'success', 'conferences': {'status': 'success', 'inserted_count': 0, 'updated_count': 0, 'skipped_count': 8}, 'speakers': {'status': 'success', 'inserted_count': 0, 'updated_count': 14, 'skipped_count': 11}, 'timestamp': '2026-10-23T12:15:16.436262'}
+2026-10-23 17:45:16,445 [INFO] app.services.email_service: 📧 [Email Service] Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).
+2026-10-23 17:45:16,445 [INFO] app.tasks.celery_app: ℹ️ Teams webhook card delivery is disabled (TEAMS_CARD_ENABLED=false).
+2026-10-23 17:45:16,446 [INFO] app.tasks.scheduler: ℹ️ Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).
+2026-10-23 17:45:16,446 [INFO] app.tasks.scheduler: ℹ️ Teams Webhook card delivery is disabled (TEAMS_CARD_ENABLED=false).
+2026-10-23 17:45:16,446 [INFO] app.tasks.scheduler: ⏰ [Hourly Automation] Job finished. Successfully scraped & updated data at 2026-10-23 17:45:16. Target T-2 Date: 2026-10-25. Next run at 2026-10-23 17:53:27.
+2026-10-23 17:45:16,446 [INFO] apscheduler.executors.default: Job "Automated Hourly Conference & Speaker Scraping (trigger: interval[0:10:00], next run at: 2026-10-23 17:53:27 IST)" executed successfully
+INFO:     127.0.0.1:55008 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54980 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54992 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55016 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45414 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45424 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45446 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45440 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51674 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51644 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51648 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51658 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47552 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47576 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47558 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47572 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55508 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55530 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55520 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55528 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40904 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40888 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40892 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40896 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48980 - "GET /api/scheduler/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48956 - "GET /api/conferences?published_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48974 - "GET /api/attendees HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48958 - "GET /api/speakers?published_only=true HTTP/1.1" 200 OK
+2026-10-23 17:53:27,098 [INFO] apscheduler.executors.default: Running job "Automated Hourly Conference & Speaker Scraping (trigger: interval[0:10:00], next run at: 2026-10-23 18:03:27 IST)" (scheduled at 2026-10-23 17:53:27.097710+05:30)
+2026-10-23 17:53:27,098 [INFO] app.tasks.scheduler: ⏰ [Hourly Automation] Starting scheduled scraping & data update at 2026-10-23 17:53:27...
+2026-10-23 17:53:27,098 [INFO] app.tasks.celery_app: T-2 Ingestion: Target T-2 start date is 2026-10-25 (2 days from 2026-10-23)...
+2026-10-23 17:53:27,099 [INFO] app.scrapers.orchestrator: Starting conference collection across all 11 sources...
+2026-10-23 17:53:27,100 [INFO] app.scrapers.scraper_10times: [10times] Checking 10times live conferences...
+2026-10-23 17:53:27,101 [INFO] app.scrapers.scraper_luma: [luma] Live scraping genuine tech conferences from Luma...
+2026-10-23 17:53:27,103 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Live scraping genuine USA conferences from Eventbrite...
+2026-10-23 17:53:27,103 [INFO] app.scrapers.scraper_meetup: [meetup] Scanning Meetup for genuine USA conferences (strictly excluding workshops/meetups)...
+2026-10-23 17:53:27,106 [INFO] app.scrapers.scraper_cvent: [cvent] Harvesting enterprise conferences and summits from Cvent...
+2026-10-23 17:53:27,106 [INFO] app.scrapers.scraper_eventsinamerica: [events_in_america] Checking Events in America live conferences...
+2026-10-23 17:53:27,106 [INFO] app.scrapers.scraper_eventseye: [eventseye] Live scraping genuine USA trade shows & conferences from EventsEye...
+2026-10-23 17:53:27,109 [INFO] app.scrapers.scraper_tsnn: [tsnn] Harvesting major national trade shows & technical conventions from TSNN...
+2026-10-23 17:53:27,109 [INFO] app.scrapers.scraper_tradefest: [tradefest] Harvesting major USA trade shows & conventions from Tradefest...
+2026-10-23 17:53:27,111 [INFO] app.scrapers.scraper_govevents: [govevents] Harvesting government, public finance & civic technology conferences...
+2026-10-23 17:53:27,114 [INFO] app.scrapers.scraper_allevents: [allevents] Live scraping genuine USA conferences from AllEvents...
+2026-10-23 17:53:27,117 [INFO] app.scrapers.orchestrator: [meetup] Collected 0 candidate events
+2026-10-23 17:53:27,273 [INFO] app.scrapers.scraper_govevents: [govevents] Collection finished. Harvested 0 events.
+2026-10-23 17:53:27,275 [INFO] app.scrapers.orchestrator: [govevents] Collected 0 candidate events
+2026-10-23 17:53:27,278 [INFO] app.scrapers.scraper_10times: [10times] Harvested 0 events from 10times.
+2026-10-23 17:53:27,279 [INFO] app.scrapers.orchestrator: [10times] Collected 0 candidate events
+2026-10-23 17:53:27,291 [INFO] app.scrapers.scraper_eventsinamerica: [events_in_america] Harvested 0 events from Events in America.
+2026-10-23 17:53:27,292 [INFO] app.scrapers.orchestrator: [events_in_america] Collected 0 candidate events
+2026-10-23 17:53:27,972 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:53:27,974 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:53:27,975 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Executive Interview Series: Las Vegas Convention & Visitors Authority's Rebecca DeLuca
+2026-10-23 17:53:27,976 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Executive Interview Series: Las Vegas Convention & Visitors Authority's Rebecca DeLuca
+2026-10-23 17:53:27,976 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Inside Natural Products Expo West & SupplySide Global with Jeff D'Entremont
+2026-10-23 17:53:27,976 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: Inside Natural Products Expo West & SupplySide Global with Jeff D'Entremont
+2026-10-23 17:53:27,976 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:53:27,976 [INFO] app.scrapers.scraper_tsnn: [tsnn] Discovered TSNN candidate: October Destination News: Convention Comebacks, Workforce Wins, and Women in Leadership
+2026-10-23 17:53:27,977 [INFO] app.scrapers.scraper_tsnn: [tsnn] Collection finished. Harvested 0 events.
+2026-10-23 17:53:27,978 [INFO] app.scrapers.orchestrator: [tsnn] Collected 0 candidate events
+2026-10-23 17:53:28,149 [INFO] app.scrapers.scraper_tradefest: [tradefest] Finished collection. Harvested 0 events.
+2026-10-23 17:53:28,150 [INFO] app.scrapers.orchestrator: [tradefest] Collected 0 candidate events
+2026-10-23 17:53:28,294 [INFO] app.scrapers.scraper_eventseye: [eventseye] Finished collection. Harvested 0 events.
+2026-10-23 17:53:28,296 [INFO] app.scrapers.orchestrator: [eventseye] Collected 0 candidate events
+2026-10-23 17:53:28,383 [INFO] app.scrapers.scraper_cvent: [cvent] Harvested 0 events from Cvent.
+2026-10-23 17:53:28,420 [INFO] app.scrapers.orchestrator: [cvent] Collected 0 candidate events
+2026-10-23 17:53:28,895 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Entertainment Industry Networking Event: Actors, TV, Movie, Music Network (2026-11-13) in Pod Times Square, USA
+2026-10-23 17:53:29,338 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Social Media Networking for Creators, Influencers, Advertisers | Pod Hotel (2026-11-13) in Pod Times Square, USA
+2026-10-23 17:53:29,360 [INFO] app.scrapers.scraper_luma: [luma] Harvested genuine Luma conference: SEV0 - The reliability conference (SF) (2026-10-27)
+2026-10-23 17:53:29,775 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: NexGen Banking Summit USA 2026 – AI &amp; Banking Innovation Conference, New York (2026-11-17) in New York, USA
+2026-10-23 17:53:29,975 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Found 5 live candidate conference URLs. Fetching details...
+2026-10-23 17:53:30,044 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: 84th ANNUAL PAWC CONFERENCE (2026-10-25) in Montgomery, AL
+2026-10-23 17:53:30,114 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: 2026 RMS-AAPG Annual Meeting (2026-10-25) in Butte, MT
+2026-10-23 17:53:30,163 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: AI Search &amp; Measurement: Free NYC Digital Marketing Seminar + Networking (2026-11-10) in Jay Conference Empire - Meetings and Events Space in Midtown NYC, USA
+2026-10-23 17:53:30,219 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: Third Anishinaabe Law Conference (2026-10-25) in Mahnomen, MN
+2026-10-23 17:53:30,459 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: Leading Through Technology, Shaping What’s Next (2026-10-25) in Myrtle Beach, SC
+2026-10-23 17:53:30,587 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Harvested genuine conference: EconDev Camp 2026 (2026-10-25) in New Orleans, LA
+2026-10-23 17:53:30,587 [INFO] app.scrapers.scraper_eventbrite: [eventbrite] Live collection finished. Harvested 5 genuine conferences.
+2026-10-23 17:53:30,590 [INFO] app.scrapers.orchestrator: [eventbrite] Collected 5 candidate events
+2026-10-23 17:53:31,282 [INFO] app.scrapers.scraper_luma: [luma] Live Luma collection finished. Total events: 1
+2026-10-23 17:53:31,287 [INFO] app.scrapers.orchestrator: [luma] Collected 1 candidate events
+2026-10-23 17:53:31,715 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Pivot with Kara Swisher and Scott Galloway presented by beehiiv (2026-11-02) in Beacon Theatre, New York, NY, USA
+2026-10-23 17:53:32,137 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Stanley Kubrick: A Life in Cinema (2026-10-29) in Nine Orchard, New York, NY, USA
+2026-10-23 17:53:32,474 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Ann Patchett and Louise Erdrich talk with Deborah Treisman (2026-10-24) in Webster Hall, New York, NY, USA
+2026-10-23 17:53:32,895 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Ghana  Tech Summit - 2026 Ai  Edition (2026-11-19) in Fordham University School of Law, New York, NY, USA
+2026-10-23 17:53:33,307 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Min Jin Lee and Elizabeth Strout talk with Katy Waldman (2026-10-25) in Webster Hall, New York, NY, USA
+2026-10-23 17:53:33,716 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Event Planner Expo SuperPass - 4:30PM ACCESS Trade Show Floor Only - Oscar (2026-10-29) in The Metropolitan Pavilion, New York, NY, USA
+2026-10-23 17:53:34,698 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: 29th Annual Wall Street Project Economic Impact Summit (2026-10-23) in New York Stock Exchange, New York, NY, USA
+2026-10-23 17:53:35,055 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: (IN-PERSON) Women on the Move with Ann Patchett (2026-10-27) in The Temple Emanu-El Streicker Center, New York, NY, USA
+2026-10-23 17:53:35,458 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Event Planner Expo 2026 - Jessica  Super Pass - 5PM Entry (2026-10-29) in The Metropolitan Pavilion, New York, NY, USA
+2026-10-23 17:53:36,035 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Father Mike Schmitz (2026-11-16) in Radio City Music Hall, New York, NY, USA
+2026-10-23 17:53:37,656 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Startup World Cup Grand Finale 2026 (2026-11-06) in Hilton San Francisco Union Square, San Francisco, CA, USA
+2026-10-23 17:53:38,064 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: One Way Summit 2026: The Flagship Event for Immigrant Entrepreneurship (2026-10-28) in The Commonwealth Club, San Francisco, CA, USA
+2026-10-23 17:53:38,471 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: SFSBK - San Francisco Salsa Bachata Kizomba Congress 2026 w 15 Percent Promo Code SkyDANCE Discount (2026-11-20) in Hyatt Regency San Francisco , San Francisco, CA, USA
+2026-10-23 17:53:38,940 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Women's Emerging Leadership Forum (WELF) 2026 (2026-10-23) in VISA Global Headquarters, San Francisco, CA, USA
+2026-10-23 17:53:39,300 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Panel and Pitch Fintech Startup. Founders and Investors. (2026-10-29) in San Francisco Downtown, San Francisco, CA, USA
+2026-10-23 17:53:39,643 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: UXDX San Francisco 2026 (2026-11-05) in August Hall, San Francisco, CA, USA
+2026-10-23 17:53:39,999 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: IIEX West 2026 - Market Research, Insights &amp; Analytics Conference (2026-10-27) in Pier 27, San Francisco, CA, USA
+2026-10-23 17:53:41,033 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: SF Summit: Leading the Future of Real Estate (2026-10-26) in Hyatt Regency San Francisco Downtown SOMA, San Francisco, CA, USA
+2026-10-23 17:53:41,425 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Startup World Cup Corporate Innovation Seminar 2026 (2026-11-05) in Hilton San Francisco Union Square, San Francisco, CA, USA
+2026-10-23 17:53:41,844 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: ATA's 67th Annual Conference (2026-10-27) in Hyatt Regency San Francisco, San Francisco, CA, USA
+2026-10-23 17:53:42,296 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Yerba Buena Speaker Series: DJ Artistry Craft Culture &amp; Legacy (2026-10-27) in 221 4th St, San Francisco, CA, USA
+2026-10-23 17:53:43,548 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Separating the Signal from the Noise: AI in Biology (2026-11-12) in Mission Bay Conference Center, San Francisco, CA, USA
+2026-10-23 17:53:43,960 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Innovation for Patients Gala (2026-11-13) in California Academy of Sciences, San Francisco, CA, USA
+2026-10-23 17:53:44,438 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Zero Trust for AI: Securing Models, Data, and Autonomous Agents (2026-10-29) in Cloudflare, San Francisco, CA, USA
+2026-10-23 17:53:45,354 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Chicago Build (2026-10-28) in McCormick Place, Chicago, IL, USA
+2026-10-23 17:53:45,871 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Sustainable Futures: Where Sustainability Leaders Connect (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:46,264 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Construction Industry Welcome - Panel and Networking Event (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:46,647 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Meet the Speakers! (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:47,082 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Neil deGrasse Tyson (2026-11-09) in Auditorium Theatre - IL, Chicago, IL, USA
+2026-10-23 17:53:47,529 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The HVACR Networking Exchange (2026-10-28) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:47,893 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: In Conversation with Neil deGrasse Tyson - Delusions of Space Enthusiasts at Auditorium Theatre Chicago (2026-11-12) in Auditorium Theatre Chicago, Chicago, IL, USA
+2026-10-23 17:53:48,279 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Midwest Builders &amp; Contractors Connect (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:48,691 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Connecting The Architecture &amp; Design Community (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:49,590 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Connecting Real Estate &amp; Facilities Leaders (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:50,200 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Midwest's Largest Networking Event for Women in Construction (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:50,595 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Safe &amp; Sound: Where Fire &amp; Security Connect (2026-10-29) in McCormick Place - East Building / Lake Side Center, Chicago, IL, USA
+2026-10-23 17:53:51,064 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Latina Expo 2026 – Chicago | Empowerment, Innovation &amp; Community (2026-10-23) in Malcolm X College, Chicago, IL, USA
+2026-10-23 17:53:51,469 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Beyond Lifestyle™ — Wellness Travel &amp; Biohacking Expo in Chicago (2026-10-29) in Marriott Marquis Chicago, Chicago, IL, USA
+2026-10-23 17:53:52,513 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: OWASP LASCON 2026 (2026-10-29) in Norris Conference Centers - Austin, Austin, TX, USA
+2026-10-23 17:53:53,048 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: TSSA's 2026 Big Ideas in Storage Annual Conference &amp; Trade Show 40th Anniversary Celebration (2026-11-04) in JW Marriott Austin, Austin, TX, USA
+2026-10-23 17:53:53,478 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: LASCON 2026 Training (2026-10-27) in Norris Conference Centers - Austin, Austin, TX, USA
+2026-10-23 17:53:53,868 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The Road So Far... The Road Ahead Tour - Austin, TX (2026-11-20) in Austin Marriott Downtown, Austin, TX, USA
+2026-10-23 17:53:54,194 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: The New Capital Rules: Building &amp; Funding Defensible Tech in 2026 (2026-10-29) in SXSW Center, Austin, TX, USA
+2026-10-23 17:53:54,556 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Patrick Radden Keefe in Conversation About London Falling (2026-11-14) in First Baptist Church of Austin, Austin, TX, USA
+2026-10-23 17:53:54,951 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: AI Engineering Summit | Austin | 2026 (2026-11-12) in AT&amp;T Hotel and Conference Center, Austin, TX, USA
+2026-10-23 17:53:55,334 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: 7th Ann. MLOps World | GenAI Conference &amp; Expo (2026-11-17) in Etter-Harbin Alumni Center, Austin, TX, USA
+2026-10-23 17:53:55,959 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: Software Quality Summit | Austin| 2026 (2026-10-23) in Austin-Bergstrom International Airport, Austin, TX, USA
+2026-10-23 17:53:56,378 [INFO] app.scrapers.scraper_allevents: [allevents] Harvested conference: US Mid-Term Election Tour (2026-10-30) in Hyatt House Austin/Downtown, Austin, TX, USA
+2026-10-23 17:53:56,378 [INFO] app.scrapers.scraper_allevents: [allevents] Finished live scraping. Harvested 52 events.
+2026-10-23 17:53:56,382 [INFO] app.scrapers.orchestrator: [allevents] Collected 52 candidate events
+2026-10-23 17:53:56,383 [INFO] app.scrapers.orchestrator: Collection complete: 31 raw events harvested across 11 sources.
+2026-10-23 17:53:56,400 [INFO] app.ai.extractor: Gemini AI Agent initialized successfully with API key.
+2026-10-23 17:53:56,400 [INFO] app.tasks.celery_app: Cleaning up fake, sample, non-conference, and obsolete records...
+2026-10-23 17:53:56,431 [INFO] app.tasks.celery_app: Cleaned up 5 stale/obsolete/non-category records from database.
+2026-10-23 17:53:56,449 [INFO] app.storage.excel_manager: Initialized blank Excel workbook with 'USA Conferences', 'Speakers', and 'Attendees' sheets at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:53:56,519 [INFO] app.storage.excel_manager: Published 8 conferences, 25 speakers, and 8 attendee records to Excel at /home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx
+2026-10-23 17:53:56,519 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+2026-10-23 17:53:56,908 [INFO] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent "HTTP/1.1 429 Too Many Requests"
+2026-10-23 17:53:56,909 [WARNING] app.ai.extractor: Gemini API (gemini-3.5-flash-lite) error (429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 500, model: gemini-3.5-flash-lite\nPlease retry in 18h36m3.122337063s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-3.5-flash-lite', 'location': 'global'}, 'quotaValue': '500'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '66963s'}]}}), trying fallback parser...
+2026-10-23 17:53:57,318 [INFO] app.tasks.celery_app: Verified & Stored: NexGen Banking Summit USA 2026 – AI & Banking Innovation Conference | Start: 2026-11-17 | T-2 Published: False | Verified Speakers: 0
+2026-10-23 17:53:57,663 [INFO] app.tasks.celery_app: Verified & Stored: AI Search & Measurement: Free NYC Digital Marketing Seminar + Networking | Start: 2026-11-10 | T-2 Published: False | Verified Speakers: 13
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-10-23 17:53:58,127 [INFO] apscheduler.scheduler: Scheduler has been shut down
+2026-10-23 17:53:58,194 [INFO] app.tasks.scheduler: Background Scheduler stopped.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1578716]
+INFO:     Stopping reloader process [1578708]

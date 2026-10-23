@@ -715,6 +715,8 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
 
     # 6. Discover and verify genuine LinkedIn profile URL via candidate search (No slug guessing)
     linkedin_url = discover_and_verify_linkedin_profile(name, company, role, location)
+    if linkedin_url and ("linkedin.com/in/" not in linkedin_url.lower() or "/company/" in linkedin_url.lower() or "/school/" in linkedin_url.lower()):
+        linkedin_url = ""
 
     return name, role, company, company_url, linkedin_url
 
@@ -1054,12 +1056,19 @@ class AIConferenceExtractor:
                         continue
                     entry = re.sub(r"^(\d+[\.\)]|\-)\s*", "", entry).strip()
 
-                    # Check for explicit LinkedIn URL
+                    # Check for explicit personal LinkedIn URL (strictly personal profile linkedin.com/in/)
                     cand_linkedin = ""
-                    if "linkedin.com/in/" in entry.lower() or "linkedin.com/company/" in entry.lower():
+                    if "linkedin.com/in/" in entry.lower():
                         l_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
                         if l_match:
-                            cand_linkedin = l_match.group(1).strip()
+                            cand_url = l_match.group(1).strip()
+                            if "linkedin.com/in/" in cand_url.lower():
+                                cand_linkedin = cand_url
+                            entry = entry[:l_match.start()].strip()
+                    elif "linkedin.com/company/" in entry.lower() or "linkedin.com/school/" in entry.lower():
+                        # Strip company/school LinkedIn and do not use as speaker profile
+                        l_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
+                        if l_match:
                             entry = entry[:l_match.start()].strip()
 
                     # Pattern: Company - Name, Role

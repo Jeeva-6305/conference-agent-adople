@@ -103,7 +103,7 @@ def get_conferences(
     source: Optional[str] = Query(None, description="Filter by source (10times, luma, eventbrite, meetup, cvent, events_in_america, tsnn, tradefest, govevents, eventseye)"),
     category: Optional[str] = Query(None, description="Filter by category"),
     search: Optional[str] = Query(None, description="Search by title, speaker, or city"),
-    published_only: Optional[bool] = Query(True, description="Filter only conferences adhering to strict T-2 logic"),
+    published_only: Optional[bool] = Query(True, description="Filter only conferences adhering to strict T-2 logic (event date == today + 2 days)"),
     status: Optional[str] = Query(None, description="Filter by status (published, scheduled)"),
     db: Session = Depends(get_db)
 ):
@@ -375,5 +375,59 @@ def preview_teams_adaptive_card(
     service = TeamsWebhookService()
     card = service.build_adaptive_card(conf, speakers, attendee)
     return card
+
+
+@app.get("/api/notifications/teams-webhook/preview-summary")
+def preview_consolidated_teams_card(
+    db: Session = Depends(get_db)
+):
+    """Returns the exact single consolidated Adaptive Card JSON payload rendered for Microsoft Teams."""
+    from .services.teams_service import TeamsWebhookService
+
+    today = date.today()
+    exact_t2_date = today + timedelta(days=2)
+    conferences = db.query(Conference).filter(
+        Conference.is_published_to_excel == True,
+        Conference.start_date == exact_t2_date
+    ).all()
+
+    service = TeamsWebhookService()
+    card = service.build_consolidated_adaptive_card(conferences, db=db)
+    return card
+
+
+# =========================================================================
+# ONEDRIVE EXCEL INTEGRATION ENDPOINTS (MICROSOFT GRAPH)
+# =========================================================================
+
+@app.get("/api/onedrive/status")
+def get_onedrive_excel_status():
+    """Returns read-only metadata and schema verification for the work OneDrive workbook."""
+    from .services.onedrive_excel_service import OneDriveExcelService
+    service = OneDriveExcelService()
+    try:
+        return service.test_connection()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/onedrive/sync")
+def trigger_onedrive_excel_sync(db: Session = Depends(get_db)):
+    """Synchronizes published T-2 conferences and their verified speakers to the OneDrive Excel workbook."""
+    from .services.onedrive_excel_service import OneDriveExcelService
+    today = date.today()
+    exact_t2_date = today + timedelta(days=2)
+
+    all_published = db.query(Conference).filter(
+        Conference.is_published_to_excel == True,
+        Conference.start_date == exact_t2_date
+    ).order_by(Conference.conference_title.asc()).all()
+
+    pub_ids = [c.conference_id for c in all_published]
+    speakers = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
+
+    service = OneDriveExcelService()
+    result = service.sync_all(conferences=all_published, speakers=speakers)
+    return result
 
 

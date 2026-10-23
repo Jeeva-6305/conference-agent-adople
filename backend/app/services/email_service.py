@@ -436,6 +436,16 @@ class ConferenceEmailService:
             conf.venue
         )
 
+        # 0. Enabled check
+        if not getattr(settings, "EMAIL_REMINDER_ENABLED", False):
+            logger.info(f"Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false). Skipping '{conf.conference_title}'.")
+            return {
+                "status": "disabled",
+                "reason": "EMAIL_REMINDER_ENABLED is false",
+                "conference_id": conf.conference_id,
+                "conference_title": conf.conference_title
+            }
+
         # 1. Duplicate check
         if self.is_conference_already_sent(db, conf):
             logger.info(f"Skipping duplicate email notification: '{conf.conference_title}' has already been notified.")
@@ -550,6 +560,10 @@ class ConferenceEmailService:
         - Guarantees NO bundling: Each conference gets its own individual email.
         - If 5 conferences match, sends 5 separate emails.
         """
+        if not getattr(settings, "EMAIL_REMINDER_ENABLED", False):
+            logger.info("📧 [Email Service] Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).")
+            return []
+
         if conferences is None:
             # Query all conferences that are published to Excel and haven't had emails sent
             conferences = db.query(Conference).filter(
