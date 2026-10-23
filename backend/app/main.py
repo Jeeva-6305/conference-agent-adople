@@ -133,7 +133,20 @@ def get_conferences(
             (Conference.venue.ilike(search_filter))
         )
 
-    return query.order_by(Conference.start_date.asc(), Conference.conference_title.asc()).all()
+    results = query.order_by(Conference.start_date.asc(), Conference.created_at.desc()).all()
+    unique_conferences = []
+    seen_identifiers = set()
+
+    for conf in results:
+        title_norm = (conf.conference_title or "").strip().lower()
+        date_str = str(conf.start_date or "")
+        key = (title_norm, date_str)
+        if key in seen_identifiers:
+            continue
+        seen_identifiers.add(key)
+        unique_conferences.append(conf)
+
+    return unique_conferences
 
 @app.get("/api/conferences/{identifier}", response_model=ConferenceResponse)
 def get_conference_detail(identifier: str, db: Session = Depends(get_db)):
@@ -167,7 +180,17 @@ def get_speakers(
         ).all()
         t2_ids = [c[0] for c in t2_confs]
         query = query.filter(Speaker.conference_id.in_(t2_ids))
-    return query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
+    
+    results = query.order_by(Speaker.conference_name.asc(), Speaker.speaker_name.asc()).all()
+    unique_speakers = []
+    seen_spks = set()
+    for s in results:
+        key = ((s.conference_id or "").strip().lower(), (s.speaker_name or "").strip().lower())
+        if key in seen_spks:
+            continue
+        seen_spks.add(key)
+        unique_speakers.append(s)
+    return unique_speakers
 
 @app.get("/api/attendees", response_model=List[AttendeeResponse])
 def get_attendees(

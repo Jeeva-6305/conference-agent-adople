@@ -53,6 +53,15 @@ def validate_personal_linkedin_url(url: Optional[str]) -> str:
     return ""
 
 
+def normalize_title(title: Optional[str]) -> str:
+    """Normalize conference or speaker title by stripping punctuation and normalizing spaces."""
+    if not title:
+        return ""
+    t = str(title).strip().lower()
+    t = re.sub(r'[\',.:;!?"\(\)\-\–—/]', ' ', t)
+    return " ".join(t.split())
+
+
 def cleanup_fake_and_sample_records(db):
     """
     Purges all sample, mock, placeholder, non-conference (workshops, meetups, webinars),
@@ -78,23 +87,29 @@ def cleanup_fake_and_sample_records(db):
     for c in all_confs:
         title_lower = (c.conference_title or "").lower().strip()
 
-        # Protect verified existing published records from deletion
+        # Protect verified existing published records from deletion and eliminate DB duplicates
         if c.is_published_to_excel:
+            if title_lower in seen_titles:
+                logger.info(f"Removing duplicate published conference from DB: {c.conference_id} - {c.conference_title}")
+                db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
+                db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
+                db.delete(c)
+                deleted_count += 1
+                continue
             seen_titles.add(title_lower)
             continue
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
 
-        # Filter out non-conferences (entertainment, comic cons, TV festivals, talks, mixers, walks, author talks)
+        # Filter out non-conferences (entertainment, comic cons, TV festivals, mixers, walks)
         is_non_conference = any(term in title_lower for term in [
             "workshop", "webinar", "meetup", "hackathon", "networking lunch",
             "networking mixer", "zoom event", "sf real estate", "bar crawl",
             "revival", "congreso", "skip the small talk", "happy hour", "sample",
             "brunch", "walk with", "mile run", "horror night", "demo night",
-            "wellness walk", " walk", "comic con", "paleyfest", "talks with",
-            "talk with", "talk with ", "author", "book signing", "reading",
+            "wellness walk", " walk", "comic con", "paleyfest",
             "artform", "art show", "stage", "screening", "exhibition", "concert",
             "comedy", "showcase", "festival", "becky g", "almodovar", "koom",
-            "theatre", "theater", "beacon theatre", "radio city", "webster hall",
+            "theatre", "theater", "beacon theatre", "radio city",
             "father mike", "podcast", "beehiiv",
             "forest preserve", "zoo", "wildlife", "conservation symposium"
         ])
@@ -223,11 +238,35 @@ def task_scrape_and_ingest():
             except Exception:
                 pass
 
-            # Check if conference exists by source_url or title
+            # Multi-source duplicate detection: canonical URL, normalized title, venue + start date
+            extracted_title = extracted.conference_title.strip()
+            norm_title = normalize_title(extracted_title)
+
             conf = db.query(Conference).filter(
                 (Conference.source_url == raw.source_url) |
-                (Conference.conference_title.ilike(extracted.conference_title.strip()))
+                (Conference.conference_title.ilike(extracted_title))
             ).first()
+
+            if not conf:
+                # Check for same conference on the same start date via canonical title, official URL, or venue
+                same_date_confs = db.query(Conference).filter(Conference.start_date == conf_start).all()
+                for c_cand in same_date_confs:
+                    c_norm = normalize_title(c_cand.conference_title)
+                    if c_norm == norm_title or (norm_title in c_norm) or (c_norm in norm_title):
+                        conf = c_cand
+                        break
+                    if (
+                        extracted.official_conference_url and len(extracted.official_conference_url) > 10 and
+                        c_cand.official_conference_url and c_cand.official_conference_url.strip().lower() == extracted.official_conference_url.strip().lower()
+                    ):
+                        conf = c_cand
+                        break
+                    if (
+                        extracted.venue and len(extracted.venue.strip()) > 8 and
+                        c_cand.venue and c_cand.venue.strip().lower() == extracted.venue.strip().lower()
+                    ):
+                        conf = c_cand
+                        break
 
             if not conf:
                 # Determine original publication date (NOT scraping date)

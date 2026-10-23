@@ -4,6 +4,7 @@ import json
 import logging
 import urllib.request
 import urllib.parse
+import re
 from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime, date
 
@@ -11,6 +12,30 @@ from ..config import settings
 from ..models import Conference, Speaker
 
 logger = logging.getLogger(__name__)
+
+
+def canonicalize_url(url: Optional[str]) -> str:
+    """Canonicalize URLs for reliable duplicate detection across platforms."""
+    if not url:
+        return ""
+    u = str(url).strip().lower()
+    if u.startswith("https://"):
+        u = u[8:]
+    elif u.startswith("http://"):
+        u = u[7:]
+    if u.startswith("www."):
+        u = u[4:]
+    u = u.split("?")[0].split("#")[0]
+    return u.rstrip("/")
+
+
+def normalize_title(title: Optional[str]) -> str:
+    """Normalize conference or speaker title by stripping punctuation and normalizing spaces."""
+    if not title:
+        return ""
+    t = str(title).strip().lower()
+    t = re.sub(r'[\',.:;!?"\(\)\-\–—/]', ' ', t)
+    return " ".join(t.split())
 
 
 class OneDriveExcelService:
@@ -283,12 +308,35 @@ class OneDriveExcelService:
         drive_id = self.resolve_drive_id()
         item_id = self.resolve_item_id()
         existing_rows = self.get_existing_conference_rows_map()
-        existing_ids = {cid.lower() for cid in existing_rows.keys()}
-        existing_titles = {
-            str(vals[1]).strip().lower() 
-            for _, vals in existing_rows.values() 
-            if len(vals) > 1 and vals[1]
-        }
+        
+        # Build comprehensive deduplication sets from existing historical Excel rows
+        existing_ids: Set[str] = set()
+        existing_titles: Set[str] = set()
+        existing_canonical_urls: Set[str] = set()
+        existing_title_dates: Set[Tuple[str, str]] = set()
+        existing_venue_dates: Set[Tuple[str, str]] = set()
+
+        for cid, (_, vals) in existing_rows.items():
+            if cid:
+                existing_ids.add(str(cid).strip().lower())
+            if len(vals) > 1 and vals[1]:
+                t_norm = normalize_title(vals[1])
+                if t_norm:
+                    existing_titles.add(t_norm)
+            if len(vals) > 3 and vals[3]:
+                d_str = str(vals[3]).strip()
+                if len(vals) > 1 and vals[1]:
+                    t_norm = normalize_title(vals[1])
+                    if t_norm and d_str:
+                        existing_title_dates.add((t_norm, d_str))
+                if len(vals) > 7 and vals[7]:
+                    v_norm = normalize_title(vals[7])
+                    if v_norm and len(v_norm) > 5 and d_str:
+                        existing_venue_dates.add((v_norm, d_str))
+            if len(vals) > 12 and vals[12]:
+                c_url = canonicalize_url(vals[12])
+                if c_url and len(c_url) > 10 and not any(gen in c_url for gen in ["allevents.in", "eventbrite.com", "meetup.com", "luma.com"]):
+                    existing_canonical_urls.add(c_url)
 
         rows_to_insert = []
         skipped_count = 0
@@ -299,16 +347,44 @@ class OneDriveExcelService:
                 skipped_count += 1
                 continue
 
-            conf_title_norm = (conf.conference_title or "").strip().lower()
+            conf_id_lower = conf_id.lower()
+            conf_title_norm = normalize_title(conf.conference_title)
+            start_date_str = conf.start_date.isoformat() if conf.start_date else ""
+            venue_norm = normalize_title(conf.venue)
+            canon_official_url = canonicalize_url(conf.official_conference_url)
+            canon_source_url = canonicalize_url(conf.source_url)
 
-            # Strict append-only: If already present, preserve historical record without overwrite
-            if conf_id.lower() in existing_ids or (conf_title_norm and conf_title_norm in existing_titles):
-                logger.info(f"OneDrive Excel: Retaining existing historical record for '{conf.conference_title}' (No overwrite/modification).")
+            # Strict duplicate checking against all reliable identifiers:
+            # 1. Conference ID
+            # 2. Normalized Title
+            # 3. Canonical Official URL
+            # 4. Title + Start Date
+            # 5. Venue + Start Date
+            is_duplicate = False
+            match_reason = ""
+
+            if conf_id_lower in existing_ids:
+                is_duplicate = True
+                match_reason = f"Conference ID '{conf_id}'"
+            elif conf_title_norm and conf_title_norm in existing_titles:
+                is_duplicate = True
+                match_reason = f"Title '{conf.conference_title}'"
+            elif canon_official_url and canon_official_url in existing_canonical_urls:
+                is_duplicate = True
+                match_reason = f"Canonical URL '{canon_official_url}'"
+            elif (conf_title_norm, start_date_str) in existing_title_dates:
+                is_duplicate = True
+                match_reason = f"Title + Date ({conf_title_norm} on {start_date_str})"
+            elif venue_norm and len(venue_norm) > 5 and (venue_norm, start_date_str) in existing_venue_dates:
+                is_duplicate = True
+                match_reason = f"Venue + Date ({venue_norm} on {start_date_str})"
+
+            if is_duplicate:
+                logger.info(f"OneDrive Excel: Retaining existing historical record for '{conf.conference_title}' ({match_reason} already present). Skipping duplicate append.")
                 skipped_count += 1
                 continue
 
             # Format fields
-            start_date_str = conf.start_date.isoformat() if conf.start_date else ""
             end_date_str = conf.end_date.isoformat() if conf.end_date else ""
             pub_date_str = conf.publication_date.isoformat() if conf.publication_date else ""
             collected_at_str = conf.created_at.isoformat() if conf.created_at else datetime.utcnow().isoformat()
@@ -333,9 +409,15 @@ class OneDriveExcelService:
             ]
 
             rows_to_insert.append(new_row)
-            existing_ids.add(conf_id.lower())
+            existing_ids.add(conf_id_lower)
             if conf_title_norm:
                 existing_titles.add(conf_title_norm)
+            if canon_official_url and len(canon_official_url) > 10:
+                existing_canonical_urls.add(canon_official_url)
+            if conf_title_norm and start_date_str:
+                existing_title_dates.add((conf_title_norm, start_date_str))
+            if venue_norm and len(venue_norm) > 5 and start_date_str:
+                existing_venue_dates.add((venue_norm, start_date_str))
 
         inserted_count = 0
         if rows_to_insert:
@@ -368,10 +450,25 @@ class OneDriveExcelService:
         drive_id = self.resolve_drive_id()
         item_id = self.resolve_item_id()
         existing_rows = self.get_existing_speaker_rows_map()
-        existing_keys = {
-            (cid.lower(), sname.lower())
-            for (cid, sname) in existing_rows.keys()
-        }
+        
+        # Build multi-tier speaker deduplication sets
+        existing_keys: Set[Tuple[str, str]] = set()
+        existing_title_speakers: Set[Tuple[str, str]] = set()
+        existing_linkedin: Set[str] = set()
+
+        for (cid, sname), (_, vals) in existing_rows.items():
+            if cid and sname:
+                existing_keys.add((str(cid).strip().lower(), str(sname).strip().lower()))
+            if len(vals) > 3 and vals[3]:
+                spk_n = normalize_title(vals[3])
+                if len(vals) > 2 and vals[2]:
+                    c_title = normalize_title(vals[2])
+                    if c_title and spk_n:
+                        existing_title_speakers.add((c_title, spk_n))
+                if len(vals) > 6 and vals[6]:
+                    li_canon = canonicalize_url(vals[6])
+                    if li_canon and "linkedin.com/in/" in li_canon:
+                        existing_linkedin.add(li_canon)
 
         rows_to_insert = []
         skipped_count = 0
@@ -384,9 +481,25 @@ class OneDriveExcelService:
                 continue
 
             key = (conf_id.lower(), name.lower())
-            # Strict append-only: If already present, preserve historical speaker details without overwrite
+            name_norm = normalize_title(name)
+            title_norm = normalize_title(spk.conference_name)
+            li_canon = canonicalize_url(spk.linkedin_url)
+
+            # Check if speaker already exists under this conference ID, conference title, or LinkedIn profile
+            is_spk_dup = False
+            spk_reason = ""
             if key in existing_keys:
-                logger.info(f"OneDrive Excel: Retaining existing historical speaker '{name}' for conference '{conf_id}' (No overwrite/modification).")
+                is_spk_dup = True
+                spk_reason = f"Speaker '{name}' for Conference ID '{conf_id}'"
+            elif title_norm and name_norm and (title_norm, name_norm) in existing_title_speakers:
+                is_spk_dup = True
+                spk_reason = f"Speaker '{name}' for Conference Title '{spk.conference_name}'"
+            elif li_canon and "linkedin.com/in/" in li_canon and li_canon in existing_linkedin:
+                is_spk_dup = True
+                spk_reason = f"Speaker LinkedIn '{li_canon}'"
+
+            if is_spk_dup:
+                logger.info(f"OneDrive Excel: Retaining existing historical speaker '{name}' ({spk_reason} already present). Skipping duplicate append.")
                 skipped_count += 1
                 continue
 
@@ -416,6 +529,10 @@ class OneDriveExcelService:
 
             rows_to_insert.append(new_row)
             existing_keys.add(key)
+            if title_norm and name_norm:
+                existing_title_speakers.add((title_norm, name_norm))
+            if li_canon and "linkedin.com/in/" in li_canon:
+                existing_linkedin.add(li_canon)
 
         inserted_count = 0
         if rows_to_insert:
