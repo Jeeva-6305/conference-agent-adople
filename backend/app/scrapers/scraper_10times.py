@@ -27,6 +27,23 @@ class TenTimesScraper(BaseScraper):
 
         tentimes_targets = [
             {
+                "title": "IBM TechXchange 2026",
+                "url": "https://www.ibm.com/events/techxchange",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-29",
+                "venue": "Georgia World Congress Center, 285 Andrew Young International Blvd NW",
+                "city": "Atlanta",
+                "state": "GA",
+                "organizer": "IBM Corporation",
+                "category": "Enterprise AI / AI Solutions / Technology",
+                "description": "The premier technical conference for enterprise developers, data scientists, and AI architects, featuring hands-on laboratories, technical sessions, and executive keynotes on generative AI, hybrid cloud architecture, and quantum computing.",
+                "speakers": [
+                    "Dinesh Nirmal (Senior Vice President, Software at IBM) - https://www.linkedin.com/in/dineshnirmal",
+                    "Rob Thomas (Senior Vice President, Software & Chief Commercial Officer at IBM) - https://www.linkedin.com/in/rob-thomas-73b88b1",
+                    "Kareem Yusuf (Senior Vice President, Product Management and Growth at IBM) - https://www.linkedin.com/in/kareemyusuf"
+                ]
+            },
+            {
                 "title": "ANESTHESIOLOGY 2026 Annual Meeting",
                 "url": "https://www.asahq.org/annualmeeting",
                 "start_date": "2026-10-16",

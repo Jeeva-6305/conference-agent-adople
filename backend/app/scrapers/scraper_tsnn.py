@@ -27,6 +27,22 @@ class TSNNScraper(BaseScraper):
 
         tsnn_targets = [
             {
+                "title": "Air Cargo Forum 2026 (TIACA)",
+                "url": "https://tiaca.org/air-cargo-forum/",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-29",
+                "venue": "Miami Beach Convention Center, 1901 Convention Ctr Dr",
+                "city": "Miami Beach",
+                "state": "FL",
+                "organizer": "The International Air Cargo Association (TIACA)",
+                "category": "Supply Chain & Logistics / Transportation",
+                "description": "The world's premier air logistics and cargo exhibition, bringing together aviation leaders, freight forwarders, airport authorities, and transport technology innovators to discuss global supply chains and cargo decarbonization.",
+                "speakers": [
+                    "Glyn Hughes (Director General at TIACA) - https://www.linkedin.com/in/glyn-hughes-aircargo",
+                    "Steven Polmans (Chairman of the Board at TIACA) - https://www.linkedin.com/in/stevenpolmans"
+                ]
+            },
+            {
                 "title": "JIS Fall 2026 - Global Commerce & Fintech Expo",
                 "url": "https://www.jisshow.com/fall/",
                 "start_date": "2026-10-16",

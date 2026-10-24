@@ -1058,18 +1058,15 @@ class AIConferenceExtractor:
 
                     # Check for explicit personal LinkedIn URL (strictly personal profile linkedin.com/in/)
                     cand_linkedin = ""
-                    if "linkedin.com/in/" in entry.lower():
-                        l_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
-                        if l_match:
-                            cand_url = l_match.group(1).strip()
-                            if "linkedin.com/in/" in cand_url.lower():
-                                cand_linkedin = cand_url
-                            entry = entry[:l_match.start()].strip()
+                    li_match = re.search(r"(?:\|\s*LinkedIn:\s*|-\s*|–\s*|\(\s*)?(https?://(?:www\.)?linkedin\.com/in/[a-zA-Z0-9_\-\%]+/?)\)?", entry, re.I)
+                    if li_match:
+                        cand_linkedin = li_match.group(1).strip()
+                        entry = (entry[:li_match.start()] + entry[li_match.end():]).strip().rstrip("-").strip()
                     elif "linkedin.com/company/" in entry.lower() or "linkedin.com/school/" in entry.lower():
                         # Strip company/school LinkedIn and do not use as speaker profile
-                        l_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
-                        if l_match:
-                            entry = entry[:l_match.start()].strip()
+                        comp_li_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
+                        if comp_li_match:
+                            entry = entry[:comp_li_match.start()].strip()
 
                     # Pattern: Company - Name, Role
                     comp_dash_match = re.match(r"^([A-Za-z0-9\s&]+)\s*-\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),\s*([^;\n\r]+)$", entry)
@@ -1082,8 +1079,12 @@ class AIConferenceExtractor:
                         })
                         continue
 
-                    # Standard Name, Role
-                    if "," in entry:
+                    # Pattern: Name (Role at Company)
+                    m_paren = re.match(r"^([A-Za-z\.\s]+?)\s*\((.*?)\)$", entry)
+                    if m_paren:
+                        name_part = m_paren.group(1).strip()
+                        role_part = m_paren.group(2).strip()
+                    elif "," in entry:
                         name_part, role_part = entry.split(",", 1)
                     elif " - " in entry:
                         name_part, role_part = entry.split(" - ", 1)
@@ -1130,14 +1131,17 @@ class AIConferenceExtractor:
                 "management", "fund", "outcast", "tech@nyu", "lmsys", "aws builder",
                 "expect", "talks", "reception", "panel", "discussion", "check-in",
                 "passes", "available", "check how", "event tags", "artificial intelligence",
-                "ticket info", "top ceos", "researchers", "physicians", "admission", "spot"
+                "ticket info", "top ceos", "researchers", "physicians", "admission", "spot",
+                "explore", "economic", "trends", "governmental", "conversions", "policy", "housing"
             ]
             if (
                 len(clean_name.split()) < 2
+                or len(clean_name.split()) > 4
                 or len(clean_name) > 35
                 or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%"])
-                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure)\b", clean_name, re.I)
+                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure|the|and|or)\b", clean_name, re.I)
                 or any(w in clean_name.lower() for w in invalid_words)
+                or not all(part[0].isupper() for part in clean_name.split() if part)
             ):
                 continue
 
@@ -1168,14 +1172,14 @@ class AIConferenceExtractor:
                     job_role = r_split[0].strip()
                     company_name = r_split[1].strip()
                 else:
-                    job_role = role_desc if role_desc else "Keynote Speaker"
+                    job_role = role_desc if (role_desc and len(role_desc) <= 80) else "Keynote Speaker"
                     company_name = organizer or conf_title
             else:
-                job_role = role_desc or "Keynote Speaker"
+                job_role = role_desc if (role_desc and len(role_desc) <= 80) else "Keynote Speaker"
 
-            if not job_role:
+            if not job_role or len(job_role) > 80:
                 job_role = "Keynote Speaker"
-            if not company_name:
+            if not company_name or len(company_name) > 100:
                 company_name = organizer or "Industry Organization"
 
             job_role = re.sub(r'&\s*$', '', job_role).strip().rstrip(".,;")

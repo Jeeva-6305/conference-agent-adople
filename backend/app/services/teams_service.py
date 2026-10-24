@@ -103,13 +103,12 @@ class TeamsWebhookService:
                 start_date_str = conf.start_date.isoformat() if conf.start_date else "Not available"
 
                 # Check if speaker details are available: Yes or No
+                # Strictly verify against actual stored speaker records in database
                 spk_avail = "No"
-                if conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]:
-                    spk_avail = "Yes"
-                elif db:
+                if db:
                     spk_cnt = db.query(Speaker).filter(Speaker.conference_id == conf.conference_id).count()
                     spk_avail = "Yes" if spk_cnt > 0 else "No"
-                elif conf.speakers and conf.speakers.strip():
+                elif conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]:
                     spk_avail = "Yes"
 
                 conf_container = {

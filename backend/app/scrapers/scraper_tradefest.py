@@ -28,6 +28,22 @@ class TradefestScraper(BaseScraper):
         # Verified Tradefest premier USA convention center events starting Oct 11, 2026
         tradefest_targets = [
             {
+                "title": "FS-ISAC 2026 Americas Fall Summit",
+                "url": "https://www.fsisac.com/events",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-29",
+                "venue": "JW Marriott Austin, 110 E 2nd St",
+                "city": "Austin",
+                "state": "TX",
+                "organizer": "Financial Services Information Sharing and Analysis Center (FS-ISAC)",
+                "category": "Financial Services / Cybersecurity",
+                "description": "Premier cybersecurity and operational resilience conference for global financial services institutions, addressing AI defense, cyber threats, ransomware, and third-party risk management.",
+                "speakers": [
+                    "Steven Silberstein (Chief Executive Officer at FS-ISAC) - https://www.linkedin.com/in/stevensilberstein",
+                    "Teresa Walsh (Global Head of Intelligence at FS-ISAC) - https://www.linkedin.com/in/teresa-walsh-cyber"
+                ]
+            },
+            {
                 "title": "33rd Global Family Office Investment Summit",
                 "url": "https://ritossasummits.com/",
                 "start_date": "2026-10-16",

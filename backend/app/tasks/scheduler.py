@@ -138,7 +138,7 @@ def get_scheduler_status() -> Dict[str, Any]:
     return {
         "is_running": scheduler.running,
         "interval_minutes": settings.SCRAPER_INTERVAL_MINUTES,
-        "interval_display": f"Every {settings.SCRAPER_INTERVAL_MINUTES} minutes (1 hour)",
+        "interval_display": "Every 1 hour (60 minutes)",
         "last_scrape_time": scheduler_state.get("last_scrape_time"),
         "next_scrape_time": next_time,
         "last_status": scheduler_state.get("last_status"),

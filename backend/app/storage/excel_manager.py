@@ -232,7 +232,7 @@ class ExcelManager:
                 continue
 
             # Determine whether speakers/auditors are available (Yes/No)
-            speakers_available_str = conf.speakers_available or "Yes"
+            speakers_available_str = "Yes" if (conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]) else "No"
             
             # Publication Date: MUST be the original conference publication date
             pub_date_str = conf.publication_date.isoformat() if conf.publication_date else ""

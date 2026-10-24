@@ -47,7 +47,7 @@ class AIConferenceExtraction(BaseModel):
     official_conference_url: str = Field(default="", description="Official conference homepage link")
     registration_url: str = Field(default="", description="Registration or ticketing URL")
     publication_date: Optional[str] = Field(default="", description="Original conference publication or announcement date (YYYY-MM-DD)")
-    speakers_available: Optional[str] = Field(default="Yes", description="'Yes' if speakers/auditors available, 'No' otherwise")
+    speakers_available: Optional[str] = Field(default="No", description="'Yes' if speakers/auditors available, 'No' otherwise")
     is_valid_usa_conference: bool = Field(description="True if this is a verified conference happening in the USA")
 
 
@@ -72,7 +72,7 @@ class ConferenceResponse(BaseModel):
     source_name: str
     is_published_to_excel: bool
     publication_date: Optional[date]
-    speakers_available: Optional[str] = "Yes"
+    speakers_available: Optional[str] = "No"
     status: str
     email_sent: Optional[bool] = False
     email_sent_at: Optional[datetime] = None

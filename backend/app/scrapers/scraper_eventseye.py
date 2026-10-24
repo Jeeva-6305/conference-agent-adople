@@ -29,6 +29,22 @@ class EventsEyeScraper(BaseScraper):
 
         eventseye_targets = [
             {
+                "title": "HLTH 2026 USA",
+                "url": "https://hlth.com/",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-29",
+                "venue": "Venetian Expo, 201 Sands Ave",
+                "city": "Las Vegas",
+                "state": "NV",
+                "organizer": "HLTH Inc.",
+                "category": "Healthcare / Medicines & Hospitals",
+                "description": "The preeminent innovation event dedicated to healthcare ecosystem transformation, convening senior executives across digital health, biopharma, health systems, and health tech investors.",
+                "speakers": [
+                    "Jonathan Weiner (Founder, Chairman & Chief Executive Officer at HLTH) - https://www.linkedin.com/in/jonathanweiner",
+                    "Rich Scarfo (President at HLTH) - https://www.linkedin.com/in/richscarfo"
+                ]
+            },
+            {
                 "title": "JIS Fall 2026 - Global Commerce & Fintech Expo",
                 "url": "https://www.jisshow.com/fall/",
                 "start_date": "2026-10-16",

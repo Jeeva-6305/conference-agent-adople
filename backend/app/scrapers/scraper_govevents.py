@@ -26,6 +26,22 @@ class GovEventsScraper(BaseScraper):
 
         gov_targets = [
             {
+                "title": "Fall Advanced Conference (SIA 2026)",
+                "url": "https://siaed.org/",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-27",
+                "venue": "Crystal Gateway Marriott, 1700 Richmond Hwy",
+                "city": "Arlington",
+                "state": "VA",
+                "organizer": "Society for International Affairs (SIA)",
+                "category": "Government / International Trade & Compliance",
+                "description": "Premier national security and government international trade compliance conference, providing advanced analysis on export controls, ITAR, defense trade regulations, and government compliance.",
+                "speakers": [
+                    "Scott Gearity (President at Society for International Affairs) - https://www.linkedin.com/in/scottgearity",
+                    "Jennifer K. Weinel (Director of Export Controls at Northrop Grumman) - https://www.linkedin.com/in/jennifer-weinel-a9b0196"
+                ]
+            },
+            {
                 "title": "Snowflake World Tour New York City 2026",
                 "url": "https://www.snowflake.com/en/world-tour/nyc/",
                 "start_date": "2026-10-15",

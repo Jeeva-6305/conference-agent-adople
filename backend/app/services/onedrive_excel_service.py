@@ -395,7 +395,7 @@ class OneDriveExcelService:
                 conf.industry_category or "",                 # 3. Category
                 start_date_str,                               # 4. StartDate
                 end_date_str,                                 # 5. EndDate
-                conf.speakers_available or "Yes",             # 6. SpeakersAvailable
+                "Yes" if (conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]) else "No",  # 6. SpeakersAvailable
                 conf.description or "",                       # 7. Column1 (Description)
                 conf.venue or "",                             # 8. Venue
                 conf.city or "",                              # 9. City
@@ -506,8 +506,20 @@ class OneDriveExcelService:
             speaker_id = f"SPK-{spk.id}" if spk.id else f"SPK-{conf_id}-{len(rows_to_insert)+1}"
             company = spk.company_name or spk.company_organization or ""
             job_title = spk.job_role_designation or ""
-            linkedin = spk.linkedin_url or ""
-            company_url = spk.official_company_website_url or ""
+            
+            # Personal LinkedIn URL only: must be valid personal profile, never company page or invent
+            raw_li = (spk.linkedin_url or "").strip()
+            linkedin = raw_li if ("linkedin.com/in/" in raw_li.lower()) else ""
+            
+            # Official company URL only: never event ticketing domains (e.g. allevents.in, eventbrite)
+            raw_comp_url = (spk.official_company_website_url or "").strip()
+            company_url = raw_comp_url if (raw_comp_url and not any(bad in raw_comp_url.lower() for bad in ["allevents.in", "eventbrite.com", "meetup.com", "lu.ma", "10times.com", "ticketmaster.com", "dice.fm"])) else ""
+            
+            # Ensure ConferenceTitle contains actual conference name, never speaker's name
+            conf_title_str = (spk.conference_name or "").strip()
+            if not conf_title_str or conf_title_str.lower() == name.lower():
+                conf_title_str = f"Conference {conf_id}"
+                
             profile_url = spk.source_url or ""
             source_url = spk.source_url or ""
             collected_at_str = spk.created_at.isoformat() if spk.created_at else datetime.utcnow().isoformat()
@@ -515,7 +527,7 @@ class OneDriveExcelService:
             new_row = [
                 speaker_id,                  # 1. SpeakerID
                 conf_id,                     # 2. ConferenceID
-                spk.conference_name or "",   # 3. ConferenceTitle
+                conf_title_str,              # 3. ConferenceTitle
                 name,                        # 4. SpeakerName
                 job_title,                   # 5. JobTitle
                 company,                     # 6. Company

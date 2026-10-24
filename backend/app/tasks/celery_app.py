@@ -165,7 +165,7 @@ def cleanup_fake_and_sample_records(db):
         s_name_lower = (s.speaker_name or "").lower().strip()
         if (
             len(s_name_lower) < 3 or len(s_name_lower) > 45 or
-            any(bad in s_name_lower for bad in ["for more", "information", "mitas", "visit", "ticket", "refund", "hotel", "policy", "fee", "options?"])
+            any(bad in s_name_lower for bad in ["for more", "information", "mitas", "visit", "ticket", "refund", "hotel", "policy", "fee", "options?", "explore", "economic", "free h", "event details", "light refreshments", "8 w 38th st", "hosted by"])
         ):
             db.delete(s)
     db.commit()
@@ -280,7 +280,7 @@ def task_scrape_and_ingest():
                     orig_pub_date = conf_start - timedelta(days=45)
 
                 has_speakers = bool(extracted.speakers or extracted.speaker_details)
-                speakers_available = "Yes" if has_speakers else "No"
+                speakers_available = "No"  # Confirmed as 'Yes' only after actual speakers are saved
                 status_str = "published" if is_exact_t2 else "scheduled"
 
                 # 3. Store verified conference in PostgreSQL with its EXACT official dates
@@ -325,12 +325,15 @@ def task_scrape_and_ingest():
             candidate_speakers = []
             if extracted.speaker_details:
                 for spk_d in extracted.speaker_details:
+                    comp_web = getattr(spk_d, "official_company_website_url", "") or ""
+                    if any(bad in comp_web.lower() for bad in ["allevents.in", "eventbrite.com", "meetup.com", "lu.ma", "10times.com", "ticketmaster.com"]):
+                        comp_web = ""
                     candidate_speakers.append({
                         "name": spk_d.speaker_name.strip(),
                         "company_org": spk_d.company_organization or spk_d.company_name or conf.organizer or "Industry Organization",
                         "job_role": spk_d.job_role_designation or "Keynote Speaker",
                         "company": spk_d.company_name or spk_d.company_organization or conf.organizer or "Industry Organization",
-                        "company_website": getattr(spk_d, "official_company_website_url", "") or "",
+                        "company_website": comp_web,
                         "linkedin": getattr(spk_d, "linkedin_url", "") or "",
                         "source_url": getattr(spk_d, "source_url", "") or conf.official_conference_url or conf.source_url,
                         "location": spk_d.location or f"{conf.city}, {conf.country}",
@@ -385,6 +388,10 @@ def task_scrape_and_ingest():
                     continue
                 seen_in_batch.add(n_key)
 
+                comp_w = cand.get("company_website", "") or ""
+                if any(bad in comp_w.lower() for bad in ["allevents.in", "eventbrite.com", "meetup.com", "lu.ma", "10times.com", "ticketmaster.com"]):
+                    comp_w = ""
+
                 if n_key not in existing_by_name:
                     spk_record = Speaker(
                         conference_id=conf.conference_id,
@@ -393,7 +400,7 @@ def task_scrape_and_ingest():
                         company_organization=cand["company_org"],
                         job_role_designation=cand["job_role"],
                         company_name=cand["company"],
-                        official_company_website_url=cand.get("company_website", "") or "",
+                        official_company_website_url=comp_w,
                         linkedin_url=validate_personal_linkedin_url(cand.get("linkedin", "")) or "",
                         source_url=cand.get("source_url") or conf.official_conference_url or conf.source_url,
                         location=cand["location"],
@@ -404,8 +411,8 @@ def task_scrape_and_ingest():
                 else:
                     # Update fields if more details available
                     existing_spk = existing_by_name[n_key]
-                    if cand.get("company_website") and not existing_spk.official_company_website_url:
-                        existing_spk.official_company_website_url = cand["company_website"]
+                    if comp_w and not existing_spk.official_company_website_url:
+                        existing_spk.official_company_website_url = comp_w
                     clean_li = validate_personal_linkedin_url(cand.get("linkedin"))
                     if clean_li and not existing_spk.linkedin_url:
                         existing_spk.linkedin_url = clean_li

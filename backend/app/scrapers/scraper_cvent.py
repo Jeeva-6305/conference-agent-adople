@@ -27,6 +27,22 @@ class CventScraper(BaseScraper):
         # Cvent-powered enterprise technology & business application conferences
         cvent_targets = [
             {
+                "title": "CoreNet Global North American Summit 2026",
+                "url": "https://www.corenetglobal.org/",
+                "start_date": "2026-10-26",
+                "end_date": "2026-10-29",
+                "venue": "McCormick Place, 2301 S King Dr",
+                "city": "Chicago",
+                "state": "IL",
+                "organizer": "CoreNet Global",
+                "category": "Enterprise / Commercial Real Estate",
+                "description": "The premier corporate real estate summit convening global executives, facility planners, and enterprise tech strategists addressing future workplace technologies, portfolio optimization, and hybrid work strategies.",
+                "speakers": [
+                    "Angela Cain (Chief Executive Officer at CoreNet Global) - https://www.linkedin.com/in/angelacain",
+                    "David Kamen (Global Real Estate Director at EY) - https://www.linkedin.com/in/david-kamen-71829b"
+                ]
+            },
+            {
                 "title": "2026 International Acromegaly Community Conference",
                 "url": "https://www.barrowneuro.org/",
                 "start_date": "2026-10-16",
