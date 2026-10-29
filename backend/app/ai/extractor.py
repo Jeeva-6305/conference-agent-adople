@@ -342,7 +342,8 @@ TARGET_CATEGORIES = {
     "Technology": [
         "technology", "tech", "software", "cloud", "cybersecurity", "security",
         "engineering", "devops", "platform", "data", "developer", "hardware",
-        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation"
+        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation",
+        "automotive", "manufacturing", "industrial", "trade show"
     ]
 }
 

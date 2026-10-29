@@ -43,8 +43,21 @@ class EventbriteScraper(BaseScraper):
         today = date.today()
         exact_t2 = (today + timedelta(days=2)).isoformat()
 
+        # Target weekly boundaries for comprehensive upcoming week conference discovery
+        from ..services.weekly_service import calculate_weekly_target_range
+        try:
+            target_sunday, target_saturday, _ = calculate_weekly_target_range()
+            sun_str = target_sunday.isoformat()
+            sat_str = target_saturday.isoformat()
+        except Exception:
+            sun_str = exact_t2
+            sat_str = exact_t2
+
         discovery_urls = [
             f"https://www.eventbrite.com/d/united-states/conferences/?start_date={exact_t2}&end_date={exact_t2}",
+            f"https://www.eventbrite.com/d/united-states/business--conferences/?start_date={sun_str}&end_date={sat_str}",
+            f"https://www.eventbrite.com/d/united-states/science-and-tech--conferences/?start_date={sun_str}&end_date={sat_str}",
+            f"https://www.eventbrite.com/d/united-states/health--conferences/?start_date={sun_str}&end_date={sat_str}",
             "https://www.eventbrite.com/d/united-states/business--conferences/",
             "https://www.eventbrite.com/d/united-states/science-and-tech--conferences/",
             "https://www.eventbrite.com/d/united-states/health--conferences/",
