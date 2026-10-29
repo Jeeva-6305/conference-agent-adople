@@ -86,6 +86,28 @@ def hourly_scrape_and_update_job():
         logger.error(f"❌ [Hourly Automation] Error during scheduled scrape: {e}", exc_info=True)
 
 
+def weekly_scrape_job():
+    """
+    Automated Weekly Conference Job:
+    - Collects genuine US conferences scheduled for Sunday–Saturday.
+    - Scrapes in advance before Sunday (configured via WEEKLY_SCRAPE_LEAD_DAYS).
+    - Performs final refresh before Sunday and daily refreshes during the target week.
+    - Runs in scheduler timezone (WEEKLY_TIMEZONE, e.g. America/New_York).
+    - Checks WEEKLY_AGENT_ENABLED. If False, safely skips.
+    """
+    if not getattr(settings, "WEEKLY_AGENT_ENABLED", False):
+        logger.info("ℹ️ [Weekly Automation] Weekly conference workflow is disabled (WEEKLY_AGENT_ENABLED=false).")
+        return
+
+    logger.info("⏰ [Weekly Automation] Triggering weekly conference workflow...")
+    try:
+        from .celery_app import task_weekly_scrape_and_ingest
+        res = task_weekly_scrape_and_ingest()
+        logger.info(f"✅ [Weekly Automation] Weekly job completed: {res}")
+    except Exception as e:
+        logger.error(f"❌ [Weekly Automation] Error in weekly job: {e}", exc_info=True)
+
+
 def start_scheduler():
     """Starts the 24/7 background scheduler to run scraping automatically every hour."""
     if not scheduler.running:
@@ -108,6 +130,16 @@ def start_scheduler():
             trigger=CronTrigger(minute=0),
             id="publish_2_days_before_job",
             name="Hourly 2-Day Excel Publication Engine",
+            replace_existing=True
+        )
+
+        # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage
+        weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "America/New_York")
+        scheduler.add_job(
+            weekly_scrape_job,
+            trigger=CronTrigger(hour=6, minute=0, timezone=weekly_tz),
+            id="weekly_conference_scraper_job",
+            name="Weekly Conference Scraping & OneDrive Excel Storage",
             replace_existing=True
         )
         

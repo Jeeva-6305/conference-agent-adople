@@ -1,159 +1,122 @@
 import logging
-import requests
-from bs4 import BeautifulSoup
 import json
+import re
 from datetime import date, timedelta
 from typing import List
+from bs4 import BeautifulSoup
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9'
-}
-
 class TradefestScraper(BaseScraper):
     def __init__(self):
-        super().__init__("tradefest", "https://tradefest.io/en/home")
+        super().__init__("tradefest", "https://tradefest.io/en")
 
     def scrape(self) -> List[RawEventData]:
-        logger.info(f"[{self.source_name}] Harvesting major USA trade shows & conventions from Tradefest...")
+        logger.info(f"[{self.source_name}] Harvesting USA conventions & trade summits from Tradefest...")
         events: List[RawEventData] = []
-        today = date.today()
-        exact_t2 = today + timedelta(days=2) # 2026-10-11
+        seen_urls = set()
 
-        # Verified Tradefest premier USA convention center events starting Oct 11, 2026
-        tradefest_targets = [
-            {
-                "title": "FS-ISAC 2026 Americas Fall Summit",
-                "url": "https://www.fsisac.com/events",
-                "start_date": "2026-10-26",
-                "end_date": "2026-10-29",
-                "venue": "JW Marriott Austin, 110 E 2nd St",
-                "city": "Austin",
-                "state": "TX",
-                "organizer": "Financial Services Information Sharing and Analysis Center (FS-ISAC)",
-                "category": "Financial Services / Cybersecurity",
-                "description": "Premier cybersecurity and operational resilience conference for global financial services institutions, addressing AI defense, cyber threats, ransomware, and third-party risk management.",
-                "speakers": [
-                    "Steven Silberstein (Chief Executive Officer at FS-ISAC) - https://www.linkedin.com/in/stevensilberstein",
-                    "Teresa Walsh (Global Head of Intelligence at FS-ISAC) - https://www.linkedin.com/in/teresa-walsh-cyber"
-                ]
-            },
-            {
-                "title": "33rd Global Family Office Investment Summit",
-                "url": "https://ritossasummits.com/",
-                "start_date": "2026-10-16",
-                "end_date": "2026-10-16",
-                "venue": "Trump International Beach Resort, 18001 Collins Ave",
-                "city": "Miami",
-                "state": "FL",
-                "organizer": "Ritossa Family Office & Global Investment Alliances",
-                "category": "Financial Services / Enterprise AI",
-                "description": "Prestigious international private investment gathering connecting global family offices, private wealth managers, and institutional allocators focusing on alternative asset allocation, AI infrastructure funding, and fintech debt financing.",
-                "speakers": [
-                    "Sir Anthony Ritossa (Chairman at Ritossa Family Office)",
-                    "Michael Murphy (Managing Director at Murphy Wealth Management)",
-                    "Vanessa Higgins (Head of Private Wealth & Alternative AI Assets at Sovereign Capital Partners)"
-                ]
-            },
-            {
-                "title": "2026 ThinkEquity Conference",
-                "url": "https://www.think-equity.com/thinkequity-conference",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-15",
-                "venue": "Mandarin Oriental Hotel, 80 Columbus Circle",
-                "city": "New York",
-                "state": "NY",
-                "organizer": "ThinkEquity LLC",
-                "category": "Financial Services / Technology",
-                "description": "Premier institutional investment banking conference convening over 85 public and private corporate presenters with institutional investors, venture funds, and private wealth managers covering emerging growth sectors in AI, digital assets, healthcare, and fintech.",
-                "speakers": [
-                    "Martin Sumichrast (Chairman of the Board at Hawkeye Digital)",
-                    "David Wachsman (President at Hawkeye Digital)",
-                    "Leonard Mazur (Chairman and CEO at Citius Pharmaceuticals)",
-                    "Dr. Ehud Geller (CEO and Executive Chairman at Regentis Biomaterials)",
-                    "Brenner Adams (Chairman and Interim CEO at TruGolf Holdings)"
-                ]
-            },
-            {
-                "title": "GDEX 2026",
-                "url": "https://www.thegdex.com",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-18",
-                "venue": "Greater Columbus Convention Center, 400 N High St",
-                "city": "Columbus",
-                "state": "OH",
-                "organizer": "GDEX LLC",
-                "category": "Technology / AI Solutions",
-                "description": "Major Midwest game development and interactive digital technology convention showcasing computer graphics, procedural generation, neural rendering algorithms, and interactive game engine architecture for developers and tech studios.",
-                "speakers": [
-                    "Chris Volpe (Director & Co-Founder at GDEX & Multivarious Games)",
-                    "Amanda Gardner (Studio Director & Lead Systems Designer at The Deep End Games)"
-                ]
-            },
-            {
-                "title": "MBA's Annual Convention and Expo 2026",
-                "url": "https://www.mba.org",
-                "start_date": "2026-10-11",
-                "end_date": "2026-10-14",
-                "venue": "McCormick Place / Hyatt Regency Chicago",
-                "city": "Chicago",
-                "state": "IL",
-                "organizer": "Mortgage Bankers Association",
-                "category": "Financial Services / Finance & Banking",
-                "description": "The nation's largest gathering of real estate finance leaders, mortgage banking executives, institutional lenders, and fintech innovators discussing macroeconomic policy, commercial capital markets, and digital lending automation.",
-                "speakers": [
-                    "Zack Kass (Global AI Advisor, Former Head of GTM at OpenAI)",
-                    "Robert D. Broeksmit, CMB (President and CEO at Mortgage Bankers Association)",
-                    "Mike Fratantoni, Ph.D. (Chief Economist & Senior Vice President of Research at Mortgage Bankers Association)",
-                    "Christine Chandler (2026 MBA Chair & EVP, Chief Credit Officer at M&T Realty Capital Corporation)",
-                    "Laura Escobar (Immediate Past Chair at Mortgage Bankers Association & President at Lennar Mortgage)"
-                ]
-            }
-        ]
-
-        # Live discovery attempt with quick timeout
         try:
-            resp = requests.get("https://tradefest.io/en/selection/events-at-mccormick-place", headers=HEADERS, timeout=5)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                for a in soup.find_all('a', href=True):
-                    href = a['href']
-                    if '/event/' in href:
-                        logger.info(f"[{self.source_name}] Discovered Tradefest listing: {href}")
-        except Exception as e:
-            logger.debug(f"[{self.source_name}] Live crawl note: {e}")
+            soup = self.fetch_soup(self.base_url, timeout=12)
+            if not soup:
+                logger.warning(f"[{self.source_name}] Could not fetch Tradefest homepage")
+                return events
 
-        for item in tradefest_targets:
-            if item["start_date"] == str(exact_t2):
-                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
-                raw_text_lines = [
-                    f"Conference Title: {item['title']}",
-                    f"Overview & Description: {item['description']}",
-                    f"Venue: {item['venue']}",
-                    f"Address: {item['venue']}, {item['city']}, {item['state']}, USA",
-                    f"Organizer: {item['organizer']}",
-                    f"Official Event URL: {item['url']}",
-                    f"Registration URL: {item['url']}",
-                    f"Start Date: {item['start_date']}",
-                    f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers:\n{speaker_lines}",
-                    f"Category: {item['category']}"
-                ]
-                raw_text = "\n".join(raw_text_lines)
-                events.append(RawEventData(
-                    source_name=self.source_name,
-                    source_url=item["url"],
-                    raw_title=item["title"],
-                    raw_text=raw_text,
-                    raw_location=f"{item['venue']}, {item['city']}, {item['state']}, USA",
-                    raw_date=item["start_date"]
-                ))
-                logger.info(f"[{self.source_name}] Ingested genuine T-2 conference: {item['title']}")
+            candidate_paths = []
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if '/en/event/' in href and href not in seen_urls:
+                    seen_urls.add(href)
+                    candidate_paths.append(href)
+
+            logger.info(f"[{self.source_name}] Discovered {len(candidate_paths)} candidate events. Fetching details...")
+
+            for path in candidate_paths[:15]:
+                full_url = path if path.startswith("http") else f"https://tradefest.io{path}"
+                try:
+                    ev_soup = self.fetch_soup(full_url, timeout=8)
+                    if not ev_soup:
+                        continue
+
+                    event_data = None
+                    for s in ev_soup.find_all('script', type='application/ld+json'):
+                        try:
+                            d = json.loads(s.string)
+                            if d.get('@type') in ['Event', 'BusinessEvent']:
+                                event_data = d
+                                break
+                        except Exception:
+                            pass
+
+                    if not event_data:
+                        continue
+
+                    title = event_data.get('name', '').strip()
+                    start_date_raw = event_data.get('startDate', '')
+                    end_date_raw = event_data.get('endDate', start_date_raw)
+                    start_date = start_date_raw[:10] if len(start_date_raw) >= 10 else ""
+                    end_date = end_date_raw[:10] if len(end_date_raw) >= 10 else start_date
+
+                    loc = event_data.get('location', {})
+                    if not isinstance(loc, dict):
+                        loc = {}
+                    addr = loc.get('address', {})
+                    if isinstance(addr, dict):
+                        country = addr.get('addressCountry', 'USA')
+                        city = addr.get('addressLocality', '')
+                        street = addr.get('streetAddress', '')
+                    else:
+                        country = 'USA'
+                        city = ''
+                        street = ''
+
+                    venue = loc.get('name', 'Convention Center')
+                    
+                    # Verify event is in USA
+                    if country not in ['US', 'USA', 'United States', 'US of A']:
+                        continue
+
+                    desc = event_data.get('description', f"{title} convention in {city}, USA.")
+                    full_loc = f"{venue}, {street}, {city}, USA".strip(', ')
+
+                    # Check for official conference website link on the page
+                    official_site_url = full_url
+                    for a_link in ev_soup.find_all('a', href=True):
+                        h = a_link['href'].strip()
+                        if h.startswith('http') and not any(ign in h.lower() for ign in ['tradefest.io', 'google.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com']):
+                            official_site_url = h
+                            break
+
+                    raw_text = (
+                        f"Conference Title: {title}\n"
+                        f"Overview & Description: {desc}\n"
+                        f"Venue: {venue}\n"
+                        f"Address: {full_loc}\n"
+                        f"Official Event URL: {official_site_url}\n"
+                        f"Registration URL: {full_url}\n"
+                        f"Start Date: {start_date}\n"
+                        f"End Date: {end_date}\n"
+                        f"Source: Tradefest\n"
+                        f"Country: USA"
+                    )
+
+                    events.append(RawEventData(
+                        source_name=self.source_name,
+                        source_url=official_site_url,
+                        raw_title=title,
+                        raw_text=raw_text,
+                        raw_location=full_loc,
+                        raw_date=start_date
+                    ))
+                    logger.info(f"[{self.source_name}] Harvested genuine conference: {title} ({start_date}) in {city}")
+
+                except Exception as ev_err:
+                    logger.debug(f"[{self.source_name}] Error parsing {full_url}: {ev_err}")
+
+        except Exception as e:
+            logger.error(f"[{self.source_name}] Scrape error: {e}")
 
         logger.info(f"[{self.source_name}] Finished collection. Harvested {len(events)} events.")
         return events

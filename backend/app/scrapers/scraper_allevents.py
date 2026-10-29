@@ -77,11 +77,19 @@ class AllEventsScraper(BaseScraper):
                             if any(k in name_lower for k in NON_CONFERENCE_KEYWORDS):
                                 continue
 
-                            seen_urls.add(url)
-
                             # Format dates to YYYY-MM-DD
                             s_date = start_date[:10] if len(start_date) >= 10 else ""
                             e_date = end_date[:10] if len(end_date) >= 10 else s_date
+
+                            # Filter past events
+                            today_str = str(date.today())
+                            if s_date and s_date < today_str:
+                                continue
+
+                            if len(events) >= 20:
+                                break
+
+                            seen_urls.add(url)
 
                             loc = ev.get('location', {})
                             venue = loc.get('name', '') if isinstance(loc, dict) else ''
@@ -89,43 +97,64 @@ class AllEventsScraper(BaseScraper):
 
                             desc = ev.get('description', '')
                             organizer_name = ""
+                            official_site_url = url
+                            speaker_text = ""
 
                             # Deep scrape individual event page for complete description and real speakers
                             try:
-                                ev_resp = requests.get(url, headers=HEADERS, timeout=10)
+                                ev_resp = requests.get(url, headers=HEADERS, timeout=6)
                                 if ev_resp.status_code == 200:
                                     ev_soup = BeautifulSoup(ev_resp.text, 'html.parser')
                                     text_all = ev_soup.get_text('\n', strip=True)
                                     if "About the event" in text_all:
                                         idx = text_all.find("About the event")
-                                        desc = text_all[idx:idx+3500]
+                                        desc = text_all[idx:idx+2500]
                                     elif "About this Event" in text_all:
                                         idx = text_all.find("About this Event")
-                                        desc = text_all[idx:idx+3500]
+                                        desc = text_all[idx:idx+2500]
                                     
                                     # Extract organizer if available
                                     m_org = re.search(r"organized by\s+([^.\n]+)", text_all, re.I)
                                     if m_org:
                                         organizer_name = m_org.group(1).strip()
+
+                                    # Extract speakers block if available
+                                    for spk_marker in ["Featured Speakers", "Speakers", "Keynote Speakers"]:
+                                        if spk_marker in text_all:
+                                            spk_idx = text_all.find(spk_marker)
+                                            speaker_text = text_all[spk_idx:spk_idx+1200]
+                                            break
+
+                                    # Check for external official conference URL
+                                    for a_link in ev_soup.find_all('a', href=True):
+                                        h = a_link['href'].strip()
+                                        if h.startswith('http') and not any(ign in h.lower() for ign in ['allevents.in', 'google.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com']):
+                                            official_site_url = h.rstrip('.,;)\"')
+                                            break
+
                             except Exception as ev_err:
                                 logger.debug(f"Deep scrape error for {url}: {ev_err}")
 
-                            raw_text = (
-                                f"Conference Title: {name}\n"
-                                f"Overview: {desc}\n"
-                                f"Venue / Location: {full_location}\n"
-                                f"Start Date: {s_date}\n"
-                                f"End Date: {e_date}\n"
-                                f"Organizer: {organizer_name}\n"
-                                f"Official Event URL: {url}\n"
-                                f"Registration URL: {url}\n"
-                                f"Source: All Events (allevents.in)\n"
+                            raw_text_parts = [
+                                f"Conference Title: {name}",
+                                f"Overview: {desc}",
+                                f"Venue / Location: {full_location}",
+                                f"Start Date: {s_date}",
+                                f"End Date: {e_date}",
+                                f"Organizer: {organizer_name}",
+                                f"Official Event URL: {official_site_url}",
+                                f"Registration URL: {url}",
+                                f"Source: All Events (allevents.in)",
                                 f"Country: USA"
-                            )
+                            ]
+                            if speaker_text:
+                                raw_text_parts.append(f"Agenda & Speakers Section:\n{speaker_text}")
+
+                            raw_text = "\n".join(raw_text_parts)
 
                             events.append(RawEventData(
                                 source_name=self.source_name,
-                                source_url=url,
+                                source_url=official_site_url,
                                 raw_title=name,
                                 raw_text=raw_text,
                                 raw_location=full_location,

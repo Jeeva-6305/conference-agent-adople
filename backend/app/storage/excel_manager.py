@@ -2,14 +2,14 @@ import logging
 import os
 import re
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import pandas as pd
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from ..config import settings
-from ..models import Conference, Speaker, Attendee
+from ..models import Conference, Speaker, Attendee, WeeklyConference, WeeklySpeaker, WeeklySourceRunLog
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,17 @@ class ExcelManager:
                     cell.border = thin_border
                     cell.alignment = Alignment(vertical="center")
 
+    def _apply_header_styles(self, ws, color="1E3A8A"):
+        header_fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[1].height = 28
+        for col_idx in range(1, ws.max_column + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = align_center
+
     def sync_published_conferences(
         self,
         conferences: List[Conference],
@@ -160,10 +171,9 @@ class ExcelManager:
         attendees: Optional[List[Attendee]] = None
     ) -> int:
         """
-        Completely refreshes the Excel workbook with genuine verified conferences,
-        their associated speakers sheet, and attendee profiles sheet.
+        Synchronizes the Excel workbook by appending newly published verified conferences,
+        their associated speakers, and attendee profiles without wiping historical records.
         """
-        self.reset_excel()
         return self.publish_conferences(conferences, speakers, attendees)
 
     def publish_conferences(
@@ -225,10 +235,20 @@ class ExcelManager:
         added_conf_count = 0
         added_spk_count = 0
         added_att_count = 0
+        updated_count = 0
 
         for conf in conferences:
             title_clean = conf.conference_title.strip().lower()
             if conf.conference_id in existing_ids or title_clean in existing_titles:
+                # If speakers now exist for an existing conference, update Speakers Available column in sheet
+                if conf.speakers_available and conf.speakers_available.strip().lower() in ["yes", "true", "1"]:
+                    for row in ws_conf.iter_rows(min_row=2):
+                        if (row[0].value and str(row[0].value).strip() == conf.conference_id) or \
+                           (len(row) > 1 and row[1].value and str(row[1].value).strip().lower() == title_clean):
+                            if len(row) > 5 and row[5].value != "Yes":
+                                row[5].value = "Yes"
+                                updated_count += 1
+                            break
                 continue
 
             # Determine whether speakers/auditors are available (Yes/No)
@@ -261,7 +281,7 @@ class ExcelManager:
         # Write explicit Speaker models into the Speakers sheet
         if speakers:
             for spk in speakers:
-                key = (spk.speaker_name.strip().lower(), spk.conference_name.strip().lower())
+                key = (spk.conference_name.strip().lower(), spk.speaker_name.strip().lower())
                 if key not in existing_speakers:
                     ws_spk.append([
                         spk.conference_name,
@@ -274,6 +294,26 @@ class ExcelManager:
                     ])
                     existing_speakers.add(key)
                     added_spk_count += 1
+                else:
+                    # Update existing speaker row if more details (e.g. LinkedIn URL) become available
+                    for row in ws_spk.iter_rows(min_row=2, max_col=7):
+                        if (row[0].value and str(row[0].value).strip().lower() == key[0] and
+                            row[1].value and str(row[1].value).strip().lower() == key[1]):
+                            clean_li = getattr(spk, "linkedin_url", "") or ""
+                            if clean_li and not row[4].value:
+                                row[4].value = clean_li
+                                updated_count += 1
+                            comp_url = getattr(spk, "official_company_website_url", "") or ""
+                            if comp_url and not row[5].value:
+                                row[5].value = comp_url
+                                updated_count += 1
+                            if spk.company_name and (not row[2].value or row[2].value in ["", "Not Verified", "Industry Organization"]):
+                                row[2].value = spk.company_name
+                                updated_count += 1
+                            if spk.job_role_designation and (not row[3].value or row[3].value in ["", "Not Verified", "Speaker", "Keynote Speaker"]):
+                                row[3].value = spk.job_role_designation
+                                updated_count += 1
+                            break
 
         # Write Attendee models into the Attendees sheet
         if attendees:
@@ -293,17 +333,160 @@ class ExcelManager:
                     existing_attendees.add(att.conference_id)
                     added_att_count += 1
 
-        if added_conf_count > 0 or added_spk_count > 0 or added_att_count > 0:
+        if added_conf_count > 0 or added_spk_count > 0 or added_att_count > 0 or updated_count > 0:
             self._auto_fit_columns(ws_conf)
             self._auto_fit_columns(ws_spk)
             self._auto_fit_columns(ws_att)
             self._safe_save(wb)
             logger.info(
                 f"Published {added_conf_count} conferences, {added_spk_count} speakers, "
-                f"and {added_att_count} attendee records to Excel at {self.file_path}"
+                f"{added_att_count} attendee records, and updated {updated_count} fields in Excel at {self.file_path}"
             )
 
         return added_conf_count
+
+    def sync_weekly_to_excel(
+        self,
+        conferences: List[WeeklyConference],
+        speakers: List[WeeklySpeaker],
+        logs: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Appends weekly conferences, speakers, and source logs to the local Excel workbook.
+        Ensures sheets: 'weekly_conference', 'weekly_speakers', 'weekly_source_log'.
+        Never deletes or overwrites existing rows.
+        """
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+
+        # 1. Weekly Conferences sheet
+        if "weekly_conference" not in wb.sheetnames:
+            ws_wconf = wb.create_sheet("weekly_conference")
+            wconf_cols = [
+                "Conference_ID", "Conference_Name", "Conference_Start_Date", "Conference_End_Date",
+                "Conference_City", "Conference_State", "Country", "Industry", "Official_Event_URL",
+                "Source_Name", "Source_URL", "Link_Status", "Speaker_Status", "Last_Checked_At", "Weekly_Run_ID"
+            ]
+            ws_wconf.append(wconf_cols)
+            self._apply_header_styles(ws_wconf)
+        else:
+            ws_wconf = wb["weekly_conference"]
+
+        existing_wconfs = set()
+        for row in ws_wconf.iter_rows(min_row=2, max_col=3, values_only=True):
+            if row[0]:
+                existing_wconfs.add(str(row[0]).strip().lower())
+            if len(row) > 1 and row[1]:
+                existing_wconfs.add(str(row[1]).strip().lower())
+
+        added_confs = 0
+        for c in conferences:
+            c_id = (c.conference_id or "").strip().lower()
+            c_name = (c.conference_name or "").strip().lower()
+            if c_id in existing_wconfs or c_name in existing_wconfs:
+                continue
+            ws_wconf.append([
+                c.conference_id,
+                c.conference_name,
+                c.start_date.isoformat() if c.start_date else "",
+                c.end_date.isoformat() if c.end_date else "",
+                c.city or "",
+                c.state or "",
+                c.country or "USA",
+                c.industry or "",
+                c.official_event_url or "",
+                c.source_name or "",
+                c.source_url or "",
+                c.link_status or "verified",
+                c.speaker_status or "No",
+                c.last_checked_at.isoformat() if c.last_checked_at else "",
+                c.weekly_run_id or ""
+            ])
+            existing_wconfs.add(c_id)
+            existing_wconfs.add(c_name)
+            added_confs += 1
+
+        # 2. Weekly Speakers sheet
+        if "weekly_speakers" not in wb.sheetnames:
+            ws_wspk = wb.create_sheet("weekly_speakers")
+            wspk_cols = [
+                "Speaker_ID", "Conference_ID", "Conference_Name", "Speaker_Name", "Job_Title",
+                "Company_Name", "Personal_LinkedIn_URL", "LinkedIn_Status", "Professional_Email",
+                "Email_Source_URL", "Speaker_Source_URL", "Verification_Status", "Last_Checked_At", "Weekly_Run_ID"
+            ]
+            ws_wspk.append(wspk_cols)
+            self._apply_header_styles(ws_wspk)
+        else:
+            ws_wspk = wb["weekly_speakers"]
+
+        existing_wspks = set()
+        for row in ws_wspk.iter_rows(min_row=2, max_col=4, values_only=True):
+            if len(row) >= 4 and row[1] and row[3]:
+                existing_wspks.add((str(row[1]).strip().lower(), str(row[3]).strip().lower()))
+
+        added_spks = 0
+        for s in speakers:
+            spk_key = ((s.conference_id or "").strip().lower(), (s.speaker_name or "").strip().lower())
+            if spk_key in existing_wspks:
+                continue
+            ws_wspk.append([
+                s.speaker_id,
+                s.conference_id,
+                s.conference_name,
+                s.speaker_name,
+                s.job_title or "",
+                s.company_name or "",
+                s.personal_linkedin_url or "",
+                s.linkedin_status or "needs_review",
+                s.professional_email or "",
+                s.email_source_url or "",
+                s.speaker_source_url or "",
+                s.verification_status or "needs_review",
+                s.last_checked_at.isoformat() if s.last_checked_at else "",
+                s.weekly_run_id or ""
+            ])
+            existing_wspks.add(spk_key)
+            added_spks += 1
+
+        # 3. Weekly Source Run Log sheet
+        if logs:
+            if "weekly_source_log" not in wb.sheetnames:
+                ws_wlog = wb.create_sheet("weekly_source_log")
+                wlog_cols = [
+                    "Run_ID", "Run_Date", "Source_Name", "Source_Status", "Pages_Checked",
+                    "Conferences_Found", "Conferences_Accepted", "Speakers_Found", "Error_Details", "Duration_Seconds"
+                ]
+                ws_wlog.append(wlog_cols)
+                self._apply_header_styles(ws_wlog)
+            else:
+                ws_wlog = wb["weekly_source_log"]
+
+            for l in logs:
+                ws_wlog.append([
+                    l.get("run_id", ""),
+                    str(l.get("run_date", "")),
+                    l.get("source_name", ""),
+                    l.get("source_status", "success"),
+                    int(l.get("pages_checked", 1)),
+                    int(l.get("conferences_found", 0)),
+                    int(l.get("conferences_accepted", 0)),
+                    int(l.get("speakers_found", 0)),
+                    str(l.get("error_details", "") or ""),
+                    round(float(l.get("duration_seconds", 0.0)), 2)
+                ])
+
+        self._auto_fit_columns(ws_wconf)
+        self._auto_fit_columns(ws_wspk)
+        if "weekly_source_log" in wb.sheetnames:
+            self._auto_fit_columns(wb["weekly_source_log"])
+        self._safe_save(wb)
+
+        logger.info(f"Local Excel weekly sync complete: {added_confs} conferences and {added_spks} speakers appended.")
+        return {
+            "status": "success",
+            "added_conferences": added_confs,
+            "added_speakers": added_spks
+        }
 
 
     def read_excel_as_dataframe(self, sheet_name: str = "USA Conferences") -> pd.DataFrame:

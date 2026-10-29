@@ -165,15 +165,22 @@ def cleanup_fake_and_sample_records(db):
         s_name_lower = (s.speaker_name or "").lower().strip()
         if (
             len(s_name_lower) < 3 or len(s_name_lower) > 45 or
-            any(bad in s_name_lower for bad in ["for more", "information", "mitas", "visit", "ticket", "refund", "hotel", "policy", "fee", "options?", "explore", "economic", "free h", "event details", "light refreshments", "8 w 38th st", "hosted by"])
+            any(bad in s_name_lower for bad in [
+                "for more", "information", "mitas", "visit", "ticket", "refund", "hotel", "policy", "fee",
+                "options?", "explore", "economic", "free h", "event details", "light refreshments", "8 w 38th st",
+                "hosted by", "to reserve your seat", "also check out other", "in new york", "business events",
+                "workshops in new york", "edition welcomed over", "for ways to partner", "click here", "sign up",
+                "sign in", "use eventbrite", "plan events", "breakout tracks", "research & healthcare"
+            ])
+            or s_name_lower in ["founder & ceo", "director & coo", "co-founder & cto", "co-inventor of", "breakout tracks", "research & healthcare"]
+            or (s.conference_name and (s_name_lower == s.conference_name.lower().strip() or (len(s_name_lower) > 8 and s_name_lower in s.conference_name.lower())))
         ):
             db.delete(s)
     db.commit()
     logger.info(f"Cleaned up {deleted_count} stale/obsolete/non-category records from database.")
     
-    # Sync Excel strictly with genuine published T-2 conferences (start_date == exact_t2_date) & their speakers & attendees
+    # Sync Excel with all verified published conferences without resetting workbook
     published_confs = db.query(Conference).filter(
-        Conference.start_date == exact_t2_date,
         Conference.is_published_to_excel == True
     ).order_by(Conference.conference_title.asc()).all()
     pub_ids = [conf.conference_id for conf in published_confs]
@@ -392,6 +399,13 @@ def task_scrape_and_ingest():
                 if any(bad in comp_w.lower() for bad in ["allevents.in", "eventbrite.com", "meetup.com", "lu.ma", "10times.com", "ticketmaster.com"]):
                     comp_w = ""
 
+                clean_li = validate_personal_linkedin_url(cand.get("linkedin", ""))
+                if not clean_li:
+                    from ..ai.extractor import discover_and_verify_linkedin_profile
+                    clean_li = discover_and_verify_linkedin_profile(
+                        cand["name"], cand.get("company", ""), cand.get("job_role", ""), cand.get("location", "")
+                    )
+
                 if n_key not in existing_by_name:
                     spk_record = Speaker(
                         conference_id=conf.conference_id,
@@ -401,7 +415,7 @@ def task_scrape_and_ingest():
                         job_role_designation=cand["job_role"],
                         company_name=cand["company"],
                         official_company_website_url=comp_w,
-                        linkedin_url=validate_personal_linkedin_url(cand.get("linkedin", "")) or "",
+                        linkedin_url=validate_personal_linkedin_url(clean_li) or "",
                         source_url=cand.get("source_url") or conf.official_conference_url or conf.source_url,
                         location=cand["location"],
                         previous_speaking_info=cand["prev_talks"]
@@ -413,7 +427,6 @@ def task_scrape_and_ingest():
                     existing_spk = existing_by_name[n_key]
                     if comp_w and not existing_spk.official_company_website_url:
                         existing_spk.official_company_website_url = comp_w
-                    clean_li = validate_personal_linkedin_url(cand.get("linkedin"))
                     if clean_li and not existing_spk.linkedin_url:
                         existing_spk.linkedin_url = clean_li
                     if cand["job_role"] and existing_spk.job_role_designation in ["", "Keynote Speaker", "Speaker"]:
@@ -438,6 +451,44 @@ def task_scrape_and_ingest():
                     db.delete(s)
                 else:
                     dedup_set.add(k)
+
+            # Retry speaker extraction from official conference URL if 0 speakers found
+            if len(dedup_set) == 0:
+                target_url = conf.official_conference_url or conf.source_url
+                if target_url and target_url.startswith("http"):
+                    try:
+                        from ..scrapers.live_speaker_scraper import fetch_official_site_speakers
+                        official_spks = fetch_official_site_speakers(target_url, conf.conference_title)
+                        for ospk in official_spks:
+                            s_name = ospk.get("speaker_name", "").strip()
+                            if not s_name:
+                                continue
+                            n_key = s_name.lower()
+                            if n_key not in dedup_set:
+                                dedup_set.add(n_key)
+                                li = ospk.get("linkedin_url", "")
+                                if not li:
+                                    from ..ai.extractor import discover_and_verify_linkedin_profile
+                                    li = discover_and_verify_linkedin_profile(
+                                        s_name, ospk.get("company_name", ""), ospk.get("job_role_designation", ""), conf.city
+                                    )
+                                spk_record = Speaker(
+                                    conference_id=conf.conference_id,
+                                    conference_name=conf.conference_title,
+                                    speaker_name=s_name,
+                                    company_organization=ospk.get("company_organization", ospk.get("company_name", conf.organizer or "Industry Organization")),
+                                    job_role_designation=ospk.get("job_role_designation", "Keynote Speaker"),
+                                    company_name=ospk.get("company_name", conf.organizer or "Industry Organization"),
+                                    official_company_website_url=ospk.get("official_company_website_url", ""),
+                                    linkedin_url=validate_personal_linkedin_url(li) or "",
+                                    source_url=ospk.get("source_url", target_url),
+                                    location=ospk.get("location", f"{conf.city}, {conf.country}"),
+                                    previous_speaking_info=f"Keynote speaker at {conf.conference_title}"
+                                )
+                                db.add(spk_record)
+                        db.flush()
+                    except Exception as e:
+                        logger.debug(f"Live speaker retry error on {target_url}: {e}")
 
             conf.speakers_available = "Yes" if len(dedup_set) > 0 else "No"
             db.commit()
@@ -479,16 +530,64 @@ def task_scrape_and_ingest():
 
             logger.info(f"Verified & Stored: {conf.conference_title} | Start: {conf.start_date} | T-2 Published: {is_exact_t2} | Verified Speakers: {len(dedup_set)}")
 
-        # 4. Sync Excel: Genuine conferences strictly matching the exact T-2 date
+        # Retry missing speakers for existing incomplete conferences
+        incomplete_confs = db.query(Conference).filter(
+            (Conference.speakers_available.in_(["No", "Pending", ""])) | (Conference.speakers_available == None)
+        ).all()
+        for ic in incomplete_confs:
+            spk_count = db.query(Speaker).filter(Speaker.conference_id == ic.conference_id).count()
+            if spk_count == 0:
+                target_url = ic.official_conference_url or ic.source_url
+                if target_url and target_url.startswith("http"):
+                    try:
+                        logger.info(f"Retrying missing speakers for incomplete conference: '{ic.conference_title}' via {target_url}")
+                        from ..scrapers.live_speaker_scraper import fetch_official_site_speakers
+                        official_spks = fetch_official_site_speakers(target_url, ic.conference_title)
+                        new_spks = 0
+                        for ospk in official_spks:
+                            s_name = ospk.get("speaker_name", "").strip()
+                            if not s_name:
+                                continue
+                            li = ospk.get("linkedin_url", "")
+                            if not li:
+                                from ..ai.extractor import discover_and_verify_linkedin_profile
+                                li = discover_and_verify_linkedin_profile(
+                                    s_name, ospk.get("company_name", ""), ospk.get("job_role_designation", ""), ic.city
+                                )
+                            spk_record = Speaker(
+                                conference_id=ic.conference_id,
+                                conference_name=ic.conference_title,
+                                speaker_name=s_name,
+                                company_organization=ospk.get("company_organization", ospk.get("company_name", ic.organizer or "Industry Organization")),
+                                job_role_designation=ospk.get("job_role_designation", "Keynote Speaker"),
+                                company_name=ospk.get("company_name", ic.organizer or "Industry Organization"),
+                                official_company_website_url=ospk.get("official_company_website_url", ""),
+                                linkedin_url=validate_personal_linkedin_url(li) or "",
+                                source_url=ospk.get("source_url", target_url),
+                                location=ospk.get("location", f"{ic.city}, {ic.country}"),
+                                previous_speaking_info=f"Keynote speaker at {ic.conference_title}"
+                            )
+                            db.add(spk_record)
+                            new_spks += 1
+                        if new_spks > 0:
+                            ic.speakers_available = "Yes"
+                            db.commit()
+                            logger.info(f"Successfully retrieved {new_spks} speakers on retry for '{ic.conference_title}'")
+                    except Exception as e:
+                        logger.debug(f"Incomplete conf retry error for '{ic.conference_title}': {e}")
+
+        # 4. Sync Excel: All published conferences in DB (including historical published conferences)
         all_published = db.query(Conference).filter(
-            Conference.is_published_to_excel == True,
-            Conference.start_date == exact_t2_date
+            Conference.is_published_to_excel == True
         ).all()
         pub_ids = [c.conference_id for c in all_published]
         all_pub_spks = db.query(Speaker).filter(Speaker.conference_id.in_(pub_ids)).all()
         all_pub_atts = db.query(Attendee).filter(Attendee.conference_id.in_(pub_ids)).all()
         excel_manager.sync_published_conferences(all_published, all_pub_spks, all_pub_atts)
-        logger.info(f"Excel synced with {len(all_published)} published T-2 conferences, {len(all_pub_spks)} verified speakers, and {len(all_pub_atts)} attendees.")
+        logger.info(f"Excel synced with {len(all_published)} published conferences, {len(all_pub_spks)} verified speakers, and {len(all_pub_atts)} attendees.")
+
+        # Notification list: strictly T-2 conferences
+        t2_confs = [c for c in all_published if c.start_date == exact_t2_date]
 
         # 4b. Sync to Work OneDrive Excel workbook via Microsoft Graph
         try:
@@ -502,14 +601,14 @@ def task_scrape_and_ingest():
         # 5. Send separate individual email for each matching conference
         from ..services.email_service import ConferenceEmailService
         email_svc = ConferenceEmailService()
-        email_res = email_svc.send_all_pending_reminders(db, conferences=all_published)
+        email_res = email_svc.send_all_pending_reminders(db, conferences=t2_confs)
         logger.info(f"📧 Completed automated email reminders: {len(email_res)} conference(s) processed for recipient {email_svc.recipient_email}.")
 
         # 6. Post separate Adaptive Cards to Microsoft Teams Webhook
         if getattr(settings, "TEAMS_CARD_ENABLED", False):
             from ..services.teams_service import TeamsWebhookService
             teams_svc = TeamsWebhookService()
-            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=t2_confs)
             logger.info(f"📢 Posted Teams cards: {len(teams_res)} processed.")
         else:
             logger.info("ℹ️ Teams webhook dispatch is currently disabled (TEAMS_CARD_ENABLED=false).")
@@ -552,21 +651,20 @@ def task_publish_2_days_before():
             c.status = "published"
             logger.info(f"Conference {c.conference_title} reached T-2! Auto-publishing to Excel.")
 
-        # Demote any conferences that are not exact T-2
-        non_t2 = db.query(Conference).filter(
-            Conference.start_date != exact_t2_date,
-            Conference.is_published_to_excel == True
+        # Mark past published conferences as completed, preserving their publication history
+        past_confs = db.query(Conference).filter(
+            Conference.start_date < today,
+            Conference.is_published_to_excel == True,
+            Conference.status != "completed"
         ).all()
-        for p in non_t2:
-            p.is_published_to_excel = False
-            p.status = "scheduled" if p.start_date and p.start_date > exact_t2_date else "completed"
+        for p in past_confs:
+            p.status = "completed"
 
         db.commit()
 
-        # 2. Get all conferences strictly matching exact T-2 date
+        # 2. Get all published conferences to keep Excel in sync without dropping historical rows
         all_published = db.query(Conference).filter(
-            Conference.is_published_to_excel == True,
-            Conference.start_date == exact_t2_date
+            Conference.is_published_to_excel == True
         ).order_by(Conference.conference_title.asc()).all()
         
         # 3. Get only speakers and attendees of the published conferences
@@ -594,11 +692,11 @@ def task_publish_2_days_before():
             email_svc = ConferenceEmailService()
             email_svc.send_all_pending_reminders(db, conferences=due_t2)
 
-        # 5. Trigger Microsoft Teams Webhook cards
+        # 5. Trigger Microsoft Teams Webhook cards for T-2 conferences
         if getattr(settings, "TEAMS_CARD_ENABLED", False):
             from ..services.teams_service import TeamsWebhookService
             teams_svc = TeamsWebhookService()
-            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=all_published)
+            teams_res = teams_svc.send_all_pending_teams_cards(db, conferences=due_t2)
             logger.info(f"📢 Posted Teams cards: {len(teams_res)} processed.")
         else:
             logger.info("ℹ️ Teams webhook card delivery is disabled (TEAMS_CARD_ENABLED=false).")
@@ -921,5 +1019,23 @@ def task_migrate_db_to_google_sheets(clear_first: bool = False):
         migration_summary["message"] = str(e)
         db.rollback()
         return migration_summary
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.weekly_scrape_and_ingest")
+def task_weekly_scrape_and_ingest(force: bool = False):
+    """
+    Weekly Conference Scraping & OneDrive Excel Storage Task:
+    - Scrapes US conferences scheduled for Sunday–Saturday.
+    - Saves append-only to tbl_weekly_conferences, tbl_weekly_speakers, and tbl_weekly_source_run_log.
+    - Sends exactly ONE general inbound summary card to Microsoft Teams if enabled.
+    - Gate-checked by WEEKLY_AGENT_ENABLED.
+    """
+    db = SessionLocal()
+    try:
+        from ..services.weekly_service import WeeklyConferenceService
+        svc = WeeklyConferenceService(db)
+        return svc.run_weekly_workflow(force=force)
     finally:
         db.close()

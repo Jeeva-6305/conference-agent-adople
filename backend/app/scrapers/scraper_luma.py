@@ -18,7 +18,10 @@ HEADERS = {
 LUMA_CITY_URLS = [
     ("https://lu.ma/sf", "San Francisco, CA, USA"),
     ("https://lu.ma/nyc", "New York, NY, USA"),
-    ("https://lu.ma/austin", "Austin, TX, USA")
+    ("https://lu.ma/austin", "Austin, TX, USA"),
+    ("https://lu.ma/la", "Los Angeles, CA, USA"),
+    ("https://lu.ma/boston", "Boston, MA, USA"),
+    ("https://lu.ma/seattle", "Seattle, WA, USA")
 ]
 
 CONFERENCE_TERMS = ["conference", "summit", "symposium", "forum", "congress", "expo", "panel", "decision", "odyssey", "build day", "stack"]

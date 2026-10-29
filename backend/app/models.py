@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from sqlalchemy import Column, String, Date, DateTime, Boolean, Text, Integer
+from sqlalchemy import Column, String, Date, DateTime, Boolean, Text, Integer, Float
 from .database import Base
 
 def generate_conf_id() -> str:
@@ -195,5 +195,138 @@ class TeamsNotification(Base):
             "sent_at": self.sent_at.isoformat() if self.sent_at else "",
             "error_message": self.error_message or ""
         }
+
+
+# =========================================================================
+# WEEKLY CONFERENCE WORKFLOW MODELS (ISOLATED FROM T-2)
+# =========================================================================
+
+class WeeklyConference(Base):
+    __tablename__ = "weekly_conferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conference_id = Column(String(50), unique=True, index=True)
+    conference_name = Column(String(255), nullable=False, index=True)
+    start_date = Column(Date, nullable=False, index=True)
+    end_date = Column(Date, nullable=True)
+    city = Column(String(100), default="")
+    state = Column(String(100), default="")
+    country = Column(String(100), default="USA")
+    industry = Column(String(255), default="")
+    official_event_url = Column(Text, default="")
+    source_name = Column(String(100), default="")
+    source_url = Column(Text, default="")
+    link_status = Column(String(50), default="verified")  # verified, needs_review, unverified_access_restricted, broken
+    speaker_status = Column(String(50), default="No")  # Yes / No
+    weekly_run_id = Column(String(100), nullable=False, index=True)
+    last_checked_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "conference_id": self.conference_id,
+            "conference_name": self.conference_name,
+            "start_date": self.start_date.isoformat() if self.start_date else "",
+            "end_date": self.end_date.isoformat() if self.end_date else "",
+            "city": self.city,
+            "state": self.state,
+            "country": self.country,
+            "industry": self.industry,
+            "official_event_url": self.official_event_url,
+            "source_name": self.source_name,
+            "source_url": self.source_url,
+            "link_status": self.link_status,
+            "speaker_status": self.speaker_status,
+            "weekly_run_id": self.weekly_run_id,
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
+        }
+
+
+class WeeklySpeaker(Base):
+    __tablename__ = "weekly_speakers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    speaker_id = Column(String(50), unique=True, index=True)
+    conference_id = Column(String(50), nullable=False, index=True)
+    conference_name = Column(String(255), nullable=False)
+    speaker_name = Column(String(255), nullable=False, index=True)
+    job_title = Column(String(255), default="")
+    company_name = Column(String(255), default="")
+    personal_linkedin_url = Column(Text, default="")
+    linkedin_status = Column(String(50), default="needs_review")  # verified, needs_review, unverified_access_restricted
+    professional_email = Column(String(255), default="")
+    email_source_url = Column(Text, default="")
+    speaker_source_url = Column(Text, default="")
+    verification_status = Column(String(50), default="needs_review")  # verified, needs_review
+    weekly_run_id = Column(String(100), nullable=False, index=True)
+    last_checked_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "speaker_id": self.speaker_id,
+            "conference_id": self.conference_id,
+            "conference_name": self.conference_name,
+            "speaker_name": self.speaker_name,
+            "job_title": self.job_title,
+            "company_name": self.company_name,
+            "personal_linkedin_url": self.personal_linkedin_url,
+            "linkedin_status": self.linkedin_status,
+            "professional_email": self.professional_email,
+            "email_source_url": self.email_source_url,
+            "speaker_source_url": self.speaker_source_url,
+            "verification_status": self.verification_status,
+            "weekly_run_id": self.weekly_run_id,
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
+        }
+
+
+class WeeklySourceRunLog(Base):
+    __tablename__ = "weekly_source_run_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(100), nullable=False, index=True)
+    run_date = Column(Date, nullable=False)
+    source_name = Column(String(100), nullable=False)
+    source_status = Column(String(50), default="success")  # success, error, timeout, unverified_access_restricted
+    pages_checked = Column(Integer, default=1)
+    conferences_found = Column(Integer, default=0)
+    conferences_accepted = Column(Integer, default=0)
+    speakers_found = Column(Integer, default=0)
+    error_details = Column(Text, default="")
+    duration_seconds = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "run_id": self.run_id,
+            "run_date": self.run_date.isoformat() if self.run_date else "",
+            "source_name": self.source_name,
+            "source_status": self.source_status,
+            "pages_checked": self.pages_checked,
+            "conferences_found": self.conferences_found,
+            "conferences_accepted": self.conferences_accepted,
+            "speakers_found": self.speakers_found,
+            "error_details": self.error_details or "",
+            "duration_seconds": self.duration_seconds
+        }
+
+
+class WeeklyTeamsCardLog(Base):
+    __tablename__ = "weekly_teams_card_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    weekly_run_id = Column(String(100), unique=True, index=True)
+    target_start_date = Column(Date, nullable=False)
+    target_end_date = Column(Date, nullable=False)
+    total_conferences = Column(Integer, default=0)
+    industry_summary = Column(Text, default="")
+    webhook_url = Column(String(1000), default="")
+    status = Column(String(50), default="sent")
+    card_payload = Column(Text, default="")
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    error_message = Column(Text, nullable=True)
+
 
 

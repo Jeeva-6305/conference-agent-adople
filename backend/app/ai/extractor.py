@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import re
@@ -94,7 +95,23 @@ VERIFIED_LINKEDIN_HANDLES = {
     "christie ballantyne": "https://www.linkedin.com/in/christie-ballantyne-md-bb954914",
     "chris volpe": "https://www.linkedin.com/in/nychrisvolpe",
     "amanda gardner": "https://www.linkedin.com/in/amanda-gardner-36ba5419",
-    "mike hruska": "https://www.linkedin.com/in/mikehruska"
+    "mike hruska": "https://www.linkedin.com/in/mikehruska",
+    "tom hale": "https://www.linkedin.com/in/tomeghale",
+    "ben kompa": "https://www.linkedin.com/in/ben-kompa-99629670",
+    "jamie goldstein": "https://www.linkedin.com/in/jamie-goldstein-77699",
+    "dan furman": "https://www.linkedin.com/in/dan-furman-9343351",
+    "conor walsh": "https://www.linkedin.com/in/conor-walsh-a14a0914",
+    "jonathan leary": "https://www.linkedin.com/in/drjonathanleary",
+    "casey caruso": "https://www.linkedin.com/in/caseycaruso",
+    "dinesh nirmal": "https://www.linkedin.com/in/dineshnirmal",
+    "angela cain": "https://www.linkedin.com/in/angelacain",
+    "glyn hughes": "https://www.linkedin.com/in/glyn-hughes-aircargo",
+    "steven polmans": "https://www.linkedin.com/in/stevenpolmans",
+    "rob willig": "https://www.linkedin.com/in/robert-willig-2591605",
+    "robert willig": "https://www.linkedin.com/in/robert-willig-2591605",
+    "ed youdell": "https://www.linkedin.com/in/ed-youdell-a521401",
+    "jim pittas": "https://www.linkedin.com/in/jimpittas",
+    "jorge izquierdo": "https://www.linkedin.com/in/jorge-izquierdo-4609311"
 }
 
 COMPANY_URL_MAPPINGS = [
@@ -321,6 +338,11 @@ TARGET_CATEGORIES = {
         "financial services", "fintech", "banking", "insurance", "investment", "payments",
         "financial technology", "ai in finance", "wealth management", "insurtech", "venture capital",
         "private equity", "asset management", "finance", "financial", "mortgage", "lending", "real estate finance"
+    ],
+    "Technology": [
+        "technology", "tech", "software", "cloud", "cybersecurity", "security",
+        "engineering", "devops", "platform", "data", "developer", "hardware",
+        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation"
     ]
 }
 
@@ -453,9 +475,11 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
         core_company = re.sub(r'\b(llc|inc|corp|corporation|co|ltd|group|consulting)\b', '', clean_comp, flags=re.I).strip()
         core_company = re.sub(r'\s+', ' ', core_company).strip()
         target_comp = core_company or clean_comp or company_name
-        queries.append(f'site:linkedin.com/in/ "{clean_name}" "{target_comp}"')
-        queries.append(f'site:linkedin.com/in/ {clean_name} {target_comp}')
-    queries.append(f'site:linkedin.com/in/ "{clean_name}"')
+        queries.append(f'"{clean_name}" {target_comp} linkedin')
+        queries.append(f'{clean_name} {target_comp} linkedin')
+    if job_title and job_title.lower() not in ["speaker", "keynote speaker"]:
+        queries.append(f'"{clean_name}" {job_title} linkedin')
+    queries.append(f'"{clean_name}" linkedin')
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -465,39 +489,42 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
 
     candidates = []
     seen_urls = set()
-    # pyrefly: ignore [unexpected-keyword]
     s = cffi_requests.Session(impersonate="chrome120")
 
     for q in queries:
         try:
-            url = f"https://search.yahoo.com/search?p={urllib.parse.quote(q)}"
-            resp = s.get(url, headers=headers, timeout=10)
+            url = f"https://www.bing.com/search?q={urllib.parse.quote(q)}"
+            resp = s.get(url, headers=headers, timeout=8)
             if resp.status_code != 200:
                 continue
 
             soup = BeautifulSoup(resp.text, "html.parser")
-            results = soup.find_all("div", class_="dd algo") or soup.find_all("li", class_="algo") or soup.find_all("div", class_="algo")
-
-            for r in results:
-                title_el = r.find("h3") or r.find("a")
-                title_text = title_el.get_text(strip=True) if title_el else ""
-
-                snippet_el = r.find("div", class_="compText") or r.find("p")
-                snippet_text = snippet_el.get_text(strip=True) if snippet_el else ""
+            for b in soup.find_all("li", class_="b_algo"):
+                h2 = b.find("h2")
+                title_text = h2.get_text(strip=True) if h2 else ""
+                
+                snip_el = b.find("div", class_="b_caption") or b.find("p")
+                snippet_text = snip_el.get_text(strip=True) if snip_el else ""
 
                 cand_url = ""
-                for a in r.find_all("a"):
-                    h = a.get("href", "")
-                    if "linkedin.com/in/" in h:
+                a = b.find("a")
+                if a and a.get("href"):
+                    h = a["href"]
+                    if "u=" in h:
+                        m_u = h.split("u=")[1].split("&")[0]
+                        if m_u.startswith("a1"):
+                            m_u = m_u[2:]
+                        pad = len(m_u) % 4
+                        if pad:
+                            m_u += "=" * (4 - pad)
+                        try:
+                            dec = base64.urlsafe_b64decode(m_u).decode("utf-8")
+                            if "linkedin.com/in/" in dec:
+                                cand_url = dec
+                        except Exception:
+                            pass
+                    elif "linkedin.com/in/" in h:
                         cand_url = h
-                        break
-                    elif "r.search.yahoo.com" in h and "RU=" in h:
-                        m = re.search(r"RU=([^/&]+(?:%2f[^/&]+)*)", h, re.I)
-                        if m:
-                            decoded = urllib.parse.unquote(m.group(1))
-                            if "linkedin.com/in/" in decoded:
-                                cand_url = decoded
-                                break
 
                 if cand_url:
                     m = re.match(r"(https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[a-zA-Z0-9_\-%]+)", cand_url)
@@ -665,10 +692,31 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
     Cleans speaker details, swaps inverted roles/companies, strips UI artifacts & badges,
     resolves genuine company domains, and discovers/verifies genuine LinkedIn profile URLs (No slug guessing).
     """
+    if not speaker_name:
+        return "", "", "", "", ""
     # 1. Clean speaker name
-    name = re.sub(r'[\s~]+$', '', speaker_name).strip()
+    name = re.sub(r'[\s~]+$', '', speaker_name).strip().strip(",- \t\n")
     role = job_role.strip().rstrip(".,;")
     company = company_name.strip().rstrip(".,;")
+
+    # Reject speaker names matching conference title or contained in conference title
+    if conf_title:
+        c_low = conf_title.lower().strip()
+        n_low = name.lower().strip()
+        if n_low == c_low or (len(n_low) > 8 and n_low in c_low) or (len(c_low) > 8 and c_low in n_low):
+            return "", "", "", "", ""
+
+    # Reject speaker names that are actually job titles or prefixes
+    if name.lower().strip() in JOB_ROLES_EXACT or any(name.lower().startswith(p) for p in [
+        "founder", "director", "head of", "chief", "manager", "president", "vp ",
+        "co-founder", "co-inventor", "partner", "managing partner", "executive"
+    ]):
+        return "", "", "", "", ""
+
+    # Reject calls to action, UI strings, and navigation text stored as speaker names
+    from ..scrapers.live_speaker_scraper import is_valid_speaker_name
+    if not is_valid_speaker_name(name):
+        return "", "", "", "", ""
 
     # 2. Clean UI badges like "• Full-time", "\ufffd Full-time", etc.
     company = re.sub(r'[\s\uFFFD\u00A0\xb7•\-\|]+(full-time|part-time|contract|freelance|internship).*$', '', company, flags=re.I).strip()
@@ -871,6 +919,8 @@ class AIConferenceExtractor:
 
         # Step 3: High-fidelity parser on real scraped fields
         return self._parse_from_real_scraped_data(raw_data)
+
+    extract_conference_details = extract_and_validate
 
     def _parse_from_real_scraped_data(self, raw_data: RawEventData) -> Optional[AIConferenceExtraction]:
         """
@@ -1138,10 +1188,11 @@ class AIConferenceExtractor:
                 len(clean_name.split()) < 2
                 or len(clean_name.split()) > 4
                 or len(clean_name) > 35
-                or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%"])
-                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure|the|and|or)\b", clean_name, re.I)
+                or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%", "&", "+", "*"])
+                or re.search(r"\d", clean_name)
+                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure|the|and|or|other|out|in|for|from|to|with)\b", clean_name, re.I)
                 or any(w in clean_name.lower() for w in invalid_words)
-                or not all(part[0].isupper() for part in clean_name.split() if part)
+                or not all(part[0].isupper() and part[1:].islower() for part in clean_name.split() if part)
             ):
                 continue
 
@@ -1212,6 +1263,8 @@ class AIConferenceExtractor:
             clean_name, job_role, company_name, company_url, linkedin_url = clean_and_resolve_speaker(
                 clean_name, job_role, company_name, conf_title, official_url, location=spk_location
             )
+            if not clean_name:
+                continue
 
             # If explicit LinkedIn URL was found on the source page, prioritize it
             if cand.get("linkedin"):

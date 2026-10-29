@@ -1,19 +1,11 @@
 import logging
-import requests
-from bs4 import BeautifulSoup
 from datetime import date, timedelta
 from typing import List
+from bs4 import BeautifulSoup
 from .base_scraper import BaseScraper
 from ..schemas import RawEventData
 
 logger = logging.getLogger(__name__)
-
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.google.com/'
-}
 
 class TenTimesScraper(BaseScraper):
     def __init__(self):
@@ -23,138 +15,34 @@ class TenTimesScraper(BaseScraper):
         logger.info(f"[{self.source_name}] Checking 10times live conferences...")
         events: List[RawEventData] = []
         today = date.today()
-        exact_t2 = today + timedelta(days=2) # 2026-10-11
-
-        tentimes_targets = [
-            {
-                "title": "IBM TechXchange 2026",
-                "url": "https://www.ibm.com/events/techxchange",
-                "start_date": "2026-10-26",
-                "end_date": "2026-10-29",
-                "venue": "Georgia World Congress Center, 285 Andrew Young International Blvd NW",
-                "city": "Atlanta",
-                "state": "GA",
-                "organizer": "IBM Corporation",
-                "category": "Enterprise AI / AI Solutions / Technology",
-                "description": "The premier technical conference for enterprise developers, data scientists, and AI architects, featuring hands-on laboratories, technical sessions, and executive keynotes on generative AI, hybrid cloud architecture, and quantum computing.",
-                "speakers": [
-                    "Dinesh Nirmal (Senior Vice President, Software at IBM) - https://www.linkedin.com/in/dineshnirmal",
-                    "Rob Thomas (Senior Vice President, Software & Chief Commercial Officer at IBM) - https://www.linkedin.com/in/rob-thomas-73b88b1",
-                    "Kareem Yusuf (Senior Vice President, Product Management and Growth at IBM) - https://www.linkedin.com/in/kareemyusuf"
-                ]
-            },
-            {
-                "title": "ANESTHESIOLOGY 2026 Annual Meeting",
-                "url": "https://www.asahq.org/annualmeeting",
-                "start_date": "2026-10-16",
-                "end_date": "2026-10-20",
-                "venue": "San Diego Convention Center, 111 W Harbor Dr",
-                "city": "San Diego",
-                "state": "CA",
-                "organizer": "American Society of Anesthesiologists (ASA)",
-                "category": "Healthcare / Medicines & Hospitals",
-                "description": "The world's premier anesthesiology and medical congress convening over 12,000 healthcare leaders, physician anesthesiologists, and healthcare system executives exploring AI-driven perioperative medicine, patient safety innovations, and clinical pharmacology.",
-                "speakers": [
-                    "Dr. Ronald L. Harter (President at American Society of Anesthesiologists)",
-                    "Dr. Patrick Guffey (Chief Medical Information Officer at Children's Hospital Colorado)",
-                    "Dr. Emily Methangkool (Associate Professor of Anesthesiology at David Geffen School of Medicine at UCLA)",
-                    "Dr. Michael Champeau (Clinical Professor of Anesthesiology at Stanford Medicine)"
-                ]
-            },
-            {
-                "title": "Snowflake World Tour New York City 2026",
-                "url": "https://www.snowflake.com/en/world-tour/nyc/",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-15",
-                "venue": "Javits North, Jacob K. Javits Convention Center, 445 11th Ave",
-                "city": "New York",
-                "state": "NY",
-                "organizer": "Snowflake Inc.",
-                "category": "Enterprise AI / AI Solutions / Technology",
-                "description": "The premier enterprise data and artificial intelligence summit in New York City, featuring executive keynotes and technical breakout sessions showcasing cloud data infrastructure, agentic AI workflows, and enterprise data governance.",
-                "speakers": [
-                    "Sridhar Ramaswamy (Chief Executive Officer at Snowflake)",
-                    "Benoit Dageville (Co-Founder & President of Products at Snowflake)",
-                    "Christian Kleinerman (Executive Vice President of Product Management at Snowflake)",
-                    "Brad Jones (Chief Information Security Officer at Snowflake)"
-                ]
-            },
-            {
-                "title": "2026 ThinkEquity Conference",
-                "url": "https://www.think-equity.com/thinkequity-conference",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-15",
-                "venue": "Mandarin Oriental Hotel, 80 Columbus Circle",
-                "city": "New York",
-                "state": "NY",
-                "organizer": "ThinkEquity LLC",
-                "category": "Financial Services / Technology",
-                "description": "Premier institutional investment banking conference convening over 85 public and private corporate presenters with institutional investors, venture funds, and private wealth managers covering emerging growth sectors in AI, digital assets, healthcare, and fintech.",
-                "speakers": [
-                    "Martin Sumichrast (Chairman of the Board at Hawkeye Digital)",
-                    "David Wachsman (President at Hawkeye Digital)",
-                    "Leonard Mazur (Executive Chairman & CEO at Citius Pharmaceuticals)",
-                    "Dr. Ehud Geller (Chairman of the Board at Regentis Biomaterials)",
-                    "Brenner Adams (Chief Executive Officer at TruGolf)"
-                ]
-            },
-            {
-                "title": "Building A Transit-Oriented Puget Sound Conference 2026",
-                "url": "https://www.eventbrite.com/e/building-a-transit-oriented-puget-sound-tickets-2002225133272",
-                "start_date": "2026-10-11",
-                "end_date": "2026-10-11",
-                "venue": "Town Hall Seattle, 1119 8th Avenue",
-                "city": "Seattle",
-                "state": "WA",
-                "organizer": "Side Note Seattle & Urbanist Network",
-                "category": "Government / Transportation",
-                "description": "Regional transit policy and infrastructure conference at Town Hall Seattle exploring light rail expansions, multi-modal urban transit corridors, and sustainable civic transit funding across Western Washington.",
-                "speakers": [
-                    "Claudia Balducci (King County Councilmember & Sound Transit Board Director at King County Government)",
-                    "Shaun Kuo (Senior Urban Policy Analyst at The Urbanist)",
-                    "Grace Kim (Founding Principal & Architect at Schemata Workshop)"
-                ]
-            }
-        ]
+        exact_t2 = today + timedelta(days=2)
 
         try:
-            resp = requests.get("https://10times.com/usa", headers=HEADERS, timeout=6)
-            if resp.status_code == 200:
+            resp = self.fetch_page("https://10times.com/usa", timeout=10)
+            if resp and resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
-                for a in soup.find_all('a', href=True):
-                    href = a['href']
-                    text = a.get_text(strip=True)
-                    if any(k in text.lower() for k in ['conference', 'summit', 'expo']) and len(text) > 12:
-                        logger.info(f"[{self.source_name}] Discovered 10times listing: {text}")
-        except Exception as e:
-            logger.debug(f"[{self.source_name}] 10times crawl notice: {e}")
+                # Parse live event rows from 10times listing table
+                for row in soup.find_all(['tr', 'div'], class_=lambda c: c and any(k in str(c).lower() for k in ['event', 'row', 'listing'])):
+                    title_elem = row.find(['a', 'h2', 'h3'], class_=lambda c: c and 'title' in str(c).lower()) or row.find('a', href=True)
+                    if not title_elem:
+                        continue
+                    title = title_elem.get_text(strip=True)
+                    if not title or len(title) < 5 or any(b in title.lower() for b in ['login', 'sign up', 'contact', 'about us']):
+                        continue
+                    event_url = title_elem.get('href', '')
+                    if event_url and not event_url.startswith('http'):
+                        event_url = f"https://10times.com{event_url}"
 
-        for item in tentimes_targets:
-            if item["start_date"] == str(exact_t2):
-                speaker_lines = "\n".join([f"• {s}" for s in item['speakers']])
-                raw_text_lines = [
-                    f"Conference Title: {item['title']}",
-                    f"Overview & Description: {item['description']}",
-                    f"Venue: {item['venue']}",
-                    f"Address: {item['venue']}, {item['city']}, {item['state']}, USA",
-                    f"Organizer: {item['organizer']}",
-                    f"Official Event URL: {item['url']}",
-                    f"Registration URL: {item['url']}",
-                    f"Start Date: {item['start_date']}",
-                    f"End Date: {item['end_date']}",
-                    f"Featured Keynote Speakers:\n{speaker_lines}",
-                    f"Category: {item['category']}"
-                ]
-                raw_text = "\n".join(raw_text_lines)
-                events.append(RawEventData(
-                    source_name=self.source_name,
-                    source_url=item["url"],
-                    raw_title=item["title"],
-                    raw_text=raw_text,
-                    raw_location=f"{item['venue']}, {item['city']}, {item['state']}, USA",
-                    raw_date=item["start_date"]
-                ))
-                logger.info(f"[{self.source_name}] Ingested genuine T-2 conference: {item['title']}")
+                    events.append(RawEventData(
+                        raw_title=title,
+                        raw_text=f"Conference Title: {title}\nOfficial Event URL: {event_url}\nSource: 10times\nCountry: USA",
+                        source_url=event_url or self.base_url,
+                        source_name=self.source_name
+                    ))
+            elif resp and resp.status_code in (403, 429):
+                logger.warning(f"[{self.source_name}] Live endpoint restricted (HTTP {resp.status_code}, status: unverified_access_restricted). No events scraped.")
+        except Exception as e:
+            logger.warning(f"[{self.source_name}] 10times live crawl notice: {e}")
 
         logger.info(f"[{self.source_name}] Harvested {len(events)} events from 10times.")
         return events

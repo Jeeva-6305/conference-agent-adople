@@ -71,5 +71,19 @@ class Settings:
     CONFERENCE_SPEAKERS_TABLE_NAME: str = os.getenv("CONFERENCE_SPEAKERS_TABLE_NAME", "tbl_speakers")
     MICROSOFT_GRAPH_BASE_URL: str = os.getenv("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0")
 
+    # Weekly Conference Scraping & OneDrive Excel Settings
+    WEEKLY_AGENT_ENABLED: bool = os.getenv("WEEKLY_AGENT_ENABLED", "false").lower() in ("true", "1", "yes")
+    WEEKLY_TIMEZONE: str = os.getenv("WEEKLY_TIMEZONE", "America/New_York")
+    WEEKLY_REFRESH_ENABLED: bool = os.getenv("WEEKLY_REFRESH_ENABLED", "true").lower() in ("true", "1", "yes")
+    WEEKLY_SCRAPE_LEAD_DAYS: int = int(os.getenv("WEEKLY_SCRAPE_LEAD_DAYS", "3"))
+    WEEKLY_TEAMS_CARD_ENABLED: bool = os.getenv("WEEKLY_TEAMS_CARD_ENABLED", "false").lower() in ("true", "1", "yes")
+
+    WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME", "weekly_conferences")
+    WEEKLY_CONFERENCE_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_TABLE_NAME", "tbl_weekly_conferences")
+    WEEKLY_SPEAKERS_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SPEAKERS_EXCEL_WORKSHEET_NAME", "weekly_speakers")
+    WEEKLY_SPEAKERS_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SPEAKERS_EXCEL_TABLE_NAME", "tbl_weekly_speakers")
+    WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
+    WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
+
 settings = Settings()
 

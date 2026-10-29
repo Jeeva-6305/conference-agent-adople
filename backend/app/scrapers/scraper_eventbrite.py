@@ -17,7 +17,6 @@ HEADERS = {
 }
 
 DISCOVERY_URLS = [
-    'https://www.eventbrite.com/d/united-states/conferences/?start_date=2026-10-11&end_date=2026-10-11',
     'https://www.eventbrite.com/d/united-states/conferences/',
     'https://www.eventbrite.com/d/united-states/business--conferences/',
     'https://www.eventbrite.com/d/united-states/science-and-tech--conferences/',
@@ -46,111 +45,10 @@ class EventbriteScraper(BaseScraper):
 
         discovery_urls = [
             f"https://www.eventbrite.com/d/united-states/conferences/?start_date={exact_t2}&end_date={exact_t2}",
+            "https://www.eventbrite.com/d/united-states/business--conferences/",
+            "https://www.eventbrite.com/d/united-states/science-and-tech--conferences/",
+            "https://www.eventbrite.com/d/united-states/health--conferences/",
             "https://www.eventbrite.com/d/united-states/conferences/"
-        ]
-
-        verified_eventbrite_targets = [
-            {
-                "title": "Open Source AI Week 2026",
-                "url": "https://www.linuxfoundation.org/events",
-                "start_date": "2026-10-16",
-                "end_date": "2026-10-18",
-                "venue": "Palace of Fine Arts, 3301 Lyon St",
-                "city": "San Francisco",
-                "state": "CA",
-                "organizer": "Linux Foundation & Open Source AI Community",
-                "category": "Enterprise AI / AI Solutions",
-                "description": "Global summit convening open-source AI and ML developers, researchers, and enterprise AI engineering leaders focusing on decentralized model training, autonomous agent architectures, and production inference pipelines.",
-                "speakers": [
-                    "Jim Zemlin (Executive Director at The Linux Foundation)",
-                    "Dr. Ion Stoica (Co-Founder & Executive Chairman at Databricks)",
-                    "Soumith Chintala (VP & Fellow at Meta)",
-                    "Stella Biderman (Executive Director at EleutherAI)"
-                ]
-            },
-            {
-                "title": "2026 Annual MOLA Conference",
-                "url": "https://www.chicagomola.com/",
-                "start_date": "2026-10-16",
-                "end_date": "2026-10-16",
-                "venue": "Loyola University Health System Chicago, 2160 S 1st Ave",
-                "city": "Chicago",
-                "state": "IL",
-                "organizer": "Medical Organization for Latino Advancement (MOLA)",
-                "category": "Healthcare / Medicines & Hospitals",
-                "description": "Annual academic medical and healthcare leadership symposium addressing clinical health equity, Hispanic physician advancement, medical education initiatives, and clinical mentorship across academic healthcare centers.",
-                "speakers": [
-                    "Dr. Pilar Ortega (President of MOLA & Clinical Associate Professor at UIC College of Medicine)",
-                    "Dr. Oscar Sanchez (Vice President of MOLA & Emergency Medicine Physician at Rush University Medical Center)",
-                    "Dr. Johnathan Lopez (Director of Academic Affairs at MOLA)"
-                ]
-            },
-            {
-                "title": "Small Business Tech Summit 2026",
-                "url": "https://www.eventbrite.com/d/tx--austin/small-business-tech-summit/",
-                "start_date": "2026-10-16",
-                "end_date": "2026-10-16",
-                "venue": "Austin Community College (Rio Grande Campus), 1212 Rio Grande St",
-                "city": "Austin",
-                "state": "TX",
-                "organizer": "Austin Chamber of Commerce & Texas Tech Alliance",
-                "category": "Enterprise AI / AI Solutions / Financial Services",
-                "description": "Technology and enterprise fintech summit bringing together small business owners, venture lenders, and AI technology providers to implement cloud infrastructure, automate financial workflows, and deploy enterprise AI solutions.",
-                "speakers": [
-                    "Marcus Taylor (Chief Digital Officer at Texas Innovation Corridor)",
-                    "Elena Rodriguez (Head of AI & Automation at Austin FinTech Ventures)",
-                    "David Sterling (Director of Enterprise Cloud Solutions at Southwest Capital Partners)"
-                ]
-            },
-            {
-                "title": "Tech at the Gap: Age of Disruption 2026",
-                "url": "https://www.techgapmd.com/",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-15",
-                "venue": "Rocky Gap Casino Resort, 16701 Lakeview Rd NE",
-                "city": "Flintstone",
-                "state": "MD",
-                "organizer": "Tech at the Gap & Allegany County Department of Economic Development",
-                "category": "Technology / AI Solutions",
-                "description": "Annual premier Mid-Atlantic regional technology conference focusing on the age of disruption, artificial intelligence innovations, cybersecurity defense, and enterprise tech adoption in rural and regional hubs.",
-                "speakers": [
-                    "Terry Jones (Founder of Travelocity & Founding Chairman of Kayak)",
-                    "Eva Galperin (Director of Cybersecurity at Electronic Frontier Foundation)",
-                    "Mike Hruska (President & CEO at Problem Solutions)"
-                ]
-            },
-            {
-                "title": "2026 Bend Venture Conference",
-                "url": "https://www.bendvc.com",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-16",
-                "venue": "Tower Theatre, 835 NW Wall St",
-                "city": "Bend",
-                "state": "OR",
-                "organizer": "Economic Development for Central Oregon (EDCO)",
-                "category": "Financial Services / Technology",
-                "description": "The largest angel and venture capital conference in the Pacific Northwest, bringing together growth-stage entrepreneurs, angel investors, and venture capitalists to deploy early-stage capital and keynote tech panels.",
-                "speakers": [
-                    "Brian Vierra (Venture Catalyst at EDCO)",
-                    "Jenn Lim (Managing Director at Cascade Seed Fund)"
-                ]
-            },
-            {
-                "title": "Midwest AI Summit 2026",
-                "url": "https://midwestaisummit.com",
-                "start_date": "2026-10-15",
-                "end_date": "2026-10-15",
-                "venue": "Crane Bay Event Center, 551 W Merrill St",
-                "city": "Indianapolis",
-                "state": "IN",
-                "organizer": "Midwest AI Collaborative & TechPoint",
-                "category": "Enterprise AI / AI Solutions",
-                "description": "The premier gathering of Midwest AI practitioners, enterprise leaders, and researchers exploring generative AI, multimodal systems, and responsible AI implementation in regulated industries.",
-                "speakers": [
-                    "Mark Becker (Director at Midwest AI Collaborative)",
-                    "Sarah Jenkins (Vice President of AI Strategy at Elevate Analytics)"
-                ]
-            }
         ]
 
         # Step 1: Collect live candidate conference listings
@@ -184,11 +82,11 @@ class EventbriteScraper(BaseScraper):
 
                             seen_urls.add(url)
                             candidate_items.append((name, url))
-                            if len(candidate_items) >= 5:
+                            if len(candidate_items) >= 25:
                                 break
                     except Exception:
                         pass
-                if len(candidate_items) >= 5:
+                if len(candidate_items) >= 25:
                     break
             except Exception as e:
                 logger.error(f"[{self.source_name}] Error crawling {disc_url}: {e}")
@@ -285,6 +183,25 @@ class EventbriteScraper(BaseScraper):
                     if valid_from:
                         pub_date = valid_from[:10]
 
+                # Extract full text and speaker mentions from page body
+                full_body_text = soup.get_text('\n', strip=True)
+                speaker_section_text = ""
+                for spk_marker in ["Featured Speakers", "Keynote Speakers", "Our Speakers", "Speakers"]:
+                    if spk_marker in full_body_text:
+                        s_idx = full_body_text.find(spk_marker)
+                        speaker_section_text = full_body_text[s_idx:s_idx + 1500]
+                        break
+
+                # Extract external official website if mentioned on Eventbrite page
+                official_site_url = ""
+                for a in soup.find_all('a', href=True):
+                    h_val = a['href'].strip()
+                    if h_val.startswith('http') and not any(ign in h_val.lower() for ign in ['eventbrite.com', 'google.com', 'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com', 'youtube.com', 'apple.com', 'android.com']):
+                        official_site_url = h_val.rstrip('.,;)\"')
+                        break
+                
+                primary_url = official_site_url if official_site_url else url
+
                 # Compose rich raw text for AI Agent verification
                 raw_text_parts = [
                     f"Conference Title: {title}",
@@ -292,8 +209,8 @@ class EventbriteScraper(BaseScraper):
                     f"Venue: {venue_name}",
                     f"Address: {street}, {city}, {state}, {country}",
                     f"Organizer: {organizer_name}",
-                    f"Official Event URL: {url}",
-                    f"Registration URL: {reg_url}",
+                    f"Official Event URL: {primary_url}",
+                    f"Registration URL: {url}",
                     f"Start Date: {start_date}",
                     f"End Date: {end_date}",
                 ]
@@ -301,6 +218,8 @@ class EventbriteScraper(BaseScraper):
                     raw_text_parts.append(f"Publication / Announcement Date: {pub_date}")
                 if performer_names:
                     raw_text_parts.append(f"Featured Speakers / Keynotes: {', '.join(performer_details)}")
+                if speaker_section_text:
+                    raw_text_parts.append(f"Agenda & Speakers Section:\n{speaker_section_text}")
                 if faq_text:
                     raw_text_parts.append(f"Conference Schedule & FAQ Details: {faq_text}")
 
@@ -308,7 +227,7 @@ class EventbriteScraper(BaseScraper):
 
                 events.append(RawEventData(
                     source_name=self.source_name,
-                    source_url=url,
+                    source_url=primary_url,
                     raw_title=title,
                     raw_text=raw_text,
                     raw_location=full_loc,
@@ -319,37 +238,6 @@ class EventbriteScraper(BaseScraper):
 
             except Exception as e:
                 logger.error(f"[{self.source_name}] Error parsing details for {url}: {e}")
-
-        # Ingest verified T-2 targets from Eventbrite
-        for tgt in verified_eventbrite_targets:
-            if tgt["start_date"] == exact_t2:
-                # Avoid duplicates if live crawler already found it
-                if any(e.source_url == tgt["url"] for e in events):
-                    continue
-                speaker_lines = "\n".join([f"• {s}" for s in tgt['speakers']])
-                raw_text_parts = [
-                    f"Conference Title: {tgt['title']}",
-                    f"Overview & Description: {tgt['description']}",
-                    f"Venue: {tgt['venue']}",
-                    f"Address: {tgt['venue']}, {tgt['city']}, {tgt['state']}, USA",
-                    f"Organizer: {tgt['organizer']}",
-                    f"Official Event URL: {tgt['url']}",
-                    f"Registration URL: {tgt['url']}",
-                    f"Start Date: {tgt['start_date']}",
-                    f"End Date: {tgt['end_date']}",
-                    f"Featured Keynote Speakers:\n{speaker_lines}",
-                    f"Category: {tgt['category']}"
-                ]
-                raw_text = "\n".join(raw_text_parts)
-                events.append(RawEventData(
-                    source_name=self.source_name,
-                    source_url=tgt["url"],
-                    raw_title=tgt["title"],
-                    raw_text=raw_text,
-                    raw_location=f"{tgt['venue']}, {tgt['city']}, {tgt['state']}, USA",
-                    raw_date=tgt["start_date"]
-                ))
-                logger.info(f"[{self.source_name}] Ingested genuine T-2 conference: {tgt['title']}")
 
         logger.info(f"[{self.source_name}] Live collection finished. Harvested {len(events)} genuine conferences.")
         return events

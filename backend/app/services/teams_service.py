@@ -9,7 +9,7 @@ from typing import List, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 from ..config import settings
-from ..models import Conference, Speaker, Attendee, TeamsNotification, make_conference_unique_key
+from ..models import Conference, Speaker, Attendee, TeamsNotification, WeeklyTeamsCardLog, make_conference_unique_key
 from .email_service import extract_us_state
 
 logger = logging.getLogger(__name__)
@@ -562,3 +562,210 @@ class TeamsWebhookService:
 
         res = self.send_consolidated_teams_card(db, conferences=conferences, force=force)
         return [res] if res.get("status") != "skipped" or force else []
+
+    # =========================================================================
+    # WEEKLY INBOUND SUMMARY TEAMS CARD (ONE GENERAL SUMMARY CARD)
+    # =========================================================================
+
+    def build_weekly_summary_card(
+        self,
+        weekly_run_id: str,
+        start_date: date,
+        end_date: date,
+        total_conferences: int,
+        industry_counts: Dict[str, int]
+    ) -> Dict[str, Any]:
+        """
+        Builds exactly ONE general inbound summary card for the weekly conference run.
+        Includes strictly:
+        - Target Sunday–Saturday dates
+        - Total unique conference count
+        - Industry-wise conference counts
+        Omits all conference names, speaker details, and individual conference cards.
+        """
+        date_range_str = f"Sunday, {start_date.strftime('%d %b %Y')} – Saturday, {end_date.strftime('%d %b %Y')}"
+
+        industry_facts = [
+            {"title": f"{ind}:", "value": f"{cnt} conference{'s' if cnt != 1 else ''}"}
+            for ind, cnt in sorted(industry_counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+        if not industry_facts:
+            industry_facts = [{"title": "Conferences:", "value": "None identified"}]
+
+        body = [
+            {
+                "type": "Container",
+                "style": "emphasis",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "📅 Weekly USA Conference Intelligence Summary",
+                        "weight": "Bolder",
+                        "size": "Large",
+                        "color": "Accent"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"Target Week: {date_range_str} | Run ID: {weekly_run_id}",
+                        "isSubtle": True,
+                        "spacing": "None"
+                    }
+                ]
+            },
+            {
+                "type": "Container",
+                "spacing": "Medium",
+                "items": [
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "Target Window:", "value": date_range_str},
+                            {"title": "Total Unique Conferences:", "value": str(total_conferences)},
+                            {"title": "Storage Status:", "value": "Saved to OneDrive Excel (tbl_weekly_conferences)"}
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "Container",
+                "spacing": "Medium",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "📊 Industry-Wise Conference Counts",
+                        "weight": "Bolder",
+                        "size": "Medium"
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": industry_facts
+                    }
+                ]
+            }
+        ]
+
+        return {
+            "type": "message",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "contentUrl": None,
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.4",
+                        "body": body
+                    }
+                }
+            ]
+        }
+
+    def send_weekly_summary_card(
+        self,
+        db: Session,
+        weekly_run_id: str,
+        start_date: date,
+        end_date: date,
+        total_conferences: int,
+        industry_counts: Dict[str, int],
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Dispatches exactly ONE general inbound summary card for the weekly conference run.
+        Enforces strict duplicate prevention: never sends duplicate summary cards on retries or restarts.
+        """
+        weekly_enabled = getattr(settings, "WEEKLY_AGENT_ENABLED", False)
+        weekly_card_enabled = getattr(settings, "WEEKLY_TEAMS_CARD_ENABLED", False)
+
+        if not (weekly_enabled and weekly_card_enabled) and not force:
+            logger.info("ℹ️ Weekly Teams summary card is disabled (WEEKLY_AGENT_ENABLED=false or WEEKLY_TEAMS_CARD_ENABLED=false).")
+            return {
+                "status": "disabled",
+                "message": "Weekly Teams card delivery is currently disabled by configuration."
+            }
+
+        # Check duplicate dispatch in WeeklyTeamsCardLog
+        existing = db.query(WeeklyTeamsCardLog).filter(
+            WeeklyTeamsCardLog.weekly_run_id == weekly_run_id,
+            WeeklyTeamsCardLog.status == "sent"
+        ).first()
+
+        if existing and not force:
+            logger.info(f"📢 [Weekly Teams] Summary card for run '{weekly_run_id}' was already sent at {existing.sent_at}. Skipping duplicate.")
+            return {
+                "status": "already_sent",
+                "weekly_run_id": weekly_run_id,
+                "sent_at": existing.sent_at.isoformat() if existing.sent_at else ""
+            }
+
+        card = self.build_weekly_summary_card(
+            weekly_run_id=weekly_run_id,
+            start_date=start_date,
+            end_date=end_date,
+            total_conferences=total_conferences,
+            industry_counts=industry_counts
+        )
+
+        json_path = self.outbox_dir / f"Weekly_Summary_{weekly_run_id}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(card, f, indent=2)
+
+        http_code = None
+        send_status = "sent"
+        error_msg = None
+
+        try:
+            req = urllib.request.Request(
+                self.webhook_url,
+                data=json.dumps(card).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                http_code = resp.status
+                resp_text = resp.read().decode("utf-8", errors="ignore")
+                logger.info(f"✅ [Weekly Teams] Summary card dispatched successfully (HTTP {http_code}).")
+        except urllib.error.HTTPError as e:
+            http_code = e.code
+            error_msg = f"HTTP {e.code}: {e.read().decode('utf-8', errors='ignore')}"
+            send_status = "failed"
+            logger.error(f"❌ [Weekly Teams] Webhook delivery failed: {error_msg}")
+        except Exception as e:
+            error_msg = str(e)
+            send_status = "failed"
+            logger.error(f"❌ [Weekly Teams] Webhook error: {e}")
+
+        # Persistent audit tracking
+        if not existing:
+            log_record = WeeklyTeamsCardLog(
+                weekly_run_id=weekly_run_id,
+                target_start_date=start_date,
+                target_end_date=end_date,
+                total_conferences=total_conferences,
+                industry_summary=json.dumps(industry_counts),
+                webhook_url=self.webhook_url,
+                status=send_status,
+                card_payload=json.dumps(card),
+                sent_at=datetime.utcnow(),
+                error_message=error_msg
+            )
+            db.add(log_record)
+        else:
+            existing.status = send_status
+            existing.sent_at = datetime.utcnow()
+            existing.error_message = error_msg
+        db.commit()
+
+        # Append to outbox log
+        now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        with open(self.outbox_log_path, "a", encoding="utf-8") as log_f:
+            log_f.write(f"[{now_iso}] WEEKLY_SUMMARY | RunID: {weekly_run_id} | Status: {send_status} | HTTP: {http_code} | Total: {total_conferences}\n")
+
+        return {
+            "status": send_status,
+            "http_code": http_code,
+            "weekly_run_id": weekly_run_id,
+            "total_conferences": total_conferences,
+            "archive_path": str(json_path),
+            "error": error_msg
+        }

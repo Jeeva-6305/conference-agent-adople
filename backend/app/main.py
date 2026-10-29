@@ -240,7 +240,10 @@ def download_excel():
 @app.get("/api/excel/preview")
 def preview_excel(sheet: Optional[str] = Query("USA Conferences")):
     manager = ExcelManager()
-    valid_sheets = ["USA Conferences", "Speakers", "Attendees"]
+    valid_sheets = [
+        "USA Conferences", "Speakers", "Attendees",
+        "weekly_conference", "weekly_speakers", "weekly_source_log"
+    ]
     if sheet not in valid_sheets:
         sheet = "USA Conferences"
     try:
@@ -452,5 +455,68 @@ def trigger_onedrive_excel_sync(db: Session = Depends(get_db)):
     service = OneDriveExcelService()
     result = service.sync_all(conferences=all_published, speakers=speakers)
     return result
+
+
+# =========================================================================
+# WEEKLY CONFERENCE WORKFLOW ENDPOINTS (SUNDAY - SATURDAY)
+# =========================================================================
+
+@app.get("/api/weekly/target-range")
+def get_weekly_target_range():
+    """Returns the current target Sunday-Saturday week and stable run ID."""
+    from .services.weekly_service import calculate_weekly_target_range
+    sunday, saturday, run_id = calculate_weekly_target_range()
+    return {
+        "today": date.today().isoformat(),
+        "target_sunday": sunday.isoformat(),
+        "target_saturday": saturday.isoformat(),
+        "run_id": run_id,
+        "enabled": getattr(settings, "WEEKLY_AGENT_ENABLED", False)
+    }
+
+
+@app.get("/api/weekly/conferences")
+def get_weekly_conferences(
+    run_id: Optional[str] = Query(None, description="Filter by weekly run ID"),
+    db: Session = Depends(get_db)
+):
+    """Returns verified weekly conferences scheduled for the target Sunday-Saturday week."""
+    from .models import WeeklyConference
+    query = db.query(WeeklyConference)
+    if run_id:
+        query = query.filter(WeeklyConference.weekly_run_id == run_id)
+    confs = query.order_by(WeeklyConference.start_date.asc(), WeeklyConference.conference_name.asc()).all()
+    return [c.to_dict() for c in confs]
+
+
+@app.get("/api/weekly/speakers")
+def get_weekly_speakers(
+    conference_id: Optional[str] = Query(None, description="Filter by Conference ID"),
+    run_id: Optional[str] = Query(None, description="Filter by weekly run ID"),
+    db: Session = Depends(get_db)
+):
+    """Returns verified weekly speaker profiles."""
+    from .models import WeeklySpeaker
+    query = db.query(WeeklySpeaker)
+    if conference_id:
+        query = query.filter(WeeklySpeaker.conference_id == conference_id)
+    if run_id:
+        query = query.filter(WeeklySpeaker.weekly_run_id == run_id)
+    spks = query.order_by(WeeklySpeaker.conference_name.asc(), WeeklySpeaker.speaker_name.asc()).all()
+    return [s.to_dict() for s in spks]
+
+
+@app.post("/api/trigger/weekly-scrape")
+def trigger_weekly_scrape(force: bool = Query(True, description="Force run even if disabled")):
+    """Executes the weekly conference scraping, validation, and append-only Excel sync workflow."""
+    from .services.weekly_service import WeeklyConferenceService
+    db = SessionLocal()
+    try:
+        svc = WeeklyConferenceService(db)
+        res = svc.run_weekly_workflow(force=force)
+        return res
+    finally:
+        db.close()
+
 
 
