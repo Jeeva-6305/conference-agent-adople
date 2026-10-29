@@ -128,7 +128,11 @@ class AllEventsScraper(BaseScraper):
                                     # Check for external official conference URL
                                     for a_link in ev_soup.find_all('a', href=True):
                                         h = a_link['href'].strip()
-                                        if h.startswith('http') and not any(ign in h.lower() for ign in ['allevents.in', 'google.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com']):
+                                        if h.startswith('http') and not any(ign in h.lower() for ign in [
+                                            'allevents.in', 'google.com', 'facebook.com', 'twitter.com',
+                                            'linkedin.com', 'instagram.com', 'apple.com', 'itunes.apple',
+                                            'play.google', 'apps.apple', 'youtube.com'
+                                        ]):
                                             official_site_url = h.rstrip('.,;)\"')
                                             break
 
@@ -142,7 +146,7 @@ class AllEventsScraper(BaseScraper):
                                 f"Start Date: {s_date}",
                                 f"End Date: {e_date}",
                                 f"Organizer: {organizer_name}",
-                                f"Official Event URL: {official_site_url}",
+                                f"Official Event URL: {official_site_url if official_site_url != url else url}",
                                 f"Registration URL: {url}",
                                 f"Source: All Events (allevents.in)",
                                 f"Country: USA"
@@ -154,7 +158,7 @@ class AllEventsScraper(BaseScraper):
 
                             events.append(RawEventData(
                                 source_name=self.source_name,
-                                source_url=official_site_url,
+                                source_url=url,
                                 raw_title=name,
                                 raw_text=raw_text,
                                 raw_location=full_location,
