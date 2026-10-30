@@ -78,10 +78,10 @@ def is_company_match(source_company: str, candidate_company: str) -> bool:
 class ApolloService:
     """
     Official Apollo.io REST API Client:
-    - People Match endpoint (POST /api/v1/people/match) for professional email & profile enrichment.
+    - Dedicated strictly to LinkedIn Profile Discovery & Candidate Resolution.
     - People Search endpoint (POST /api/v1/mixed_people/search) for missing LinkedIn profile discovery.
     - Identity verification between target speaker details and Apollo returned data.
-    - Graceful handling of API credit exhaustion, rate limits, plan restrictions (e.g. Free plan), and timeouts.
+    - Professional email enrichment has been decoupled and delegated exclusively to Hunter.io API.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -111,123 +111,14 @@ class ApolloService:
         domain: str = ""
     ) -> Dict[str, Any]:
         """
-        Calls Apollo's official People Match endpoint:
-        POST https://api.apollo.io/api/v1/people/match
-        Finds the speaker's original professional email and verified profile attributes.
+        Disconnected: Apollo email enrichment has been replaced by Hunter.io.
+        Apollo is strictly restricted to LinkedIn discovery and candidate resolution.
         """
-        if not self.api_key:
-            return {
-                "status": "error",
-                "message": "APOLLO_API_KEY is not configured in backend environment."
-            }
-
-        self._rate_limit_throttle()
-
-        name_parts = name.strip().split()
-        first_name = name_parts[0] if name_parts else ""
-        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
-
-        payload: Dict[str, Any] = {
-            "name": name.strip(),
-            "first_name": first_name,
-            "last_name": last_name,
-            "reveal_personal_emails": False
+        logger.info(f"ℹ️ Apollo match_person is disconnected for '{name}'. Professional email discovery is handled exclusively by Hunter.io.")
+        return {
+            "status": "disconnected",
+            "message": "Apollo email enrichment disconnected in favor of Hunter.io API."
         }
-
-        if company:
-            payload["organization_name"] = company.strip()
-        if job_title:
-            payload["title"] = job_title.strip()
-        if linkedin_url and "linkedin.com" in linkedin_url.lower():
-            payload["linkedin_url"] = linkedin_url.strip()
-        if domain:
-            payload["domain"] = domain.strip()
-
-        url = f"{self.base_url}/people/match"
-
-        for attempt in range(1, 4):
-            try:
-                resp = requests.post(url, json=payload, headers=self.headers, timeout=15)
-                status_code = resp.status_code
-
-                if status_code == 200:
-                    data = resp.json()
-                    person = data.get("person")
-                    if not person:
-                        return {
-                            "status": "not_found",
-                            "message": "Person match returned no profile record in Apollo."
-                        }
-
-                    # Validate identity before accepting
-                    ret_name = person.get("name") or f"{person.get('first_name', '')} {person.get('last_name', '')}".strip()
-                    ret_org = person.get("organization", {}).get("name") if isinstance(person.get("organization"), dict) else ""
-
-                    if not is_name_match(name, ret_name):
-                        logger.warning(
-                            f"Apollo Match Identity Mismatch: Requested '{name}', but Apollo returned '{ret_name}'. Rejecting match."
-                        )
-                        return {
-                            "status": "needs_review",
-                            "message": f"Identity mismatch: returned name '{ret_name}' does not match speaker '{name}'."
-                        }
-
-                    email = person.get("email") or ""
-                    email_status = person.get("email_status") or "verified" if email else "unavailable"
-                    ret_li = person.get("linkedin_url") or ""
-
-                    logger.info(f"✅ Apollo People Match: Verified '{name}' ({company}) -> Email: '{email}', Status: '{email_status}'")
-                    return {
-                        "status": "success",
-                        "email": email,
-                        "email_status": email_status,
-                        "linkedin_url": ret_li,
-                        "organization_name": ret_org,
-                        "title": person.get("title") or "",
-                        "raw_person": person
-                    }
-
-                elif status_code == 403:
-                    err_json = resp.json() if resp.text else {}
-                    err_msg = err_json.get("error", "Access Denied")
-                    logger.warning(f"⚠️ Apollo API 403: {err_msg}")
-                    return {
-                        "status": "api_restricted",
-                        "code": 403,
-                        "message": err_msg
-                    }
-
-                elif status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", 2 * attempt))
-                    logger.warning(f"Apollo API Rate Limit (429). Backing off for {retry_after}s (Attempt {attempt}/3)...")
-                    time.sleep(retry_after)
-                    continue
-
-                elif status_code == 404:
-                    return {
-                        "status": "not_found",
-                        "code": 404,
-                        "message": "Speaker profile not found in Apollo database."
-                    }
-
-                else:
-                    logger.warning(f"Apollo API HTTP {status_code}: {resp.text[:200]}")
-                    return {
-                        "status": "error",
-                        "code": status_code,
-                        "message": f"Apollo API HTTP {status_code}: {resp.text[:200]}"
-                    }
-
-            except requests.Timeout:
-                logger.warning(f"Apollo API match timeout on '{name}' (Attempt {attempt}/3)")
-                if attempt == 3:
-                    return {"status": "error", "message": "Apollo API request timed out."}
-                time.sleep(1)
-            except Exception as e:
-                logger.error(f"Apollo API match exception for '{name}': {e}")
-                return {"status": "error", "message": str(e)}
-
-        return {"status": "error", "message": "Exceeded retry attempts on Apollo People Match."}
 
     def search_people(
         self,
@@ -286,8 +177,6 @@ class ApolloService:
                     return {
                         "status": "success",
                         "linkedin_url": cand["linkedin_url"],
-                        "email": cand["email"],
-                        "email_status": cand["email_status"],
                         "candidate": cand
                     }
                 elif len(matched_candidates) > 1:

@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from .apollo_service import ApolloService
+from .hunter_service import HunterService
 from .onedrive_excel_service import OneDriveExcelService
 from ..storage.excel_manager import ExcelManager
 from ..models import WeeklySpeaker, Speaker
@@ -31,19 +32,22 @@ def validate_personal_linkedin_url(url: Optional[str]) -> str:
 class SpeakerEnrichmentService:
     """
     Automated Speaker Profile Enrichment Engine:
-    1. Uses Apollo API People Match (/api/v1/people/match) to find official professional emails
-       using speaker name, company, and LinkedIn URL.
-    2. Uses Apollo People Search (/api/v1/mixed_people/search) and verified public identity resolution
-       to discover missing individual LinkedIn profiles (never company pages, never fabricated).
+    1. Uses Apollo API strictly for LinkedIn Profile Discovery (/api/v1/mixed_people/search)
+       and candidate resolution for speakers missing LinkedIn URLs.
+    2. Uses Hunter.io API official Email Finder (/v2/email-finder) and Email Verifier (/v2/email-verifier)
+       strictly for professional business email discovery and verification.
     3. Compares returned attributes (name, company, role) to verify identity before accepting.
     4. Safely updates PostgreSQL database, Local Excel workbook, and OneDrive tbl_weekly_speakers in-place.
     5. Preserves all historical rows, existing emails, table structures, and IDs without duplicates.
-    6. Gracefully handles Apollo API rate limits, credit limits, plan restrictions (Free plan), and timeouts.
+    6. Never overwrites a previously verified email with an unverified result.
+    7. Gracefully handles API rate limits, credit limits, plan restrictions, and timeouts.
     """
 
     def __init__(self, db: Session):
         self.db = db
         self.apollo = ApolloService()
+        self.hunter = HunterService()
+        self.hunter_enabled = getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
         self.onedrive_svc = OneDriveExcelService()
         self.excel_mgr = ExcelManager()
 
@@ -58,8 +62,8 @@ class SpeakerEnrichmentService:
     ) -> Dict[str, Any]:
         """
         Enriches a single speaker:
-        1. Resolves missing LinkedIn profile via Apollo search or verified identity matching.
-        2. Queries Apollo People Match for genuine professional email address.
+        1. Resolves missing LinkedIn profile via Apollo People Search or verified identity matching.
+        2. Queries Hunter.io Email Finder API for genuine professional email address and verification.
         3. Returns verified enrichment details and status flags.
         """
         clean_name = (speaker_name or "").strip()
@@ -75,11 +79,11 @@ class SpeakerEnrichmentService:
         enrichment_stage = "pending"
 
         # -------------------------------------------------------------
-        # Step 1: Discover Missing LinkedIn Profile if empty
+        # Step 1: Discover Missing LinkedIn Profile if empty (Apollo only)
         # -------------------------------------------------------------
         if not discovered_li:
             logger.info(f"🔍 [Enrichment] Missing LinkedIn URL for '{clean_name}' at '{clean_company}'. Searching...")
-            # Try Apollo Search first
+            # Try Apollo Search strictly for LinkedIn discovery
             apollo_search = self.apollo.search_people(
                 name=clean_name,
                 company=clean_company,
@@ -92,12 +96,8 @@ class SpeakerEnrichmentService:
                     discovered_li = cand_li
                     linkedin_status = "verified"
                     logger.info(f"✅ [Enrichment] Discovered LinkedIn URL via Apollo for '{clean_name}': {discovered_li}")
-                    if apollo_search.get("email"):
-                        professional_email = apollo_search.get("email")
-                        email_source = "apollo.io"
-                        verification_status = apollo_search.get("email_status") or "verified"
 
-            # If Apollo search did not return a profile or was plan-restricted, use verified discovery engine
+            # If Apollo search did not return a profile or was restricted, use verified discovery engine
             if not discovered_li:
                 try:
                     verified_url = discover_and_verify_linkedin_profile(
@@ -116,49 +116,42 @@ class SpeakerEnrichmentService:
                     linkedin_status = "needs_review"
 
         # -------------------------------------------------------------
-        # Step 2: Query Apollo People Match for Professional Email
+        # Step 2: Query Hunter.io API for Genuine Professional Email
         # -------------------------------------------------------------
-        if not professional_email:
-            match_res = self.apollo.match_person(
-                name=clean_name,
+        if self.hunter_enabled:
+            # Query Hunter Email Finder API using speaker name, company, and LinkedIn URL
+            hunter_res = self.hunter.find_email(
+                full_name=clean_name,
                 company=clean_company,
-                job_title=clean_title,
                 linkedin_url=discovered_li
             )
 
-            status = match_res.get("status")
-            if status == "success":
-                ret_email = match_res.get("email")
+            h_status = hunter_res.get("status")
+            if h_status == "success":
+                ret_email = hunter_res.get("email")
                 if ret_email:
                     professional_email = ret_email
-                    email_source = "apollo.io"
-                    verification_status = match_res.get("email_status") or "verified"
-                    enrichment_stage = "enriched"
-                    logger.info(f"✅ [Enrichment] Apollo matched email for '{clean_name}': {professional_email} ({verification_status})")
+                    email_source = "hunter.io"
+                    verification_status = hunter_res.get("verification_status") or "verified"
+                    enrichment_stage = "enriched_via_hunter"
+                    logger.info(
+                        f"✅ [Enrichment] Hunter.io matched email for '{clean_name}': "
+                        f"{professional_email} ({verification_status})"
+                    )
                 else:
-                    enrichment_stage = "email_unavailable_in_apollo"
-
-                # If Apollo returned a LinkedIn URL and speaker lacked one, capture it
-                if not discovered_li and match_res.get("linkedin_url"):
-                    cand_li = validate_personal_linkedin_url(match_res.get("linkedin_url"))
-                    if cand_li:
-                        discovered_li = cand_li
-                        linkedin_status = "verified"
-
-            elif status == "api_restricted":
-                enrichment_stage = "apollo_free_plan_restricted"
-                logger.warning(
-                    f"⚠️ [Enrichment] Apollo API People Match restricted on current plan tier for '{clean_name}'. "
-                    f"Paid plan required to unlock live Apollo emails."
-                )
-            elif status == "needs_review":
-                enrichment_stage = "identity_needs_review"
-            elif status == "not_found":
-                enrichment_stage = "not_found_in_apollo"
+                    enrichment_stage = "not_found_in_hunter"
+            elif h_status == "quota_exceeded":
+                enrichment_stage = "hunter_quota_exceeded"
+                logger.warning(f"⚠️ [Enrichment] Hunter.io API quota limit reached: {hunter_res.get('message')}")
+            elif h_status == "auth_error":
+                enrichment_stage = "hunter_auth_error"
+                logger.error(f"❌ [Enrichment] Hunter.io API authentication error: {hunter_res.get('message')}")
+            elif h_status == "not_found":
+                enrichment_stage = "not_found_in_hunter"
             else:
-                enrichment_stage = match_res.get("message", "match_failed")
+                enrichment_stage = hunter_res.get("message", "hunter_finder_failed")
         else:
-            enrichment_stage = "enriched_via_search"
+            enrichment_stage = "hunter_enrichment_disabled"
 
         if discovered_li and linkedin_status == "verified" and not verification_status:
             verification_status = "verified"
@@ -183,13 +176,13 @@ class SpeakerEnrichmentService:
     ) -> Dict[str, Any]:
         """
         Executes automated enrichment for weekly speakers:
-        - Resolves missing LinkedIn URLs.
-        - Enriches professional emails via Apollo API.
+        - Resolves missing LinkedIn URLs via Apollo.
+        - Enriches professional emails via Hunter.io API.
         - Updates PostgreSQL, Local Excel, and OneDrive tbl_weekly_speakers in-place.
         - Avoids reprocessing already enriched speakers unless force=True.
         """
         start_time = time.time()
-        logger.info("🚀 [Speaker Enrichment] Starting automated speaker LinkedIn & Apollo email enrichment...")
+        logger.info("🚀 [Speaker Enrichment] Starting automated speaker LinkedIn (Apollo) & Professional Email (Hunter.io) enrichment...")
 
         # 1. Fetch existing rows from OneDrive to have the full picture
         onedrive_speaker_rows = {}
@@ -223,7 +216,7 @@ class SpeakerEnrichmentService:
             "linkedin_discovered": 0,
             "emails_enriched": 0,
             "already_complete": 0,
-            "api_restricted_count": 0,
+            "quota_exceeded_count": 0,
             "not_found_count": 0,
             "onedrive_updates": 0,
             "local_excel_updates": 0,
@@ -275,9 +268,9 @@ class SpeakerEnrichmentService:
             new_ver_status = result.get("verification_status") or "needs_review"
             stage = result.get("enrichment_stage")
 
-            if stage == "apollo_free_plan_restricted":
-                stats["api_restricted_count"] += 1
-            elif stage in ["not_found_in_apollo", "not_found"]:
+            if stage == "hunter_quota_exceeded":
+                stats["quota_exceeded_count"] += 1
+            elif stage in ["not_found_in_hunter", "not_found"]:
                 stats["not_found_count"] += 1
 
             has_changes = False
@@ -292,12 +285,15 @@ class SpeakerEnrichmentService:
                 spk.linkedin_status = new_li_status
                 has_changes = True
 
-            # Update email if discovered
+            # Update email if discovered, safeguarding against downgrading a verified email
             if new_email and new_email != current_email:
-                spk.professional_email = new_email
-                spk.email_source_url = new_email_source
-                stats["emails_enriched"] += 1
-                has_changes = True
+                current_is_verified = (spk.verification_status == "verified" and bool(current_email))
+                new_is_verified = (new_ver_status == "verified")
+                if not current_is_verified or new_is_verified:
+                    spk.professional_email = new_email
+                    spk.email_source_url = new_email_source or "hunter.io"
+                    stats["emails_enriched"] += 1
+                    has_changes = True
 
             if new_ver_status and spk.verification_status != new_ver_status:
                 spk.verification_status = new_ver_status
@@ -347,8 +343,8 @@ class SpeakerEnrichmentService:
             if od_row_idx is not None and od_vals is not None:
                 try:
                     updated_vals = list(od_vals)
-                    # Ensure row has at least 14 columns
-                    while len(updated_vals) < 14:
+                    # Ensure row has at least 18 columns matching table schema
+                    while len(updated_vals) < 18:
                         updated_vals.append("")
 
                     # Col 6: Personal_LinkedIn_URL
@@ -384,4 +380,3 @@ class SpeakerEnrichmentService:
             f"OneDrive updates: {stats['onedrive_updates']} | DB updates: {stats['db_updates']}"
         )
         return stats
-

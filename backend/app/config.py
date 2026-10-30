@@ -85,9 +85,14 @@ class Settings:
     WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
     WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
 
-    # Apollo API & Speaker Enrichment
+    # Apollo API (LinkedIn Discovery Only)
     APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")
     APOLLO_ENRICHMENT_ENABLED: bool = os.getenv("APOLLO_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+
+    # Hunter.io API (Professional Email Discovery & Verification Only)
+    HUNTER_API_KEY: str = os.getenv("HUNTER_API_KEY", "")
+    HUNTER_EMAIL_ENRICHMENT_ENABLED: bool = os.getenv("HUNTER_EMAIL_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+    HUNTER_BASE_URL: str = os.getenv("HUNTER_BASE_URL", "https://api.hunter.io/v2")
 
 settings = Settings()
 

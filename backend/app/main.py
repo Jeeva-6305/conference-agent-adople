@@ -525,7 +525,7 @@ def trigger_weekly_speaker_enrichment(
     db: Session = Depends(get_db)
 ):
     """
-    Automates missing LinkedIn profile discovery and Apollo API professional email enrichment
+    Automates missing LinkedIn profile discovery (Apollo) and professional email enrichment (Hunter.io)
     for speakers in the weekly conference workflow. Updates PostgreSQL, Local Excel, and OneDrive tbl_weekly_speakers.
     """
     from .services.speaker_enrichment_service import SpeakerEnrichmentService

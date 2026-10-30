@@ -464,9 +464,10 @@ class WeeklyConferenceService:
                 "weekly_run_id": run_id
             }
 
-        # 8b. Automated Speaker LinkedIn Resolution & Apollo Professional Email Enrichment
+        # 8b. Automated Speaker LinkedIn Resolution (Apollo) & Professional Email Enrichment (Hunter.io)
         enrichment_res = {}
-        if getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True) and accepted_speakers:
+        speaker_enrichment_enabled = getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True) or getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
+        if speaker_enrichment_enabled and accepted_speakers:
             try:
                 from .speaker_enrichment_service import SpeakerEnrichmentService
                 enrich_svc = SpeakerEnrichmentService(self.db)
