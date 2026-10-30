@@ -636,6 +636,16 @@ class OneDriveExcelService:
                         rows_map[(conf_id, spk_name)] = (row_idx, values)
         return rows_map
 
+    def update_weekly_speaker_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates an existing weekly speaker row in-place in 'tbl_weekly_speakers' on OneDrive.
+        Preserves all row IDs, historical records, and table columns.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
     def sync_weekly_conferences(self, conferences: List[WeeklyConference], run_id: str) -> Dict[str, Any]:
         """
         Appends genuinely new weekly conferences to 'tbl_weekly_conferences' in OneDrive Excel.

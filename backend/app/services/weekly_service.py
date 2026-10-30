@@ -464,6 +464,17 @@ class WeeklyConferenceService:
                 "weekly_run_id": run_id
             }
 
+        # 8b. Automated Speaker LinkedIn Resolution & Apollo Professional Email Enrichment
+        enrichment_res = {}
+        if getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True) and accepted_speakers:
+            try:
+                from .speaker_enrichment_service import SpeakerEnrichmentService
+                enrich_svc = SpeakerEnrichmentService(self.db)
+                enrichment_res = enrich_svc.enrich_weekly_speakers(speakers=accepted_speakers)
+                logger.info(f"✅ [Weekly Workflow] Automated speaker enrichment complete: {enrichment_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Workflow] Speaker enrichment notice: {e}")
+
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts
         industry_counts: Dict[str, int] = {}
@@ -500,6 +511,7 @@ class WeeklyConferenceService:
             "total_speakers": len(accepted_speakers),
             "industry_breakdown": industry_counts,
             "onedrive_excel": excel_sync_res,
+            "speaker_enrichment": enrichment_res,
             "teams_card": teams_res,
             "duration_seconds": elapsed
         }

@@ -519,4 +519,40 @@ def trigger_weekly_scrape(force: bool = Query(True, description="Force run even 
         db.close()
 
 
+@app.post("/api/weekly/speakers/enrich")
+def trigger_weekly_speaker_enrichment(
+    force: bool = Query(False, description="Force re-enrichment of already processed speakers"),
+    db: Session = Depends(get_db)
+):
+    """
+    Automates missing LinkedIn profile discovery and Apollo API professional email enrichment
+    for speakers in the weekly conference workflow. Updates PostgreSQL, Local Excel, and OneDrive tbl_weekly_speakers.
+    """
+    from .services.speaker_enrichment_service import SpeakerEnrichmentService
+    svc = SpeakerEnrichmentService(db)
+    result = svc.enrich_weekly_speakers(force=force)
+    return result
+
+
+@app.get("/api/weekly/speakers/enrichment-status")
+def get_weekly_speaker_enrichment_status(db: Session = Depends(get_db)):
+    """Provides summary statistics on enriched vs pending weekly speakers."""
+    from .models import WeeklySpeaker
+    total = db.query(WeeklySpeaker).count()
+    with_li = db.query(WeeklySpeaker).filter(WeeklySpeaker.personal_linkedin_url != "").count()
+    with_email = db.query(WeeklySpeaker).filter(WeeklySpeaker.professional_email != "").count()
+    needs_review = db.query(WeeklySpeaker).filter(WeeklySpeaker.verification_status == "needs_review").count()
+    verified = db.query(WeeklySpeaker).filter(WeeklySpeaker.verification_status == "verified").count()
+    return {
+        "total_speakers": total,
+        "with_linkedin_url": with_li,
+        "missing_linkedin_url": total - with_li,
+        "with_professional_email": with_email,
+        "missing_professional_email": total - with_email,
+        "status_verified": verified,
+        "status_needs_review": needs_review
+    }
+
+
+
 

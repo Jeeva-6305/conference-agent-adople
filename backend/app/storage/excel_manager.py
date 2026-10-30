@@ -488,6 +488,65 @@ class ExcelManager:
             "added_speakers": added_spks
         }
 
+    def update_weekly_speaker_enrichment(
+        self,
+        speaker_id: str,
+        conference_id: str,
+        speaker_name: str,
+        personal_linkedin_url: Optional[str] = None,
+        linkedin_status: Optional[str] = None,
+        professional_email: Optional[str] = None,
+        email_source_url: Optional[str] = None,
+        verification_status: Optional[str] = None,
+        last_checked_at: Optional[str] = None
+    ) -> bool:
+        """
+        Updates an existing speaker row in-place on the local 'weekly_speakers' sheet.
+        Preserves all other row data and columns.
+        """
+        if not os.path.exists(self.file_path):
+            return False
+        wb = load_workbook(self.file_path)
+        if "weekly_speakers" not in wb.sheetnames:
+            return False
+        ws = wb["weekly_speakers"]
+
+        updated = False
+        target_sid = (speaker_id or "").strip().lower()
+        target_cid = (conference_id or "").strip().lower()
+        target_name = (speaker_name or "").strip().lower()
+
+        for row_idx in range(2, ws.max_row + 1):
+            sid_val = str(ws.cell(row=row_idx, column=1).value or "").strip().lower()
+            cid_val = str(ws.cell(row=row_idx, column=2).value or "").strip().lower()
+            name_val = str(ws.cell(row=row_idx, column=4).value or "").strip().lower()
+
+            match = False
+            if target_sid and sid_val and target_sid == sid_val:
+                match = True
+            elif target_cid and target_name and cid_val == target_cid and name_val == target_name:
+                match = True
+
+            if match:
+                if personal_linkedin_url:
+                    ws.cell(row=row_idx, column=7).value = personal_linkedin_url
+                if linkedin_status:
+                    ws.cell(row=row_idx, column=8).value = linkedin_status
+                if professional_email:
+                    ws.cell(row=row_idx, column=9).value = professional_email
+                if email_source_url:
+                    ws.cell(row=row_idx, column=10).value = email_source_url
+                if verification_status:
+                    ws.cell(row=row_idx, column=12).value = verification_status
+                if last_checked_at:
+                    ws.cell(row=row_idx, column=13).value = last_checked_at
+                updated = True
+                break
+
+        if updated:
+            self._safe_save(wb)
+        return updated
+
 
     def read_excel_as_dataframe(self, sheet_name: str = "USA Conferences") -> pd.DataFrame:
         self._ensure_file_exists()

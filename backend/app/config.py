@@ -85,5 +85,9 @@ class Settings:
     WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
     WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
 
+    # Apollo API & Speaker Enrichment
+    APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")
+    APOLLO_ENRICHMENT_ENABLED: bool = os.getenv("APOLLO_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+
 settings = Settings()
 
