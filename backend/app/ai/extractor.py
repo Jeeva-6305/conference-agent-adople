@@ -320,7 +320,8 @@ def normalize_text(text: str) -> str:
 TARGET_CATEGORIES = {
     "Healthcare": [
         "healthcare", "health tech", "digital health", "health ai", "healthcare ai",
-        "medical technology", "healthtech", "telehealth", "health care", "patient care", "health system"
+        "medical technology", "healthtech", "telehealth", "health care", "patient care", "health system",
+        "public health", "health association", "health"
     ],
     "Medicines & Hospitals": [
         "medicines", "medicine", "medical", "hospitals", "hospital", "clinical", "pharmaceuticals", "pharmaceutical",
@@ -330,30 +331,139 @@ TARGET_CATEGORIES = {
     "Enterprise AI": [
         "enterprise ai", "generative ai", "agentic ai", "ai agents", "enterprise automation",
         "business ai", "ai transformation", "ai for business", "genai", "llm", "large language model",
-        "agentic", "autonomous agents", "ai in business", "ai", "mitai", "mit ai"
+        "agentic", "autonomous agents", "ai in business"
     ],
     "AI Solutions": [
         "artificial intelligence", "ai solutions", "machine learning", "generative ai",
         "ai platforms", "ai applications", "ai technology", "deep learning", "neural network",
-        "computer vision", "nlp", "predictive analytics", "data science", "ai", "mitai"
+        "computer vision", "nlp", "predictive analytics", "data science"
     ],
     "Financial Services": [
         "financial services", "fintech", "banking", "insurance", "investment", "payments",
         "financial technology", "ai in finance", "wealth management", "insurtech", "venture capital",
-        "private equity", "asset management", "finance", "financial", "mortgage", "lending", "real estate finance"
+        "private equity", "asset management", "finance", "mortgage", "lending", "real estate finance"
     ],
     "Technology": [
         "technology", "tech", "software", "cloud", "cybersecurity", "security",
         "engineering", "devops", "platform", "data", "developer", "hardware",
-        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation",
-        "automotive", "manufacturing", "industrial", "trade show"
+        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation"
     ]
 }
+
+# Strict 5 industries allowed for T-2 conferences
+T2_ALLOWED_INDUSTRIES = [
+    "Enterprise AI",
+    "Healthcare",
+    "Financial Services",
+    "Medical and Hospital",
+    "Medicines & Hospitals",
+    "AI Solutions"
+]
+
+T2_ALLOWED_CATEGORIES = {
+    "Healthcare": TARGET_CATEGORIES["Healthcare"],
+    "Medicines & Hospitals": TARGET_CATEGORIES["Medicines & Hospitals"],
+    "Enterprise AI": TARGET_CATEGORIES["Enterprise AI"],
+    "AI Solutions": TARGET_CATEGORIES["AI Solutions"],
+    "Financial Services": TARGET_CATEGORIES["Financial Services"]
+}
+
+T2_EXCLUDED_PATTERNS = [
+    r"\bsigning\s+ceremony\b",
+    r"\bbook\s+signing\b",
+    r"\bauthor\s+(?:talk|signing|reading)\b",
+    r"\bwine\b",
+    r"\bfood\s+(?:festival|show|expo|tasting)\b",
+    r"\bbeer\b",
+    r"\bgrocery\s+run\b",
+    r"\bretreat\b",
+    r"\bchurch\b",
+    r"\bministry\b",
+    r"\bmen'?s\s+conference\b",
+    r"\bwomen'?s\s+retreat\b",
+    r"\bprayer\b",
+    r"\brevival\b",
+    r"\bgala\b",
+    r"\bdinner\b",
+    r"\bgun\s+show\b",
+    r"\bknife\s+show\b",
+    r"\bfirearm\b",
+    r"\blodging\b",
+    r"\bhotel\s+(?:trade\s+show|expo|convention)\b",
+    r"\bgift\s+(?:expo|exposition|show)\b",
+    r"\btextiles?\s+expo\b",
+    r"\bdiving\s+equipment\b",
+    r"\bautomotive\s+trade\s+show\b",
+    r"\bsema\s+show\b",
+    r"\bmortuary\b",
+    r"\bembalm(?:ing|ers?)\b",
+    r"\bfuneral\b",
+    r"\bbonner\b",
+    r"\bbreath\b",
+    r"\bsound\s+therapy\b",
+    r"\btherapy\b",
+    r"\bcomedy\b",
+    r"\bconcert\b",
+    r"\bstage\b",
+    r"\btheater\b",
+    r"\btheatre\b"
+]
+
+
+def is_valid_deep_conference_url(url: Optional[str]) -> bool:
+    """Verifies that a conference URL is a deep, valid event link and not a portal root."""
+    if not url or not isinstance(url, str):
+        return False
+    u = url.strip().lower()
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return False
+    generic_roots = [
+        "https://www.eventbrite.com", "http://www.eventbrite.com",
+        "https://www.eventbrite.ca", "http://www.eventbrite.ca",
+        "https://eventbrite.com", "https://eventbrite.ca",
+        "https://lu.ma", "http://lu.ma", "https://www.lu.ma",
+        "https://allevents.in", "http://allevents.in", "https://www.allevents.in",
+        "https://10times.com", "http://10times.com", "https://www.10times.com",
+        "https://www.meetup.com", "http://www.meetup.com",
+        "https://meetup.com"
+    ]
+    u_clean = u.rstrip("/")
+    if u_clean in [r.rstrip("/") for r in generic_roots]:
+        return False
+    return True
+
+
+def match_t2_categories(text: str) -> list:
+    """
+    Identifies whether text matches the 5 strict T-2 industries:
+    1. Enterprise AI
+    2. Healthcare
+    3. Financial Services
+    4. Medical and Hospital (Medicines & Hospitals)
+    5. AI Solutions
+    Strictly excludes unrelated events, signing ceremonies, festivals, retreats, etc.
+    """
+    if not text:
+        return []
+    norm = normalize_text(text)
+
+    # Check exclusion patterns first
+    for pat in T2_EXCLUDED_PATTERNS:
+        if re.search(pat, norm, re.I):
+            return []
+
+    matched = []
+    for cat_name, kw_list in T2_ALLOWED_CATEGORIES.items():
+        for kw in kw_list:
+            if re.search(rf"\b{re.escape(kw)}\b", norm, re.I):
+                matched.append(cat_name)
+                break
+    return matched
 
 
 def match_target_categories(text: str) -> list:
     """
-    Identifies which of the 6 core business categories the conference belongs to:
+    Identifies which of the core business categories the conference belongs to:
     1. Healthcare
     2. Medicine & Hospitals
     3. Enterprise AI
@@ -858,14 +968,25 @@ class AIConferenceExtractor:
                         parsed = json.loads(response.text)
                         extraction = AIConferenceExtraction(**parsed)
                         if extraction.is_valid_usa_conference:
-                            # Verify that conference matches at least one of the 6 core business categories
-                            matched_cats = match_target_categories(
+                            # Verify that conference matches at least one of the 5 strict T-2 business categories
+                            # (Enterprise AI, Healthcare, Financial Services, Medical and Hospital, AI Solutions)
+                            # and does not match any excluded patterns (signing ceremonies, wine/food festivals, retreats, etc.)
+                            matched_cats = match_t2_categories(
                                 f"{extraction.conference_title} {extraction.industry_category} {extraction.description} {raw_data.raw_text}"
                             )
                             if not matched_cats:
-                                logger.info(f"Skipping '{extraction.conference_title}': does not match any of the 6 required business categories.")
+                                logger.info(f"Skipping '{extraction.conference_title}': does not match any of the 5 required T-2 business categories or is excluded.")
                                 return None
                             extraction.industry_category = " / ".join(matched_cats)
+
+                            # Validate deep URL (must not be generic root portal like eventbrite.ca)
+                            if not is_valid_deep_conference_url(extraction.official_conference_url):
+                                extraction.official_conference_url = raw_data.source_url
+                            if not is_valid_deep_conference_url(extraction.registration_url):
+                                extraction.registration_url = raw_data.source_url
+                            if not is_valid_deep_conference_url(extraction.official_conference_url):
+                                logger.warning(f"Skipping '{extraction.conference_title}': invalid/root portal URL ({extraction.official_conference_url})")
+                                return None
 
                             # Populate attendee profile details if missing
                             if not extraction.attendee_details:
@@ -942,11 +1063,15 @@ class AIConferenceExtractor:
         if not any(re.search(rf"\b{w}\b", text, re.I) for w in usa_indicators):
             return None
 
-        # Check Category: Must match at least one of the 6 core business categories
-        matched_cats = match_target_categories(text)
+        # Check Category: Must match at least one of the 5 strict T-2 business categories
+        matched_cats = match_t2_categories(text)
         if not matched_cats:
             return None
         category = " / ".join(matched_cats)
+
+        # Validate URL (must not be generic root portal like eventbrite.ca)
+        if not is_valid_deep_conference_url(raw_data.source_url):
+            return None
 
         # Parse real date from raw_date or text
         start_date = None

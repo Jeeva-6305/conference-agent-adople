@@ -6,7 +6,13 @@ from ..config import settings
 from ..database import SessionLocal
 from ..models import Conference, Speaker, Attendee
 from ..scrapers.orchestrator import ScraperOrchestrator
-from ..ai.extractor import AIConferenceExtractor, match_target_categories
+from ..ai.extractor import (
+    AIConferenceExtractor,
+    match_target_categories,
+    match_t2_categories,
+    is_valid_deep_conference_url,
+    T2_EXCLUDED_PATTERNS
+)
 from ..storage.excel_manager import ExcelManager
 
 logger = logging.getLogger(__name__)
@@ -87,20 +93,18 @@ def cleanup_fake_and_sample_records(db):
     for c in all_confs:
         title_lower = (c.conference_title or "").lower().strip()
 
-        # Protect verified existing published records from deletion and eliminate DB duplicates
-        if c.is_published_to_excel:
-            if title_lower in seen_titles:
-                logger.info(f"Removing duplicate published conference from DB: {c.conference_id} - {c.conference_title}")
-                db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
-                db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
-                db.delete(c)
-                deleted_count += 1
-                continue
-            seen_titles.add(title_lower)
+        # Deduplicate conferences
+        if title_lower in seen_titles:
+            logger.info(f"Removing duplicate conference from DB: {c.conference_id} - {c.conference_title}")
+            db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
+            db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
+            db.delete(c)
+            deleted_count += 1
             continue
+
         speakers_lower = (getattr(c, "speakers", None) or "").lower().strip()
 
-        # Filter out non-conferences (entertainment, comic cons, TV festivals, mixers, walks)
+        # Filter out non-conferences (entertainment, comic cons, TV festivals, mixers, walks, etc.)
         is_non_conference = any(term in title_lower for term in [
             "workshop", "webinar", "meetup", "hackathon", "networking lunch",
             "networking mixer", "zoom event", "sf real estate", "bar crawl",
@@ -114,6 +118,9 @@ def cleanup_fake_and_sample_records(db):
             "forest preserve", "zoo", "wildlife", "conservation symposium"
         ])
 
+        # Filter out strict excluded patterns (signing ceremonies, wine/food festivals, retreats, etc.)
+        is_pattern_excluded = any(re.search(pat, title_lower, re.I) for pat in T2_EXCLUDED_PATTERNS)
+
         # Filter out past events or events with missing dates
         is_out_of_date_range = (c.start_date is None or c.start_date < today)
 
@@ -126,21 +133,25 @@ def cleanup_fake_and_sample_records(db):
             speakers_lower == "tbd" or
             "industry experts & leaders" in (getattr(c, "speaker_titles_companies", None) or "").lower()
         )
-        
+
         # Check for dead/unreachable domains or unverified entries
         is_dead_or_unreachable = (
             "healthcare innovation" in title_lower or 
             "healthcareinnovationsummit" in (c.official_conference_url or "").lower()
         )
 
-        # Check duplicate
-        is_duplicate = title_lower in seen_titles
+        # Validate URL (must not be generic root portal like eventbrite.ca)
+        is_invalid_url = not is_valid_deep_conference_url(c.official_conference_url)
 
-        # Category check: must belong to at least one of the 5 core business categories
-        matched_cats = match_target_categories(f"{c.conference_title} {c.description or ''}")
+        # Category check: strictly match 5 allowed T-2 business categories
+        matched_cats = match_t2_categories(f"{c.conference_title} {c.industry_category or ''} {c.description or ''}")
         is_invalid_category = (len(matched_cats) == 0)
 
-        if is_non_conference or is_out_of_date_range or is_previous_mock or is_placeholder_speaker or is_duplicate or is_dead_or_unreachable or is_invalid_category:
+        if (
+            is_non_conference or is_pattern_excluded or is_out_of_date_range or 
+            is_previous_mock or is_placeholder_speaker or is_dead_or_unreachable or 
+            is_invalid_url or is_invalid_category
+        ):
             db.query(Speaker).filter(Speaker.conference_id == c.conference_id).delete()
             db.query(Attendee).filter(Attendee.conference_id == c.conference_id).delete()
             db.delete(c)
@@ -231,9 +242,11 @@ def task_scrape_and_ingest():
 
             conf_start = date.fromisoformat(extracted.start_date)
             conf_end = date.fromisoformat(extracted.end_date)
-            if conf_start < today:
-                continue
+            
+            # Strict T-2 publication logic: only conferences whose start date is exactly T-2 (today + 2 days)
             is_exact_t2 = (conf_start == exact_t2_date)
+            if not is_exact_t2:
+                continue
 
             # Pre-verify that conference URL is active and does not return 404
             try:

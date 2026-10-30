@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class CventScraper(BaseScraper):
     def __init__(self):
-        super().__init__("cvent", "https://www.cvent.com/en/events")
+        super().__init__("cvent", "https://www.cvent.com/events")
 
     def scrape(self) -> List[RawEventData]:
         logger.info(f"[{self.source_name}] Harvesting enterprise conferences and summits from Cvent...")
@@ -18,7 +18,7 @@ class CventScraper(BaseScraper):
         exact_t2 = today + timedelta(days=2)
 
         try:
-            resp = self.fetch_page("https://www.cvent.com/en/events", timeout=10)
+            resp = self.fetch_page("https://www.cvent.com/events", timeout=10)
             if resp and resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 for item in soup.find_all(['div', 'article'], class_=lambda c: c and any(k in str(c).lower() for k in ['event', 'card', 'item'])):

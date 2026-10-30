@@ -646,6 +646,42 @@ class OneDriveExcelService:
         endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows/itemAt(index={row_index})"
         return self._api_request("PATCH", endpoint, body={"values": [values]})
 
+    def delete_weekly_speaker_row(self, row_index: int) -> Dict[str, Any]:
+        """
+        Deletes a weekly speaker row at row_index from 'tbl_weekly_speakers' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("DELETE", endpoint)
+
+    def update_weekly_conference_speaker_status(self, conference_id: str, new_status: str = "Yes") -> bool:
+        """
+        Updates the Speaker_Status (index 12) for a given weekly conference in 'tbl_weekly_conferences' on OneDrive.
+        Preserves all other fields and row structure.
+        """
+        existing_rows = self.get_existing_weekly_conference_rows_map()
+        target_key = None
+        for cid in existing_rows:
+            if cid.lower() == conference_id.lower():
+                target_key = cid
+                break
+        if not target_key:
+            logger.warning(f"Conference {conference_id} not found in OneDrive tbl_weekly_conferences")
+            return False
+
+        row_idx, values = existing_rows[target_key]
+        if len(values) > 12:
+            updated_values = list(values)
+            updated_values[12] = new_status
+            drive_id = self.resolve_drive_id()
+            item_id = self.resolve_item_id()
+            endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/rows/itemAt(index={row_idx})"
+            res = self._api_request("PATCH", endpoint, body={"values": [updated_values]})
+            logger.info(f"Updated OneDrive speaker status for {conference_id} to '{new_status}': {res.get('status_code', 'ok')}")
+            return True
+        return False
+
     def sync_weekly_conferences(self, conferences: List[WeeklyConference], run_id: str) -> Dict[str, Any]:
         """
         Appends genuinely new weekly conferences to 'tbl_weekly_conferences' in OneDrive Excel.
@@ -832,6 +868,9 @@ class OneDriveExcelService:
                 last_checked_str,
                 run_id or spk.weekly_run_id or ""
             ]
+            # Ensure new_row matches exact table width (18 columns on OneDrive)
+            while len(new_row) < 18:
+                new_row.append("")
 
             rows_to_insert.append(new_row)
             existing_keys.add(key)
