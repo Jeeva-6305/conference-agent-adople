@@ -84,6 +84,17 @@ class Settings:
     WEEKLY_SPEAKERS_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SPEAKERS_EXCEL_TABLE_NAME", "tbl_weekly_speakers")
     WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
     WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
+    WEEKLY_ATTENDEES_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_ATTENDEES_EXCEL_WORKSHEET_NAME", os.getenv("WEEKLY_ATTENDEE_WORKSHEET_NAME", "weekly_attendees"))
+    WEEKLY_ATTENDEES_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_ATTENDEES_EXCEL_TABLE_NAME", os.getenv("WEEKLY_ATTENDEE_TABLE_NAME", "tbl_weekly_attendees"))
+    WEEKLY_ATTENDEE_COLLECTION_ENABLED: bool = os.getenv("WEEKLY_ATTENDEE_COLLECTION_ENABLED", "true").lower() in ("true", "1", "yes")
+
+    # Weekly Exhibitor Collection Configuration
+    WEEKLY_EXHIBITOR_COLLECTION_ENABLED: bool = os.getenv("WEEKLY_EXHIBITOR_COLLECTION_ENABLED", "true").lower() in ("true", "1", "yes")
+    WEEKLY_EXHIBITOR_WORKSHEET_NAME: str = os.getenv("WEEKLY_EXHIBITOR_WORKSHEET_NAME", "weekly_exhibitors")
+    WEEKLY_EXHIBITOR_TABLE_NAME: str = os.getenv("WEEKLY_EXHIBITOR_TABLE_NAME", "weekly_exhibitors")
+    WEEKLY_EXHIBITOR_SOURCE_VALIDATION: bool = os.getenv("WEEKLY_EXHIBITOR_SOURCE_VALIDATION", "true").lower() in ("true", "1", "yes")
+    WEEKLY_EXHIBITOR_DUPLICATE_CHECK: bool = os.getenv("WEEKLY_EXHIBITOR_DUPLICATE_CHECK", "true").lower() in ("true", "1", "yes")
+    WEEKLY_EXHIBITOR_APPEND_ONLY: bool = os.getenv("WEEKLY_EXHIBITOR_APPEND_ONLY", "true").lower() in ("true", "1", "yes")
 
     # Apollo API (LinkedIn Discovery Only)
     APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")

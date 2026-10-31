@@ -554,5 +554,78 @@ def get_weekly_speaker_enrichment_status(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/weekly/attendees")
+def get_weekly_attendees(
+    conference_id: Optional[str] = Query(None, description="Filter by Conference ID"),
+    run_id: Optional[str] = Query(None, description="Filter by weekly run ID"),
+    db: Session = Depends(get_db)
+):
+    """Returns attendee records for weekly conferences."""
+    from .models import WeeklyAttendee
+    query = db.query(WeeklyAttendee)
+    if conference_id:
+        query = query.filter(WeeklyAttendee.conference_id == conference_id)
+    if run_id:
+        query = query.filter(WeeklyAttendee.weekly_run_id == run_id)
+    atts = query.order_by(WeeklyAttendee.conference_name.asc(), WeeklyAttendee.attendee_name.asc()).all()
+    return [a.to_dict() for a in atts]
+
+
+@app.post("/api/trigger/weekly-attendee-collect")
+def trigger_weekly_attendee_collect(
+    conference_id: Optional[str] = Query(None, description="Optional single conference ID"),
+    force: bool = Query(False, description="Force collection even if already collected"),
+    db: Session = Depends(get_db)
+):
+    """
+    Executes attendee collection for weekly conferences.
+    Inspects conference websites, attendee pages, and registration platforms.
+    Collects genuine public attendee lists where available.
+    If unavailable or private, records 'Not Publicly Available'.
+    Saves to PostgreSQL, local Excel ('weekly_attendees'), and OneDrive ('tbl_weekly_attendees').
+    """
+    from .services.weekly_attendee_service import WeeklyAttendeeService
+    svc = WeeklyAttendeeService(db)
+    res = svc.collect_weekly_attendees(conference_id=conference_id, force=force)
+    return res
+
+
+@app.get("/api/weekly/exhibitors")
+def get_weekly_exhibitors(
+    conference_id: Optional[str] = Query(None, description="Filter by Conference ID"),
+    run_id: Optional[str] = Query(None, description="Filter by weekly run ID"),
+    db: Session = Depends(get_db)
+):
+    """Returns exhibitor records for weekly conferences."""
+    from .models import WeeklyExhibitor
+    query = db.query(WeeklyExhibitor)
+    if conference_id:
+        query = query.filter(WeeklyExhibitor.conference_id == conference_id)
+    if run_id:
+        query = query.filter(WeeklyExhibitor.weekly_run_id == run_id)
+    exhs = query.order_by(WeeklyExhibitor.conference_name.asc(), WeeklyExhibitor.company_name.asc()).all()
+    return [e.to_dict() for e in exhs]
+
+
+@app.post("/api/trigger/weekly-exhibitor-collect")
+def trigger_weekly_exhibitor_collect(
+    conference_id: Optional[str] = Query(None, description="Optional single conference ID"),
+    force: bool = Query(False, description="Force collection even if already collected"),
+    db: Session = Depends(get_db)
+):
+    """
+    Executes exhibitor collection for weekly conferences.
+    Inspects conference websites, exhibition pages, and exhibitor directories.
+    Collects genuine participating exhibitors with booth, company website, category, description, and LinkedIn.
+    If unavailable or private, records 'Not Publicly Available'.
+    Saves to PostgreSQL, local Excel ('weekly_exhibitors'), and OneDrive ('weekly_exhibitors' table).
+    """
+    from .services.weekly_exhibitor_service import WeeklyExhibitorService
+    svc = WeeklyExhibitorService(db)
+    res = svc.collect_weekly_exhibitors(conference_id=conference_id, force=force)
+    return res
+
+
+
 
 

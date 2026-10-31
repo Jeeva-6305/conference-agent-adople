@@ -68,6 +68,10 @@ class OneDriveExcelService:
         self.weekly_spk_tbl_name = getattr(settings, "WEEKLY_SPEAKERS_EXCEL_TABLE_NAME", "tbl_weekly_speakers")
         self.weekly_log_ws_name = getattr(settings, "WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
         self.weekly_log_tbl_name = getattr(settings, "WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
+        self.weekly_att_ws_name = getattr(settings, "WEEKLY_ATTENDEES_EXCEL_WORKSHEET_NAME", "weekly_attendees")
+        self.weekly_att_tbl_name = getattr(settings, "WEEKLY_ATTENDEES_EXCEL_TABLE_NAME", "tbl_weekly_attendees")
+        self.weekly_exh_ws_name = getattr(settings, "WEEKLY_EXHIBITOR_WORKSHEET_NAME", "weekly_exhibitors")
+        self.weekly_exh_tbl_name = getattr(settings, "WEEKLY_EXHIBITOR_TABLE_NAME", "weekly_exhibitors")
 
         self.base_url = settings.MICROSOFT_GRAPH_BASE_URL.rstrip("/")
 
@@ -636,6 +640,42 @@ class OneDriveExcelService:
                         rows_map[(conf_id, spk_name)] = (row_idx, values)
         return rows_map
 
+    def get_existing_weekly_attendee_rows_map(self) -> Dict[Tuple[str, str], Tuple[int, List[Any]]]:
+        """Fetches existing rows map {(ConferenceName, AttendeeName): (row_index, values)} from tbl_weekly_attendees."""
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows")
+
+        rows_map = {}
+        if "value" in res:
+            for idx, row in enumerate(res["value"]):
+                values = row.get("values", [[]])[0]
+                if values and len(values) >= 3:
+                    conf_name = str(values[0] or "").strip().lower()
+                    att_name = str(values[2] or "").strip().lower()
+                    if conf_name and att_name:
+                        row_idx = row.get("index", idx)
+                        rows_map[(conf_name, att_name)] = (row_idx, values)
+        return rows_map
+
+    def get_existing_weekly_exhibitor_rows_map(self) -> Dict[Tuple[str, str], Tuple[int, List[Any]]]:
+        """Fetches existing rows map {(ConferenceName, CompanyName): (row_index, values)} from weekly_exhibitors table."""
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows")
+
+        rows_map = {}
+        if "value" in res:
+            for idx, row in enumerate(res["value"]):
+                values = row.get("values", [[]])[0]
+                if values and len(values) >= 3:
+                    conf_name = str(values[0] or "").strip().lower()
+                    comp_name = str(values[2] or "").strip().lower()
+                    if conf_name and comp_name:
+                        row_idx = row.get("index", idx)
+                        rows_map[(conf_name, comp_name)] = (row_idx, values)
+        return rows_map
+
     def update_weekly_speaker_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
         """
         Updates an existing weekly speaker row in-place in 'tbl_weekly_speakers' on OneDrive.
@@ -890,6 +930,175 @@ class OneDriveExcelService:
             inserted_count = len(rows_to_insert)
 
         logger.info(f"✅ OneDrive Excel weekly speakers sync: {inserted_count} appended, {skipped_count} preserved/skipped.")
+        return {
+            "status": "success",
+            "inserted_count": inserted_count,
+            "skipped_count": skipped_count
+        }
+
+    def sync_weekly_attendees(
+        self,
+        attendees: List[Any],
+        run_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Appends genuine weekly attendee records to 'tbl_weekly_attendees' in OneDrive Excel.
+        Maps columns strictly to:
+        ['Conference Name', 'Conference Date', 'Attendee Name', 'Job Title', 'Company',
+         'Professional Email', 'LinkedIn URL', 'Source URL', 'Collection Date']
+        Prevents duplicates. Preserves all existing records.
+        """
+        if not attendees:
+            return {"status": "skipped", "inserted_count": 0, "skipped_count": 0, "message": "No weekly attendees provided"}
+
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+
+        existing_rows_map = self.get_existing_weekly_attendee_rows_map()
+        existing_keys = set(existing_rows_map.keys())
+
+        rows_to_insert = []
+        skipped_count = 0
+
+        for att in attendees:
+            conf_name = (att.conference_name if hasattr(att, "conference_name") else att.get("conference_name", "") or "").strip()
+            name = (att.attendee_name if hasattr(att, "attendee_name") else att.get("attendee_name", "") or "").strip()
+            if not conf_name or not name:
+                skipped_count += 1
+                continue
+
+            key = (conf_name.lower(), name.lower())
+            if key in existing_keys:
+                skipped_count += 1
+                continue
+
+            conf_date_str = ""
+            if hasattr(att, "conference_date") and att.conference_date:
+                conf_date_str = att.conference_date.isoformat() if hasattr(att.conference_date, "isoformat") else str(att.conference_date)
+            elif isinstance(att, dict) and att.get("conference_date"):
+                conf_date_str = str(att["conference_date"])
+
+            coll_date_str = ""
+            if hasattr(att, "collection_date") and att.collection_date:
+                coll_date_str = att.collection_date.isoformat() if hasattr(att.collection_date, "isoformat") else str(att.collection_date)
+            elif isinstance(att, dict) and att.get("collection_date"):
+                coll_date_str = str(att["collection_date"])
+            else:
+                coll_date_str = date.today().isoformat()
+
+            new_row = [
+                conf_name,
+                conf_date_str,
+                name,
+                (att.job_title if hasattr(att, "job_title") else att.get("job_title", "")) or "",
+                (att.company_name if hasattr(att, "company_name") else att.get("company_name", "")) or "",
+                (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or "",
+                (att.personal_linkedin_url if hasattr(att, "personal_linkedin_url") else att.get("personal_linkedin_url", "")) or "",
+                (att.source_url if hasattr(att, "source_url") else att.get("source_url", "")) or "",
+                coll_date_str
+            ]
+            rows_to_insert.append(new_row)
+            existing_keys.add(key)
+
+        inserted_count = 0
+        if rows_to_insert:
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly attendee row(s) into '{self.weekly_att_tbl_name}'...")
+            endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows"
+            res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
+            if "error" in res:
+                logger.error(f"Failed to insert weekly attendee rows into OneDrive Excel: {res}")
+                return {"status": "error", "error": res, "inserted_count": 0, "skipped_count": skipped_count}
+            inserted_count = len(rows_to_insert)
+
+        logger.info(f"✅ OneDrive Excel weekly attendees sync: {inserted_count} appended, {skipped_count} skipped/duplicate.")
+        return {
+            "status": "success",
+            "inserted_count": inserted_count,
+            "skipped_count": skipped_count
+        }
+
+    def sync_weekly_exhibitors(
+        self,
+        exhibitors: List[Any],
+        run_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Appends genuine weekly exhibitor records to 'weekly_exhibitors' table in OneDrive Excel.
+        Maps columns strictly to the 14 columns:
+        ['Conference Name', 'Conference Date', 'Exhibitor Company Name', 'Company Website',
+         'Exhibitor Category / Industry', 'Company Description', 'Exhibitor Booth Number',
+         'Contact Person', 'Contact Person Designation', 'Professional Email',
+         'LinkedIn Company URL', 'Contact Person LinkedIn URL', 'Source URL', 'Collection Date']
+        Prevents duplicates using (Conference Name, Exhibitor Company Name). Preserves all existing records.
+        """
+        if not exhibitors:
+            return {"status": "skipped", "inserted_count": 0, "skipped_count": 0, "message": "No weekly exhibitors provided"}
+
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+
+        existing_rows_map = self.get_existing_weekly_exhibitor_rows_map()
+        existing_keys = set(existing_rows_map.keys())
+
+        rows_to_insert = []
+        skipped_count = 0
+
+        for exh in exhibitors:
+            conf_name = (exh.conference_name if hasattr(exh, "conference_name") else exh.get("conference_name", "") or "").strip()
+            comp_name = (exh.company_name if hasattr(exh, "company_name") else exh.get("company_name", "") or "").strip()
+            if not conf_name or not comp_name:
+                skipped_count += 1
+                continue
+
+            key = (conf_name.lower(), comp_name.lower())
+            if key in existing_keys:
+                skipped_count += 1
+                continue
+
+            conf_date_str = ""
+            if hasattr(exh, "conference_date") and exh.conference_date:
+                conf_date_str = exh.conference_date.isoformat() if hasattr(exh.conference_date, "isoformat") else str(exh.conference_date)
+            elif isinstance(exh, dict) and exh.get("conference_date"):
+                conf_date_str = str(exh["conference_date"])
+
+            coll_date_str = ""
+            if hasattr(exh, "collection_date") and exh.collection_date:
+                coll_date_str = exh.collection_date.isoformat() if hasattr(exh.collection_date, "isoformat") else str(exh.collection_date)
+            elif isinstance(exh, dict) and exh.get("collection_date"):
+                coll_date_str = str(exh["collection_date"])
+            else:
+                coll_date_str = date.today().isoformat()
+
+            new_row = [
+                conf_name,
+                conf_date_str,
+                comp_name,
+                (exh.company_website if hasattr(exh, "company_website") else exh.get("company_website", "")) or "",
+                (exh.category_industry if hasattr(exh, "category_industry") else exh.get("category_industry", "")) or "",
+                (exh.company_description if hasattr(exh, "company_description") else exh.get("company_description", "")) or "",
+                (exh.booth_number if hasattr(exh, "booth_number") else exh.get("booth_number", "")) or "",
+                (exh.contact_person if hasattr(exh, "contact_person") else exh.get("contact_person", "")) or "",
+                (exh.contact_designation if hasattr(exh, "contact_designation") else exh.get("contact_designation", "")) or "",
+                (exh.professional_email if hasattr(exh, "professional_email") else exh.get("professional_email", "")) or "",
+                (exh.company_linkedin_url if hasattr(exh, "company_linkedin_url") else exh.get("company_linkedin_url", "")) or "",
+                (exh.contact_person_linkedin_url if hasattr(exh, "contact_person_linkedin_url") else exh.get("contact_person_linkedin_url", "")) or "",
+                (exh.source_url if hasattr(exh, "source_url") else exh.get("source_url", "")) or "",
+                coll_date_str
+            ]
+            rows_to_insert.append(new_row)
+            existing_keys.add(key)
+
+        inserted_count = 0
+        if rows_to_insert:
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly exhibitor row(s) into '{self.weekly_exh_tbl_name}'...")
+            endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows"
+            res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
+            if "error" in res:
+                logger.error(f"Failed to insert weekly exhibitor rows into OneDrive Excel: {res}")
+                return {"status": "error", "error": res, "inserted_count": 0, "skipped_count": skipped_count}
+            inserted_count = len(rows_to_insert)
+
+        logger.info(f"✅ OneDrive Excel weekly exhibitors sync: {inserted_count} appended, {skipped_count} skipped/duplicate.")
         return {
             "status": "success",
             "inserted_count": inserted_count,

@@ -547,6 +547,183 @@ class ExcelManager:
             self._safe_save(wb)
         return updated
 
+    def sync_weekly_attendees_to_excel(
+        self,
+        attendees: List[Any],
+        replace_all: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Appends or refreshes weekly attendees to the 'weekly_attendees' sheet in the local Excel workbook.
+        Headers: Conference Name, Conference Date, Attendee Name, Job Title, Company,
+                 Professional Email, LinkedIn URL, Source URL, Collection Date.
+        Never overwrites or disturbs existing conference, speaker, or source log records.
+        """
+        if not attendees and not replace_all:
+            return {"status": "skipped", "inserted_count": 0}
+
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+
+        sheet_name = "weekly_attendees"
+        cols = [
+            "Conference Name", "Conference Date", "Attendee Name", "Job Title", "Company",
+            "Professional Email", "LinkedIn URL", "Source URL", "Collection Date"
+        ]
+
+        if sheet_name not in wb.sheetnames:
+            ws = wb.create_sheet(sheet_name)
+            ws.append(cols)
+            self._apply_header_styles(ws)
+        else:
+            ws = wb[sheet_name]
+            if replace_all:
+                wb.remove(ws)
+                ws = wb.create_sheet(sheet_name)
+                ws.append(cols)
+                self._apply_header_styles(ws)
+
+        existing_keys = set()
+        for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
+            if row and row[0] and len(row) >= 3 and row[2]:
+                existing_keys.add((str(row[0]).strip().lower(), str(row[2]).strip().lower()))
+
+        added_count = 0
+        skipped_count = 0
+        from datetime import date as _dt_date
+
+        for att in attendees:
+            conf_name = (att.conference_name if hasattr(att, "conference_name") else att.get("conference_name", "")) or ""
+            att_name = (att.attendee_name if hasattr(att, "attendee_name") else att.get("attendee_name", "")) or ""
+            key = (conf_name.strip().lower(), att_name.strip().lower())
+            if key in existing_keys:
+                skipped_count += 1
+                continue
+
+            conf_date = ""
+            if hasattr(att, "conference_date") and att.conference_date:
+                conf_date = att.conference_date.isoformat() if hasattr(att.conference_date, "isoformat") else str(att.conference_date)
+            elif isinstance(att, dict) and att.get("conference_date"):
+                conf_date = str(att["conference_date"])
+
+            coll_date = ""
+            if hasattr(att, "collection_date") and att.collection_date:
+                coll_date = att.collection_date.isoformat() if hasattr(att.collection_date, "isoformat") else str(att.collection_date)
+            elif isinstance(att, dict) and att.get("collection_date"):
+                coll_date = str(att["collection_date"])
+            else:
+                coll_date = _dt_date.today().isoformat()
+
+            ws.append([
+                conf_name,
+                conf_date,
+                att_name,
+                (att.job_title if hasattr(att, "job_title") else att.get("job_title", "")) or "",
+                (att.company_name if hasattr(att, "company_name") else att.get("company_name", "")) or "",
+                (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or "",
+                (att.personal_linkedin_url if hasattr(att, "personal_linkedin_url") else att.get("personal_linkedin_url", "")) or "",
+                (att.source_url if hasattr(att, "source_url") else att.get("source_url", "")) or "",
+                coll_date
+            ])
+            existing_keys.add(key)
+            added_count += 1
+
+        self._safe_save(wb)
+        logger.info(f"✅ Local Excel weekly_attendees sync: {added_count} appended, {skipped_count} skipped/duplicate.")
+        return {"status": "success", "inserted_count": added_count, "skipped_count": skipped_count}
+
+    def sync_weekly_exhibitors_to_excel(
+        self,
+        exhibitors: List[Any],
+        replace_all: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Appends or refreshes weekly exhibitors in the 'weekly_exhibitors' sheet in the local Excel workbook.
+        Headers: Conference Name, Conference Date, Exhibitor Company Name, Company Website,
+                 Exhibitor Category / Industry, Company Description, Exhibitor Booth Number,
+                 Contact Person, Contact Person Designation, Professional Email,
+                 LinkedIn Company URL, Contact Person LinkedIn URL, Source URL, Collection Date.
+        Never overwrites or disturbs existing conference, speaker, or attendee records.
+        """
+        if not exhibitors and not replace_all:
+            return {"status": "skipped", "inserted_count": 0}
+
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+
+        sheet_name = "weekly_exhibitors"
+        cols = [
+            "Conference Name", "Conference Date", "Exhibitor Company Name", "Company Website",
+            "Exhibitor Category / Industry", "Company Description", "Exhibitor Booth Number",
+            "Contact Person", "Contact Person Designation", "Professional Email",
+            "LinkedIn Company URL", "Contact Person LinkedIn URL", "Source URL", "Collection Date"
+        ]
+
+        if sheet_name not in wb.sheetnames:
+            ws = wb.create_sheet(sheet_name)
+            ws.append(cols)
+            self._apply_header_styles(ws)
+        else:
+            ws = wb[sheet_name]
+            if replace_all:
+                wb.remove(ws)
+                ws = wb.create_sheet(sheet_name)
+                ws.append(cols)
+                self._apply_header_styles(ws)
+
+        existing_keys = set()
+        for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
+            if row and row[0] and len(row) >= 3 and row[2]:
+                existing_keys.add((str(row[0]).strip().lower(), str(row[2]).strip().lower()))
+
+        added_count = 0
+        skipped_count = 0
+        from datetime import date as _dt_date
+
+        for exh in exhibitors:
+            conf_name = (exh.conference_name if hasattr(exh, "conference_name") else exh.get("conference_name", "")) or ""
+            comp_name = (exh.company_name if hasattr(exh, "company_name") else exh.get("company_name", "")) or ""
+            key = (conf_name.strip().lower(), comp_name.strip().lower())
+            if key in existing_keys:
+                skipped_count += 1
+                continue
+
+            conf_date = ""
+            if hasattr(exh, "conference_date") and exh.conference_date:
+                conf_date = exh.conference_date.isoformat() if hasattr(exh.conference_date, "isoformat") else str(exh.conference_date)
+            elif isinstance(exh, dict) and exh.get("conference_date"):
+                conf_date = str(exh["conference_date"])
+
+            coll_date = ""
+            if hasattr(exh, "collection_date") and exh.collection_date:
+                coll_date = exh.collection_date.isoformat() if hasattr(exh.collection_date, "isoformat") else str(exh.collection_date)
+            elif isinstance(exh, dict) and exh.get("collection_date"):
+                coll_date = str(exh["collection_date"])
+            else:
+                coll_date = _dt_date.today().isoformat()
+
+            ws.append([
+                conf_name,
+                conf_date,
+                comp_name,
+                (exh.company_website if hasattr(exh, "company_website") else exh.get("company_website", "")) or "",
+                (exh.category_industry if hasattr(exh, "category_industry") else exh.get("category_industry", "")) or "",
+                (exh.company_description if hasattr(exh, "company_description") else exh.get("company_description", "")) or "",
+                (exh.booth_number if hasattr(exh, "booth_number") else exh.get("booth_number", "")) or "",
+                (exh.contact_person if hasattr(exh, "contact_person") else exh.get("contact_person", "")) or "",
+                (exh.contact_designation if hasattr(exh, "contact_designation") else exh.get("contact_designation", "")) or "",
+                (exh.professional_email if hasattr(exh, "professional_email") else exh.get("professional_email", "")) or "",
+                (exh.company_linkedin_url if hasattr(exh, "company_linkedin_url") else exh.get("company_linkedin_url", "")) or "",
+                (exh.contact_person_linkedin_url if hasattr(exh, "contact_person_linkedin_url") else exh.get("contact_person_linkedin_url", "")) or "",
+                (exh.source_url if hasattr(exh, "source_url") else exh.get("source_url", "")) or "",
+                coll_date
+            ])
+            existing_keys.add(key)
+            added_count += 1
+
+        self._safe_save(wb)
+        logger.info(f"✅ Local Excel weekly_exhibitors sync: {added_count} appended, {skipped_count} skipped/duplicate.")
+        return {"status": "success", "inserted_count": added_count, "skipped_count": skipped_count}
+
 
     def read_excel_as_dataframe(self, sheet_name: str = "USA Conferences") -> pd.DataFrame:
         self._ensure_file_exists()

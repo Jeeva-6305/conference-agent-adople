@@ -329,4 +329,92 @@ class WeeklyTeamsCardLog(Base):
     error_message = Column(Text, nullable=True)
 
 
+class WeeklyAttendee(Base):
+    __tablename__ = "weekly_attendees"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attendee_id = Column(String(50), unique=True, index=True)
+    conference_id = Column(String(50), nullable=False, index=True)
+    conference_name = Column(String(255), nullable=False, index=True)
+    conference_date = Column(Date, nullable=True)
+    attendee_name = Column(String(255), nullable=False, index=True)
+    job_title = Column(String(255), default="")
+    company_name = Column(String(255), default="")
+    professional_email = Column(String(255), default="")
+    personal_linkedin_url = Column(Text, default="")
+    linkedin_status = Column(String(50), default="needs_review")  # verified, not_found, not_applicable
+    source_url = Column(Text, default="")
+    availability_status = Column(String(50), default="Available")  # Available, Not Publicly Available
+    weekly_run_id = Column(String(100), nullable=False, index=True)
+    collection_date = Column(Date, default=date.today)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "attendee_id": self.attendee_id,
+            "conference_id": self.conference_id,
+            "conference_name": self.conference_name,
+            "conference_date": self.conference_date.isoformat() if self.conference_date else "",
+            "attendee_name": self.attendee_name,
+            "job_title": self.job_title,
+            "company_name": self.company_name,
+            "professional_email": self.professional_email,
+            "personal_linkedin_url": self.personal_linkedin_url,
+            "linkedin_status": self.linkedin_status,
+            "source_url": self.source_url,
+            "availability_status": self.availability_status,
+            "weekly_run_id": self.weekly_run_id,
+            "collection_date": self.collection_date.isoformat() if self.collection_date else ""
+        }
+
+
+class WeeklyExhibitor(Base):
+    __tablename__ = "weekly_exhibitors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exhibitor_id = Column(String(50), unique=True, index=True)
+    conference_id = Column(String(50), nullable=False, index=True)
+    conference_name = Column(String(255), nullable=False, index=True)
+    conference_date = Column(Date, nullable=True)
+    company_name = Column(String(255), nullable=False, index=True)
+    company_website = Column(Text, default="")
+    category_industry = Column(String(255), default="")
+    company_description = Column(Text, default="")
+    booth_number = Column(String(100), default="")
+    contact_person = Column(String(255), default="")
+    contact_designation = Column(String(255), default="")
+    professional_email = Column(String(255), default="")
+    company_linkedin_url = Column(Text, default="")
+    contact_person_linkedin_url = Column(Text, default="")
+    source_url = Column(Text, default="")
+    availability_status = Column(String(50), default="Available")  # Available, Not Publicly Available
+    weekly_run_id = Column(String(100), nullable=False, index=True)
+    collection_date = Column(Date, default=date.today)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "exhibitor_id": self.exhibitor_id,
+            "conference_id": self.conference_id,
+            "conference_name": self.conference_name,
+            "conference_date": self.conference_date.isoformat() if self.conference_date else "",
+            "company_name": self.company_name,
+            "company_website": self.company_website,
+            "category_industry": self.category_industry,
+            "company_description": self.company_description,
+            "booth_number": self.booth_number,
+            "contact_person": self.contact_person,
+            "contact_designation": self.contact_designation,
+            "professional_email": self.professional_email,
+            "company_linkedin_url": self.company_linkedin_url,
+            "contact_person_linkedin_url": self.contact_person_linkedin_url,
+            "source_url": self.source_url,
+            "availability_status": self.availability_status,
+            "weekly_run_id": self.weekly_run_id,
+            "collection_date": self.collection_date.isoformat() if self.collection_date else ""
+        }
+
+
+
+
 
