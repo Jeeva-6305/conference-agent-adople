@@ -157,7 +157,8 @@ def is_valid_speaker_name(name: str) -> bool:
         "cybersecurity", "security", "threat", "vulnerability", "management", "strategy",
         "roadmap", "showcase", "exhibit", "sponsorship", "stage", "booth", "track",
         "reception", "breakfast", "lunch", "dinner", "cocktail", "vip", "tickets",
-        "data", "current", "mainten", "the ", " the", "san francisco", "francisco", "new york", "london", "austin", "chicago", "boston"
+        "data", "current", "mainten", "the ", " the", "san francisco", "francisco", "new york", "london", "austin", "chicago", "boston",
+        "artificial intelligence", "deep learning", "machine learning", "natural language", "processing", "meetup pro", "google play", "app store", "bending spoons", "what you", "schedule", "gain", "terms of", "download on"
     ]
     if any(kw in lower for kw in invalid_keywords):
         return False

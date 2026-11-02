@@ -119,7 +119,7 @@ class WeeklyConferenceService:
         self.onedrive_svc = OneDriveExcelService()
         self.teams_svc = TeamsWebhookService()
 
-    def run_weekly_workflow(self, force: bool = False) -> Dict[str, Any]:
+    def run_weekly_workflow(self, force: bool = False, target_date: Optional[date] = None) -> Dict[str, Any]:
         """
         Executes the end-to-end weekly workflow:
         1. Evaluates configuration gate (WEEKLY_AGENT_ENABLED).
@@ -140,7 +140,7 @@ class WeeklyConferenceService:
 
         start_time = time.time()
         today = date.today()
-        target_sunday, target_saturday, run_id = calculate_weekly_target_range()
+        target_sunday, target_saturday, run_id = calculate_weekly_target_range(ref_date=target_date)
         logger.info(
             f"📅 [Weekly Workflow] Starting weekly conference run: {run_id} "
             f"(Target Window: Sunday {target_sunday} to Saturday {target_saturday})..."
@@ -476,6 +476,28 @@ class WeeklyConferenceService:
             except Exception as e:
                 logger.warning(f"⚠️ [Weekly Workflow] Speaker enrichment notice: {e}")
 
+        # 8c. Automated Weekly Attendee Collection & OneDrive Sync
+        attendee_res = {}
+        if getattr(settings, "WEEKLY_ATTENDEE_COLLECTION_ENABLED", True):
+            try:
+                from .weekly_attendee_service import WeeklyAttendeeService
+                att_svc = WeeklyAttendeeService(self.db)
+                attendee_res = att_svc.collect_weekly_attendees(run_id=run_id, force=False)
+                logger.info(f"✅ [Weekly Workflow] Automated attendee collection complete: {attendee_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Workflow] Attendee collection notice: {e}")
+
+        # 8d. Automated Weekly Exhibitor Collection & OneDrive Sync
+        exhibitor_res = {}
+        if getattr(settings, "WEEKLY_EXHIBITOR_COLLECTION_ENABLED", True):
+            try:
+                from .weekly_exhibitor_service import WeeklyExhibitorService
+                exh_svc = WeeklyExhibitorService(self.db)
+                exhibitor_res = exh_svc.collect_weekly_exhibitors(run_id=run_id, force=False)
+                logger.info(f"✅ [Weekly Workflow] Automated exhibitor collection complete: {exhibitor_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Workflow] Exhibitor collection notice: {e}")
+
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts
         industry_counts: Dict[str, int] = {}
@@ -513,6 +535,8 @@ class WeeklyConferenceService:
             "industry_breakdown": industry_counts,
             "onedrive_excel": excel_sync_res,
             "speaker_enrichment": enrichment_res,
+            "attendees": attendee_res,
+            "exhibitors": exhibitor_res,
             "teams_card": teams_res,
             "duration_seconds": elapsed
         }

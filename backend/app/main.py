@@ -507,13 +507,23 @@ def get_weekly_speakers(
 
 
 @app.post("/api/trigger/weekly-scrape")
-def trigger_weekly_scrape(force: bool = Query(True, description="Force run even if disabled")):
-    """Executes the weekly conference scraping, validation, and append-only Excel sync workflow."""
+def trigger_weekly_scrape(
+    force: bool = Query(True, description="Force run even if disabled"),
+    target_date: Optional[str] = Query(None, description="Optional target date (YYYY-MM-DD) to target a specific week")
+):
+    """Executes the weekly conference scraping, validation, speaker enrichment, attendee & exhibitor collection, and append-only Excel sync workflow."""
     from .services.weekly_service import WeeklyConferenceService
+    from datetime import datetime
     db = SessionLocal()
     try:
+        t_date = None
+        if target_date:
+            try:
+                t_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid target_date format. Use YYYY-MM-DD")
         svc = WeeklyConferenceService(db)
-        res = svc.run_weekly_workflow(force=force)
+        res = svc.run_weekly_workflow(force=force, target_date=t_date)
         return res
     finally:
         db.close()
