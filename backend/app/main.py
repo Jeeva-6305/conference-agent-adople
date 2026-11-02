@@ -636,6 +636,107 @@ def trigger_weekly_exhibitor_collect(
     return res
 
 
+# ==========================================
+# Weekly Speaker Email Outreach & Reply Monitoring
+# ==========================================
+
+@app.get("/api/outreach/status")
+def get_outreach_telemetry(db: Session = Depends(get_db)):
+    """
+    Returns telemetry of the Weekly Speaker Outreach and 24/7 Reply Monitoring Engine:
+    - Target mailbox and credentials configured
+    - Active / Inactive campaign state
+    - Dry Run safety status
+    - Total verified speakers eligible for outreach
+    - Dispatched count, replied count, and pending
+    - Next scheduled send time & watch interval
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.get_status()
+
+
+@app.post("/api/outreach/preview-send")
+def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Dry-run preview of the outreach email campaign:
+    Personalizes emails from template.txt with speaker details,
+    verifies recipients with deliverable emails, and returns sample renderings.
+    Safely dispatches 0 real emails when DRY_RUN=True.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_outreach_send_pass(force=force)
+
+
+@app.post("/api/outreach/send-test")
+def send_test_email_endpoint(
+    test_email: str = Query(..., description="Your personal email address to receive the test email"),
+    speaker_name: str = Query("Akash Tester", description="Test recipient name"),
+    company_name: str = Query("Adople AI", description="Test company name"),
+    conference_name: str = Query("AI Innovation Summit 2026", description="Test conference name"),
+    db: Session = Depends(get_db)
+):
+    """
+    Sends an isolated test outreach email to your personal email address:
+    - Uses approved template.txt formatting.
+    - Dispatches from akash.s@adople.ai via Microsoft Graph API.
+    - Creates an isolated test record in PostgreSQL and OneDrive Excel.
+    - Registers the thread in outreach_state.json for reply monitoring.
+    - Does NOT touch or send emails to any actual conference speakers.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.send_test_outreach_email(
+        recipient_email=test_email,
+        speaker_name=speaker_name,
+        company_name=company_name,
+        conference_name=conference_name
+    )
+
+
+@app.post("/api/outreach/poll-replies")
+def poll_outreach_replies(db: Session = Depends(get_db)):
+    """
+    Manually triggers a 60-second reply monitoring pass across akash.s@adople.ai:
+    - Scans recent inbox messages
+    - Matches replies to original speaker email threads
+    - Analyzes sentiment (Positive / Neutral / Negative) using Gemini with rule fallback
+    - Records conversation transcripts in OneDrive tbl_weekly_speakers
+    - Dispatches Microsoft Teams Adaptive Card if EMAIL_TEAMS_CARD=true
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.poll_replies()
+
+
+@app.get("/api/outreach/template")
+def get_outreach_templates():
+    """
+    Returns the current draft template and follow-up template.
+    Allows user review and approval before scheduling.
+    """
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "template.txt")
+    followup_path = os.path.join(os.path.dirname(__file__), "templates", "followup_template.txt")
+    
+    t_content = ""
+    f_content = ""
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            t_content = f.read()
+    if os.path.exists(followup_path):
+        with open(followup_path, "r", encoding="utf-8") as f:
+            f_content = f.read()
+            
+    return {
+        "outreach_template": t_content,
+        "followup_template": f_content,
+        "template_path": template_path,
+        "status": "pending_user_approval"
+    }
+
+
+
 
 
 

@@ -260,6 +260,15 @@ class WeeklySpeaker(Base):
     speaker_source_url = Column(Text, default="")
     verification_status = Column(String(50), default="needs_review")  # verified, needs_review
     weekly_run_id = Column(String(100), nullable=False, index=True)
+    outreach_status = Column(String(50), default="")  # sent, sending, failed, skipped_*
+    reply_status = Column(String(50), default="")     # replied, bounced
+    reply_sentiment = Column(String(50), default="")  # Positive, Negative, Neutral
+    received_reply = Column(Text, default="")         # full conversation transcript
+    sent_message = Column(Text, default="")           # exact email body sent
+    email_thread_id = Column(String(255), default="") # Microsoft Graph conversationId
+    email_sent_at = Column(DateTime, nullable=True)
+    follow_up_count = Column(Integer, default=0)
+    follow_up_status = Column(String(50), default="")
     last_checked_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -278,6 +287,12 @@ class WeeklySpeaker(Base):
             "speaker_source_url": self.speaker_source_url,
             "verification_status": self.verification_status,
             "weekly_run_id": self.weekly_run_id,
+            "outreach_status": self.outreach_status or "",
+            "reply_status": self.reply_status or "",
+            "reply_sentiment": self.reply_sentiment or "",
+            "received_reply": self.received_reply or "",
+            "email_thread_id": self.email_thread_id or "",
+            "email_sent_at": self.email_sent_at.isoformat() if self.email_sent_at else "",
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
         }
 
