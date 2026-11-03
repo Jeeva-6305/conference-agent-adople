@@ -34,6 +34,10 @@ def hourly_scrape_and_update_job():
     6. Sends separate individual email reminders for each matching conference.
     7. Posts separate Adaptive Cards to Microsoft Teams Webhook.
     """
+    if not getattr(settings, "T2_WORKFLOW_ENABLED", True):
+        logger.info("ℹ️ [Hourly Automation] T-2 workflow is temporarily PAUSED (T2_WORKFLOW_ENABLED=false). Skipping hourly T-2 scrape & publication.")
+        return
+
     now = datetime.now()
     scheduler_state["last_scrape_time"] = now
     scheduler_state["last_status"] = "Running"
@@ -156,24 +160,28 @@ def start_scheduler():
         interval_minutes = settings.SCRAPER_INTERVAL_MINUTES or 60
         logger.info(f"Starting automated background scheduler (Interval: once every {interval_minutes} minutes)...")
         
-        # 1. Automated scraping across all sources once every hour
-        scheduler.add_job(
-            hourly_scrape_and_update_job,
-            trigger=IntervalTrigger(minutes=interval_minutes),
-            id="hourly_scraper_job",
-            name="Automated Hourly Conference & Speaker Scraping",
-            replace_existing=True,
-            next_run_time=datetime.now() + timedelta(minutes=interval_minutes)
-        )
-        
-        # 2. Safety publication check running every hour at the top of the hour (:00)
-        scheduler.add_job(
-            task_publish_2_days_before,
-            trigger=CronTrigger(minute=0),
-            id="publish_2_days_before_job",
-            name="Hourly 2-Day Excel Publication Engine",
-            replace_existing=True
-        )
+        # 1. Automated scraping across all sources once every hour (T-2)
+        if getattr(settings, "T2_WORKFLOW_ENABLED", True):
+            scheduler.add_job(
+                hourly_scrape_and_update_job,
+                trigger=IntervalTrigger(minutes=interval_minutes),
+                id="hourly_scraper_job",
+                name="Automated Hourly Conference & Speaker Scraping",
+                replace_existing=True,
+                next_run_time=datetime.now() + timedelta(minutes=interval_minutes)
+            )
+            
+            # 2. Safety publication check running every hour at the top of the hour (:00) (T-2)
+            scheduler.add_job(
+                task_publish_2_days_before,
+                trigger=CronTrigger(minute=0),
+                id="publish_2_days_before_job",
+                name="Hourly 2-Day Excel Publication Engine",
+                replace_existing=True
+            )
+            logger.info("✅ [Scheduler] T-2 hourly scraping and publication engine scheduled.")
+        else:
+            logger.info("⏸️ [Scheduler] T-2 hourly scraping & publication engine are temporarily PAUSED (T2_WORKFLOW_ENABLED=false).")
 
         # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage
         weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "America/New_York")

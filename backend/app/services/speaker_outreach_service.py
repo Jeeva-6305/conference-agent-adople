@@ -74,7 +74,7 @@ class MSGraphOutreachClient:
         self.tenant_id = settings.OUTREACH_MS_TENANT_ID or os.getenv("OUTREACH_MS_TENANT_ID", "")
         self.client_id = settings.OUTREACH_MS_CLIENT_ID or os.getenv("OUTREACH_MS_CLIENT_ID", "")
         self.client_secret = settings.OUTREACH_MS_CLIENT_SECRET or os.getenv("OUTREACH_MS_CLIENT_SECRET", "")
-        self.mailbox = settings.OUTREACH_MS_MAILBOX or os.getenv("OUTREACH_MS_MAILBOX", "akash.s@adople.ai")
+        self.mailbox = settings.OUTREACH_MS_MAILBOX or os.getenv("OUTREACH_MS_MAILBOX", "akash@adople.ai")
         self.base_url = "https://graph.microsoft.com/v1.0"
         self._token: Optional[str] = None
         self._token_expires_at: float = 0
@@ -107,7 +107,7 @@ class MSGraphOutreachClient:
             "Content-Type": "application/json"
         }
 
-    def send_mail(self, to_email: str, subject: str, body: str) -> Tuple[str, str]:
+    def send_mail(self, to_email: str, subject: str, body: str, content_type: str = "Text") -> Tuple[str, str]:
         """
         1. Creates message in akash.s@adople.ai to get message ID and conversationId.
         2. Sends the message immediately.
@@ -117,7 +117,7 @@ class MSGraphOutreachClient:
         payload = {
             "subject": subject,
             "body": {
-                "contentType": "Text",
+                "contentType": content_type,
                 "content": body
             },
             "toRecipients": [

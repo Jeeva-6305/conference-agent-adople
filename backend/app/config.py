@@ -46,6 +46,8 @@ class Settings:
     # Email Notification Settings
     NOTIFICATION_RECIPIENT_EMAIL: str = os.getenv("NOTIFICATION_RECIPIENT_EMAIL", "jeevanandham@adople.ai")
     EMAIL_REMINDER_ENABLED: bool = os.getenv("EMAIL_REMINDER_ENABLED", "false").lower() in ("true", "1", "yes")
+    EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "microsoft_graph").lower()
+    EMAIL_DRY_RUN: bool = os.getenv("EMAIL_DRY_RUN", "false").lower() in ("true", "1", "yes")
     SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
     SMTP_USER: str = os.getenv("SMTP_USER", "")
@@ -54,7 +56,7 @@ class Settings:
     SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "yes")
 
     # Automation intervals
-
+    T2_WORKFLOW_ENABLED: bool = os.getenv("T2_WORKFLOW_ENABLED", "true").lower() in ("true", "1", "yes")
     REMINDER_DAYS_BEFORE: int = int(os.getenv("REMINDER_DAYS_BEFORE", 2))
     SCRAPER_INTERVAL_MINUTES: int = int(os.getenv("SCRAPER_INTERVAL_MINUTES", 60))
 
@@ -109,7 +111,7 @@ class Settings:
     OUTREACH_MS_TENANT_ID: str = os.getenv("OUTREACH_MS_TENANT_ID", "")
     OUTREACH_MS_CLIENT_ID: str = os.getenv("OUTREACH_MS_CLIENT_ID", "")
     OUTREACH_MS_CLIENT_SECRET: str = os.getenv("OUTREACH_MS_CLIENT_SECRET", "")
-    OUTREACH_MS_MAILBOX: str = os.getenv("OUTREACH_MS_MAILBOX", "akash.s@adople.ai")
+    OUTREACH_MS_MAILBOX: str = os.getenv("OUTREACH_MS_MAILBOX", "akash@adople.ai")
     OUTREACH_SENDER_NAME: str = os.getenv("SENDER_NAME", "Akash")
     OUTREACH_SENDER_TITLE: str = os.getenv("SENDER_TITLE", "Founder")
     OUTREACH_COMPANY: str = os.getenv("COMPANY", "Adople AI")

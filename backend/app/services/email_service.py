@@ -472,8 +472,33 @@ class ConferenceEmailService:
         send_status = "pending_smtp_credentials"
         error_msg = None
 
-        # 2. Try SMTP transmission if credentials are provided in .env
-        if settings.SMTP_USER and settings.SMTP_PASSWORD:
+        # 2. Check Delivery Mode: Dry Run, Microsoft Graph API, or SMTP
+        is_dry_run = getattr(settings, "EMAIL_DRY_RUN", False)
+        provider = getattr(settings, "EMAIL_PROVIDER", "microsoft_graph").lower()
+        graph_configured = bool(getattr(settings, "OUTREACH_MS_CLIENT_ID", "") and getattr(settings, "OUTREACH_MS_CLIENT_SECRET", ""))
+
+        if is_dry_run:
+            logger.info(f"🧪 [EMAIL DRY RUN] Simulated email reminder for '{conf.conference_title}' to {self.recipient_email} (Set EMAIL_DRY_RUN=false in .env to deliver live emails to inbox).")
+            send_status = "dry_run"
+            error_msg = None
+        elif (provider == "microsoft_graph" or not (settings.SMTP_USER and settings.SMTP_PASSWORD)) and graph_configured:
+            try:
+                from .speaker_outreach_service import MSGraphOutreachClient
+                graph_client = MSGraphOutreachClient()
+                logger.info(f"Delivering reminder email to {self.recipient_email} via Microsoft Graph API ({graph_client.mailbox})...")
+                msg_id, conv_id = graph_client.send_mail(
+                    to_email=self.recipient_email,
+                    subject=subject,
+                    body=html_body,
+                    content_type="HTML"
+                )
+                send_status = "sent"
+                logger.info(f"✅ Delivered live reminder email via Microsoft Graph for '{conf.conference_title}' to {self.recipient_email} (MsgID: {msg_id})")
+            except Exception as e:
+                logger.error(f"❌ Microsoft Graph reminder email delivery failed for '{conf.conference_title}': {e}", exc_info=True)
+                send_status = "failed"
+                error_msg = str(e)
+        elif settings.SMTP_USER and settings.SMTP_PASSWORD:
             try:
                 logger.info(f"Connecting to SMTP {settings.SMTP_HOST}:{settings.SMTP_PORT} to deliver reminder to {self.recipient_email}...")
                 server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
@@ -491,7 +516,7 @@ class ConferenceEmailService:
         else:
             logger.warning(
                 f"⚠️ [SMTP NOT CONFIGURED] Cannot deliver email across the internet to {self.recipient_email}. "
-                f"Please add SMTP_USER and SMTP_PASSWORD in backend/.env to send directly to your inbox."
+                f"Please add SMTP_USER and SMTP_PASSWORD or enable Microsoft Graph in backend/.env to send directly to your inbox."
             )
             send_status = "pending_smtp_credentials"
             error_msg = "SMTP_USER and SMTP_PASSWORD not configured in backend/.env"

@@ -454,7 +454,7 @@ class OneDriveExcelService:
         Synchronizes genuine speakers to 'tbl_speakers' in OneDrive Excel using strict append-only storage.
         Maps fields strictly to existing table columns:
         [SpeakerID, ConferenceID, ConferenceTitle, SpeakerName, JobTitle, Company,
-         LinkedInURL, CompanyURL, SpeakerProfileURL, SourceURL, VerifiedStatus, CollectedAt]
+         Email , LinkedInURL, CompanyURL, SpeakerProfileURL, SourceURL, VerifiedStatus, CollectedAt]
         Preserves all historical speaker records without deletion or overwrite.
         """
         if not speakers:
@@ -537,6 +537,7 @@ class OneDriveExcelService:
             source_url = spk.source_url or ""
             collected_at_str = spk.created_at.isoformat() if spk.created_at else datetime.utcnow().isoformat()
 
+            spk_email = getattr(spk, 'professional_email', None) or getattr(spk, 'email', None) or ""
             new_row = [
                 speaker_id,                  # 1. SpeakerID
                 conf_id,                     # 2. ConferenceID
@@ -544,12 +545,13 @@ class OneDriveExcelService:
                 name,                        # 4. SpeakerName
                 job_title,                   # 5. JobTitle
                 company,                     # 6. Company
-                linkedin,                    # 7. LinkedInURL
-                company_url,                 # 8. CompanyURL
-                profile_url,                 # 9. SpeakerProfileURL
-                source_url,                  # 10. SourceURL
-                "verified",                  # 11. VerifiedStatus
-                collected_at_str             # 12. CollectedAt
+                spk_email,                   # 7. Email 
+                linkedin,                    # 8. LinkedInURL
+                company_url,                 # 9. CompanyURL
+                profile_url,                 # 10. SpeakerProfileURL
+                source_url,                  # 11. SourceURL
+                "verified",                  # 12. VerifiedStatus
+                collected_at_str             # 13. CollectedAt
             ]
 
             rows_to_insert.append(new_row)

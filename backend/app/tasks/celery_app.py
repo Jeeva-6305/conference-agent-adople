@@ -217,6 +217,15 @@ def task_scrape_and_ingest():
         Will automatically be published when it reaches its T-2 date.
     - Does NOT display conferences starting today, tomorrow, or > 2 days in the T-2 published Excel workbook.
     """
+    if not getattr(settings, "T2_WORKFLOW_ENABLED", True):
+        logger.info("ℹ️ [T-2 Ingestion] T-2 conference scraping is temporarily PAUSED (T2_WORKFLOW_ENABLED=false).")
+        return {
+            "status": "paused",
+            "message": "T-2 conference scraping is temporarily paused (T2_WORKFLOW_ENABLED=false).",
+            "saved_count": 0,
+            "published_count": 0
+        }
+
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
     logger.info(f"T-2 Ingestion: Target T-2 start date is {exact_t2_date} (2 days from {today})...")
@@ -645,6 +654,14 @@ def task_publish_2_days_before():
     - Sends individual separate email reminders for newly published conferences.
     - Posts individual Adaptive Cards to Microsoft Teams Webhook.
     """
+    if not getattr(settings, "T2_WORKFLOW_ENABLED", True):
+        logger.info("ℹ️ [T-2 Publication] T-2 publication engine is temporarily PAUSED (T2_WORKFLOW_ENABLED=false).")
+        return {
+            "status": "paused",
+            "message": "T-2 publication engine is temporarily paused (T2_WORKFLOW_ENABLED=false).",
+            "published_count": 0
+        }
+
     today = date.today()
     exact_t2_date = today + timedelta(days=2)
     logger.info(f"Running automated T-2 publication check for conferences starting between {today} and {exact_t2_date}...")
@@ -731,11 +748,11 @@ def task_send_conference_reminder_emails(recipient_email: str = None, force: boo
     - Sends a separate individual email for each conference to jeevanandham@adople.ai.
     - Enforces duplicate email prevention via unique identifier (Name + Date + Venue).
     """
-    if not getattr(settings, "EMAIL_REMINDER_ENABLED", False):
-        logger.info("📧 [Email Task] Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).")
+    if not getattr(settings, "T2_WORKFLOW_ENABLED", True) or not getattr(settings, "EMAIL_REMINDER_ENABLED", False):
+        logger.info("📧 [Email Task] T-2 email reminder delivery is paused/disabled.")
         return {
             "status": "disabled",
-            "message": "Email reminder delivery is disabled (EMAIL_REMINDER_ENABLED=false).",
+            "message": "T-2 email reminder delivery is paused/disabled.",
             "processed_count": 0,
             "results": []
         }
@@ -782,11 +799,11 @@ def task_send_teams_cards(force: bool = False, webhook_url: Optional[str] = None
     - If True, dispatches Adaptive Cards to Microsoft Teams.
     - If False, safely skips card delivery.
     """
-    if not getattr(settings, "TEAMS_CARD_ENABLED", False):
-        logger.info("📢 [Teams Task] Teams card dispatch is disabled (TEAMS_CARD_ENABLED=false).")
+    if not getattr(settings, "T2_WORKFLOW_ENABLED", True) or not getattr(settings, "TEAMS_CARD_ENABLED", False):
+        logger.info("📢 [Teams Task] T-2 Teams card dispatch is paused/disabled.")
         return {
             "status": "disabled",
-            "message": "Teams card delivery is disabled (TEAMS_CARD_ENABLED=false).",
+            "message": "T-2 Teams card delivery is paused/disabled.",
             "processed_count": 0,
             "results": []
         }
