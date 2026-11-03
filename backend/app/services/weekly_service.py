@@ -119,7 +119,12 @@ class WeeklyConferenceService:
         self.onedrive_svc = OneDriveExcelService()
         self.teams_svc = TeamsWebhookService()
 
-    def run_weekly_workflow(self, force: bool = False, target_date: Optional[date] = None) -> Dict[str, Any]:
+    def run_weekly_workflow(
+        self,
+        force: bool = False,
+        target_date: Optional[date] = None,
+        candidate_events: Optional[List[Any]] = None
+    ) -> Dict[str, Any]:
         """
         Executes the end-to-end weekly workflow:
         1. Evaluates configuration gate (WEEKLY_AGENT_ENABLED).
@@ -148,6 +153,8 @@ class WeeklyConferenceService:
 
         # 1. Harvest raw candidate events across all configured sources
         raw_events = self.orchestrator.collect_all()
+        if candidate_events:
+            raw_events.extend(candidate_events)
         telemetry = self.orchestrator.source_telemetry
 
         # 2. Prepare source run logs for Excel audit logging
@@ -464,9 +471,13 @@ class WeeklyConferenceService:
                 "weekly_run_id": run_id
             }
 
-        # 8b. Automated Speaker LinkedIn Resolution (Apollo) & Professional Email Enrichment (Hunter.io)
+        # 8b. Automated Speaker LinkedIn Resolution & Professional Email Enrichment (Prospeo / Apollo / Hunter)
         enrichment_res = {}
-        speaker_enrichment_enabled = getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True) or getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
+        speaker_enrichment_enabled = (
+            getattr(settings, "PROSPEO_ENRICHMENT_ENABLED", True)
+            or getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True)
+            or getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
+        )
         if speaker_enrichment_enabled and accepted_speakers:
             try:
                 from .speaker_enrichment_service import SpeakerEnrichmentService

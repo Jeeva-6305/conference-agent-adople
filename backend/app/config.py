@@ -98,6 +98,10 @@ class Settings:
     WEEKLY_EXHIBITOR_DUPLICATE_CHECK: bool = os.getenv("WEEKLY_EXHIBITOR_DUPLICATE_CHECK", "true").lower() in ("true", "1", "yes")
     WEEKLY_EXHIBITOR_APPEND_ONLY: bool = os.getenv("WEEKLY_EXHIBITOR_APPEND_ONLY", "true").lower() in ("true", "1", "yes")
 
+    # Prospeo.io API (High Accuracy LinkedIn Profile & Professional Email Enrichment)
+    PROSPEO_API_KEY: str = os.getenv("PROSPEO_API_KEY", "")
+    PROSPEO_ENRICHMENT_ENABLED: bool = os.getenv("PROSPEO_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+
     # Apollo API (LinkedIn Discovery Only)
     APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")
     APOLLO_ENRICHMENT_ENABLED: bool = os.getenv("APOLLO_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -117,6 +121,7 @@ class Settings:
     OUTREACH_COMPANY: str = os.getenv("COMPANY", "Adople AI")
     OUTREACH_TEMPLATE_FILE: str = os.getenv("TEMPLATE_FILE", "template.txt")
     OUTREACH_SEND_TIME: str = os.getenv("SEND_TIME", "19:00")
+    OUTREACH_SEND_DAY: str = os.getenv("OUTREACH_SEND_DAY", os.getenv("SEND_DAY", "thu"))
     OUTREACH_WATCH_INTERVAL_MINUTES: int = int(os.getenv("WATCH_INTERVAL_MINUTES", "5"))
     OUTREACH_DAILY_CAP: int = int(os.getenv("DAILY_CAP", "0"))
     OUTREACH_DRY_RUN: bool = os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
@@ -131,6 +136,17 @@ class Settings:
     OUTREACH_ACTIVE: bool = os.getenv("OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
     OUTREACH_TIMEZONE: str = os.getenv("OUTREACH_TIMEZONE", "Asia/Kolkata")
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
+
+    # Speaker Replies Configuration (Dedicated Sheet & Table)
+    SPEAKER_REPLIES_ENABLED: bool = os.getenv("SPEAKER_REPLIES_ENABLED", "true").lower() in ("true", "1", "yes")
+    SPEAKER_REPLIES_WORKSHEET_NAME: str = os.getenv("SPEAKER_REPLIES_WORKSHEET_NAME", "Speakers Replies")
+    SPEAKER_REPLIES_TABLE_NAME: str = os.getenv("SPEAKER_REPLIES_TABLE_NAME", "tbl_speakers_replies")
+    SPEAKER_REPLIES_SOURCE_WORKSHEET: str = os.getenv("SPEAKER_REPLIES_SOURCE_WORKSHEET", "weekly_speakers")
+    SPEAKER_REPLIES_SOURCE_TABLE: str = os.getenv("SPEAKER_REPLIES_SOURCE_TABLE", "tbl_weekly_speakers")
+    SPEAKER_REPLIES_APPEND_ONLY: bool = os.getenv("SPEAKER_REPLIES_APPEND_ONLY", "true").lower() in ("true", "1", "yes")
+    SPEAKER_REPLIES_COPY_FULL_SPEAKER_ROW: bool = os.getenv("SPEAKER_REPLIES_COPY_FULL_SPEAKER_ROW", "true").lower() in ("true", "1", "yes")
+    SPEAKER_REPLIES_PRESERVE_MULTIPLE_REPLIES: bool = os.getenv("SPEAKER_REPLIES_PRESERVE_MULTIPLE_REPLIES", "true").lower() in ("true", "1", "yes")
+    SPEAKER_REPLIES_PREVENT_DUPLICATES: bool = os.getenv("SPEAKER_REPLIES_PREVENT_DUPLICATES", "true").lower() in ("true", "1", "yes")
 
 settings = Settings()
 

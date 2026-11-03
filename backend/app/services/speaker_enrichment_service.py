@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
+from .prospeo_service import ProspeoService
 from .apollo_service import ApolloService
 from .hunter_service import HunterService
 from .onedrive_excel_service import OneDriveExcelService
@@ -45,6 +46,8 @@ class SpeakerEnrichmentService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.prospeo = ProspeoService()
+        self.prospeo_enabled = getattr(settings, "PROSPEO_ENRICHMENT_ENABLED", True)
         self.apollo = ApolloService()
         self.hunter = HunterService()
         self.hunter_enabled = getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
@@ -62,9 +65,10 @@ class SpeakerEnrichmentService:
     ) -> Dict[str, Any]:
         """
         Enriches a single speaker:
-        1. Resolves missing LinkedIn profile via Apollo People Search or verified identity matching.
-        2. Queries Hunter.io Email Finder API for genuine professional email address and verification.
-        3. Returns verified enrichment details and status flags.
+        1. Queries Prospeo API (primary high-accuracy engine) for personal LinkedIn & verified corporate email.
+        2. Fallback to Apollo People Search / AI verification if LinkedIn profile is still missing.
+        3. Fallback to Hunter.io Email Finder if professional email is still missing.
+        4. Returns verified enrichment details and status flags.
         """
         clean_name = (speaker_name or "").strip()
         clean_company = (company_name or "").strip()
@@ -79,7 +83,37 @@ class SpeakerEnrichmentService:
         enrichment_stage = "pending"
 
         # -------------------------------------------------------------
-        # Step 1: Discover Missing LinkedIn Profile if empty (Apollo only)
+        # Step 1: Query Prospeo API (Primary Engine for LinkedIn & Email)
+        # -------------------------------------------------------------
+        if self.prospeo_enabled:
+            logger.info(f"🔍 [Enrichment] Querying Prospeo for '{clean_name}' at '{clean_company}'...")
+            try:
+                prospeo_res = self.prospeo.enrich_person(
+                    name=clean_name,
+                    company=clean_company,
+                    linkedin_url=discovered_li
+                )
+                if prospeo_res.get("status") == "success":
+                    # Check for discovered/confirmed personal LinkedIn URL
+                    p_li = prospeo_res.get("linkedin_url")
+                    if p_li and not discovered_li:
+                        discovered_li = p_li
+                        linkedin_status = "verified"
+                        logger.info(f"✅ [Enrichment] Discovered LinkedIn URL via Prospeo for '{clean_name}': {discovered_li}")
+
+                    # Check for verified professional email
+                    p_email = prospeo_res.get("email")
+                    if p_email and "@" in p_email:
+                        professional_email = p_email
+                        email_source = "prospeo.io"
+                        verification_status = prospeo_res.get("verification_status") or "verified"
+                        enrichment_stage = "enriched_via_prospeo"
+                        logger.info(f"✅ [Enrichment] Prospeo matched verified email for '{clean_name}': {professional_email} ({verification_status})")
+            except Exception as e:
+                logger.warning(f"⚠️ [Enrichment] Prospeo query notice for '{clean_name}': {e}")
+
+        # -------------------------------------------------------------
+        # Step 2: Fallback LinkedIn Discovery (Apollo & AI Extractor)
         # -------------------------------------------------------------
         if not discovered_li:
             logger.info(f"🔍 [Enrichment] Missing LinkedIn URL for '{clean_name}' at '{clean_company}'. Searching...")
@@ -116,9 +150,9 @@ class SpeakerEnrichmentService:
                     linkedin_status = "needs_review"
 
         # -------------------------------------------------------------
-        # Step 2: Query Hunter.io API for Genuine Professional Email
+        # Step 3: Fallback Email Discovery (Hunter.io API)
         # -------------------------------------------------------------
-        if self.hunter_enabled:
+        if not professional_email and self.hunter_enabled:
             # Query Hunter Email Finder API using speaker name, company, and LinkedIn URL
             hunter_res = self.hunter.find_email(
                 full_name=clean_name,
@@ -150,7 +184,7 @@ class SpeakerEnrichmentService:
                 enrichment_stage = "not_found_in_hunter"
             else:
                 enrichment_stage = hunter_res.get("message", "hunter_finder_failed")
-        else:
+        elif not professional_email and not self.hunter_enabled:
             enrichment_stage = "hunter_enrichment_disabled"
 
         if discovered_li and linkedin_status == "verified" and not verification_status:
@@ -291,7 +325,7 @@ class SpeakerEnrichmentService:
                 new_is_verified = (new_ver_status == "verified")
                 if not current_is_verified or new_is_verified:
                     spk.professional_email = new_email
-                    spk.email_source_url = new_email_source or "hunter.io"
+                    spk.email_source_url = new_email_source or "prospeo.io"
                     stats["emails_enriched"] += 1
                     has_changes = True
 
@@ -343,8 +377,8 @@ class SpeakerEnrichmentService:
             if od_row_idx is not None and od_vals is not None:
                 try:
                     updated_vals = list(od_vals)
-                    # Ensure row has at least 18 columns matching table schema
-                    while len(updated_vals) < 18:
+                    # Ensure row has at least 20 columns matching table schema
+                    while len(updated_vals) < 20:
                         updated_vals.append("")
 
                     # Col 6: Personal_LinkedIn_URL

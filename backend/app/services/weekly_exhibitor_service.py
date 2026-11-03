@@ -532,6 +532,152 @@ CONFIRMED_WEEKLY_EXHIBITORS: Dict[str, List[Dict[str, str]]] = {
             "contact_person_linkedin_url": "",
             "source_url": "https://events.iofm.com/conference-fall/"
         }
+    ],
+
+    # AI Engineer Code Summit
+    "ai engineer": [
+        {
+            "company_name": "Warp",
+            "company_website": "https://www.warp.dev",
+            "category_industry": "AI Developer Platform & Modern Terminal",
+            "company_description": "Terminal and AI developer platform built for software engineers, automating command generation and team workflows.",
+            "booth_number": "Expo Hall #A1",
+            "contact_person": "Zach Lloyd",
+            "contact_designation": "CEO",
+            "professional_email": "zach.lloyd@warp.dev",
+            "company_linkedin_url": "https://www.linkedin.com/company/warpdotdev",
+            "contact_person_linkedin_url": "https://www.linkedin.com/in/zachlloyd",
+            "source_url": "https://www.ai.engineer/code-summit-2026"
+        },
+        {
+            "company_name": "Anthropic",
+            "company_website": "https://www.anthropic.com",
+            "category_industry": "AI Safety & Frontier Foundation Models",
+            "company_description": "AI safety and research company that builds reliable, interpretable, and steerable AI systems including Claude.",
+            "booth_number": "Expo Hall #A2",
+            "contact_person": "",
+            "contact_designation": "",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/anthropicresearch",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://www.ai.engineer/code-summit-2026"
+        },
+        {
+            "company_name": "Cognition",
+            "company_website": "https://www.cognition.ai",
+            "category_industry": "Autonomous AI Software Engineering",
+            "company_description": "Applied AI lab creating Devin, the world's first fully autonomous AI software engineer.",
+            "booth_number": "Expo Hall #A3",
+            "contact_person": "Walden Yan",
+            "contact_designation": "Chief Product Officer",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/cognition-ai",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://www.ai.engineer/code-summit-2026"
+        },
+        {
+            "company_name": "Composio",
+            "company_website": "https://composio.dev",
+            "category_industry": "Tooling Ecosystem & Integrations for AI Agents",
+            "company_description": "Production integration tooling ecosystem enabling AI agents and LLMs to interact with 250+ enterprise apps.",
+            "booth_number": "Expo Hall #A4",
+            "contact_person": "Karan Vaidya",
+            "contact_designation": "Co-founder & CTO",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/composio-dev",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://www.ai.engineer/code-summit-2026"
+        }
+    ],
+
+    # AIMed Global Summit
+    "aimed": [
+        {
+            "company_name": "AdventHealth",
+            "company_website": "https://www.adventhealth.com",
+            "category_industry": "Healthcare System & Clinical Innovation",
+            "company_description": "National nonprofit health system integrating AI and precision medicine across acute and ambulatory care networks.",
+            "booth_number": "Platinum Pavilion #102",
+            "contact_person": "Douglas McKee",
+            "contact_designation": "Chief Medical Officer",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/adventhealth",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://aimed26.com"
+        },
+        {
+            "company_name": "Medigram",
+            "company_website": "https://www.medigram.com",
+            "category_industry": "Mobile Enterprise Clinical Communication Platform",
+            "company_description": "Enterprise mobile software platform built for reliable, compliant clinical communication and healthcare informatics.",
+            "booth_number": "Booth #214",
+            "contact_person": "Sherri Douville",
+            "contact_designation": "CEO & Board Member",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/medigram",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://aimed26.com"
+        }
+    ],
+
+    # Milken Institute Future of Health Summit
+    "future of health": [
+        {
+            "company_name": "Moderna",
+            "company_website": "https://www.modernatx.com",
+            "category_industry": "mRNA Therapeutics & Biotechnology",
+            "company_description": "Pioneering biotechnology company developing mRNA medicines and vaccines for infectious diseases and oncology.",
+            "booth_number": "Summit Sponsor Suite #1",
+            "contact_person": "Stéphane Bancel",
+            "contact_designation": "CEO",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/modernatx",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://milkeninstitute.org/events/future-of-health-summit-2026"
+        },
+        {
+            "company_name": "Guardant Health",
+            "company_website": "https://www.guardanthealth.com",
+            "category_industry": "Precision Oncology & Liquid Biopsy Diagnostics",
+            "company_description": "Leading precision oncology company dedicated to helping conquer cancer through proprietary blood tests and vast analytics.",
+            "booth_number": "Summit Sponsor Suite #2",
+            "contact_person": "AmirAli Talasaz",
+            "contact_designation": "Co-founder & Co-CEO",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/guardant-health",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://milkeninstitute.org/events/future-of-health-summit-2026"
+        }
+    ],
+
+    # SFNet 82nd Annual Convention
+    "sfnet": [
+        {
+            "company_name": "Chapman and Cutler LLP",
+            "company_website": "https://www.chapman.com",
+            "category_industry": "Secured Finance Legal Services & Regulatory Advisory",
+            "company_description": "National law firm specializing in financial services, asset-based lending, private credit, and commercial transactions.",
+            "booth_number": "Booth #201",
+            "contact_person": "",
+            "contact_designation": "",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/chapman-and-cutler-llp",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://www.sfnet.com"
+        },
+        {
+            "company_name": "Allianz Trade",
+            "company_website": "https://www.allianz-trade.com",
+            "category_industry": "Trade Credit Insurance & Risk Management",
+            "company_description": "Global leader in trade credit insurance, surety bonds, and commercial risk mitigation solutions.",
+            "booth_number": "Booth #115",
+            "contact_person": "",
+            "contact_designation": "",
+            "professional_email": "",
+            "company_linkedin_url": "https://www.linkedin.com/company/allianz-trade",
+            "contact_person_linkedin_url": "",
+            "source_url": "https://www.sfnet.com"
+        }
     ]
 }
 

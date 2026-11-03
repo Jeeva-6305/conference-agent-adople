@@ -567,6 +567,8 @@ class SpeakerOutreachService:
         self.graph = MSGraphOutreachClient()
         self.gemini = GeminiOutreachAgent()
         self.onedrive = OneDriveExcelService()
+        from ..storage.excel_manager import ExcelManager
+        self.excel_mgr = ExcelManager()
         self.local_excel_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
 
     def close(self):
@@ -973,10 +975,10 @@ class SpeakerOutreachService:
             thread_msgs = self.graph.get_conversation_messages(conv_id) if conv_id else [msg]
             transcript = build_conversation_transcript_ms(thread_msgs, self.graph.mailbox, target_speaker.speaker_name)
 
+            sentiment = "Negative" if is_bounce else "Neutral"
+            intent = "BOUNCE" if is_bounce else "OTHER"
+
             if is_bounce:
-                target_speaker.reply_status = "bounced"
-                target_speaker.reply_sentiment = "Negative"
-                target_speaker.received_reply = transcript
                 bounces_count += 1
             else:
                 analysis = self.gemini.analyze_reply(
@@ -987,10 +989,6 @@ class SpeakerOutreachService:
                 )
                 intent = analysis.get("intent", "OTHER")
                 sentiment = analysis.get("sentiment", "Neutral")
-
-                target_speaker.reply_status = "replied"
-                target_speaker.reply_sentiment = sentiment
-                target_speaker.received_reply = transcript
                 new_replies_count += 1
 
                 # Teams notification
@@ -1003,13 +1001,99 @@ class SpeakerOutreachService:
                     reply_text=body_text
                 )
 
+            # 1. Existing Weekly Speakers workflow: continues working exactly as before
+            target_speaker.reply_status = "bounced" if is_bounce else "replied"
+            target_speaker.reply_sentiment = sentiment
+            target_speaker.received_reply = transcript
             self.db.commit()
+            self._update_onedrive_speaker_row(target_speaker)
+
+            # 2. In addition, store a copy of the speaker's complete row only when they reply in 'Speakers Replies'
+            if getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
+                received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
+                last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
+
+                reply_row = [
+                    target_speaker.speaker_id or "",             # 1. spekers_id (Reference to original speaker)
+                    target_speaker.conference_id or "",          # 2. Conference_ID
+                    target_speaker.conference_name or "",        # 3. Conference_Name
+                    target_speaker.speaker_name or "",           # 4. Speaker_Name
+                    target_speaker.job_title or "",              # 5. Job_Title
+                    target_speaker.company_name or "",           # 6. Company_Name
+                    target_speaker.personal_linkedin_url or "",  # 7. Personal_LinkedIn_URL
+                    target_speaker.linkedin_status or "",        # 8. LinkedIn_Status
+                    target_speaker.professional_email or from_addr, # 9. Professional_Email
+                    target_speaker.email_source_url or "",       # 10. Email_Source_URL
+                    target_speaker.speaker_source_url or "",     # 11. Speaker_Source_URL
+                    target_speaker.verification_status or "",    # 12. Verification_Status
+                    last_checked_str,                            # 13. Last_Checked_At
+                    target_speaker.weekly_run_id or "",          # 14. Weekly_Run_ID
+                    target_speaker.outreach_status or "sent",    # 15. outreach status 
+                    "bounced" if is_bounce else "replied",       # 16. reply status
+                    sentiment,                                   # 17. reply sentiment 
+                    body_text if not is_bounce else "BOUNCE",    # 18. received reply
+                    target_speaker.sent_message or "",           # 19. send message
+                    conv_id or "",                               # 20. thread id (Outlook Conversation ID)
+                    received_at_str,                             # 21. Reply_Received_At
+                    msg_id                                       # 22. Message_ID
+                ]
+
+                # 1. Append to OneDrive 'tbl_speakers_replies'
+                try:
+                    self.onedrive.append_speaker_reply(reply_row)
+                except Exception as e:
+                    logger.error(f"Error appending reply to OneDrive tbl_speakers_replies: {e}", exc_info=True)
+
+                # 2. Append to Local Excel 'Speakers Replies'
+                try:
+                    self.excel_mgr.append_speaker_reply_to_excel(reply_row)
+                except Exception as e:
+                    logger.error(f"Error appending reply to Local Excel 'Speakers Replies': {e}", exc_info=True)
+
+                # 3. Store in PostgreSQL speaker_replies table
+                try:
+                    from ..models import SpeakerReply
+                    parsed_dt = None
+                    try:
+                        parsed_dt = datetime.fromisoformat(received_at_str.replace("Z", "+00:00"))
+                    except Exception:
+                        parsed_dt = datetime.utcnow()
+
+                    reply_rec = SpeakerReply(
+                        speaker_id=target_speaker.speaker_id or "",
+                        conference_id=target_speaker.conference_id or "",
+                        conference_name=target_speaker.conference_name or "",
+                        speaker_name=target_speaker.speaker_name or "",
+                        job_title=target_speaker.job_title or "",
+                        company_name=target_speaker.company_name or "",
+                        personal_linkedin_url=target_speaker.personal_linkedin_url or "",
+                        linkedin_status=target_speaker.linkedin_status or "",
+                        professional_email=target_speaker.professional_email or from_addr,
+                        email_source_url=target_speaker.email_source_url or "",
+                        speaker_source_url=target_speaker.speaker_source_url or "",
+                        verification_status=target_speaker.verification_status or "",
+                        last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
+                        weekly_run_id=target_speaker.weekly_run_id or "",
+                        outreach_status=target_speaker.outreach_status or "sent",
+                        reply_status="bounced" if is_bounce else "replied",
+                        reply_sentiment=sentiment,
+                        received_reply=body_text if not is_bounce else "BOUNCE",
+                        sent_message=target_speaker.sent_message or "",
+                        thread_id=conv_id or "",
+                        reply_received_at=parsed_dt,
+                        message_id=msg_id,
+                        original_speaker_id=target_speaker.speaker_id or ""
+                    )
+                    self.db.add(reply_rec)
+                    self.db.commit()
+                except Exception as e:
+                    self.db.rollback()
+                    logger.warning(f"Notice: PostgreSQL speaker_replies record commit: {e}")
+
+                logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
 
             # Ensure persisted in state & deduplication set
             mark_reply_processed(msg_id)
-
-            # Update OneDrive and Local Excel
-            self._update_onedrive_speaker_row(target_speaker)
 
         return {
             "status": "success",

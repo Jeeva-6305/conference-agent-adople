@@ -136,7 +136,7 @@ def weekly_speaker_reply_watcher_job():
 def weekly_speaker_scheduled_send_job():
     """
     Scheduled Outreach Job:
-    Triggered at OUTREACH_SEND_TIME (e.g. 19:00 / 20:00).
+    Triggered every Thursday at OUTREACH_SEND_TIME (19:00 IST / 7:00 PM).
     Safely skips if OUTREACH_ACTIVE is False or DRY_RUN is True.
     """
     if not getattr(settings, "OUTREACH_ACTIVE", False):
@@ -203,19 +203,20 @@ def start_scheduler():
             replace_existing=True
         )
 
-        # 5. Scheduled Outreach Sender (e.g. 19:00 / 20:00)
+        # 5. Scheduled Outreach Sender (Every Thursday at 19:00 / 7:00 PM IST)
         # Note: Will safely skip execution until OUTREACH_ACTIVE=True is set after user template approval
         send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "19:00")
         outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
+        outreach_day = getattr(settings, "OUTREACH_SEND_DAY", "thu")
         try:
             shour, smin = [int(p) for p in send_time_str.split(":", 1)]
         except Exception:
             shour, smin = 19, 0
         scheduler.add_job(
             weekly_speaker_scheduled_send_job,
-            trigger=CronTrigger(hour=shour, minute=smin, timezone=outreach_tz),
+            trigger=CronTrigger(day_of_week=outreach_day, hour=shour, minute=smin, timezone=outreach_tz),
             id="weekly_speaker_scheduled_send_job",
-            name="Scheduled Weekly Speaker Outreach Sender",
+            name=f"Scheduled Weekly Speaker Outreach Sender ({outreach_day.upper()} {send_time_str})",
             replace_existing=True
         )
         

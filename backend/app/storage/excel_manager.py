@@ -724,6 +724,47 @@ class ExcelManager:
         logger.info(f"✅ Local Excel weekly_exhibitors sync: {added_count} appended, {skipped_count} skipped/duplicate.")
         return {"status": "success", "inserted_count": added_count, "skipped_count": skipped_count}
 
+    def append_speaker_reply_to_excel(self, row_values: List[Any]) -> Dict[str, Any]:
+        """
+        Appends a separate speaker reply record to the 'Speakers Replies' worksheet in local Excel.
+        Preserves 'weekly_speakers' completely untouched.
+        """
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+
+        sheet_name = "Speakers Replies"
+        headers = [
+            "spekers_id", "Conference_ID", "Conference_Name", "Speaker_Name", "Job_Title",
+            "Company_Name", "Personal_LinkedIn_URL", "LinkedIn_Status", "Professional_Email",
+            "Email_Source_URL", "Speaker_Source_URL", "Verification_Status", "Last_Checked_At",
+            "Weekly_Run_ID", "outreach status", "reply status", "reply sentiment",
+            "received reply", "send message", "thread id", "Reply_Received_At", "Message_ID"
+        ]
+
+        if sheet_name not in wb.sheetnames:
+            ws = wb.create_sheet(sheet_name)
+            ws.append(headers)
+            self._apply_header_styles(ws)
+        else:
+            ws = wb[sheet_name]
+
+        msg_id = str(row_values[21] or "").strip() if len(row_values) > 21 else ""
+        if msg_id:
+            for r in range(2, ws.max_row + 1):
+                existing_mid = str(ws.cell(row=r, column=22).value or "").strip()
+                if existing_mid == msg_id:
+                    logger.info(f"Local Excel '{sheet_name}': Message ID '{msg_id}' already exists. Skipping duplicate.")
+                    wb.close()
+                    return {"status": "skipped", "reason": "duplicate_message_id"}
+
+        padded_row = list(row_values)
+        while len(padded_row) < len(headers):
+            padded_row.append("")
+        ws.append(padded_row[:len(headers)])
+        self._safe_save(wb)
+        logger.info(f"✅ Local Excel: Appended reply record for '{row_values[3]}' to '{sheet_name}'.")
+        return {"status": "success", "inserted": 1}
+
 
     def read_excel_as_dataframe(self, sheet_name: str = "USA Conferences") -> pd.DataFrame:
         self._ensure_file_exists()

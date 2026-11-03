@@ -72,6 +72,8 @@ class OneDriveExcelService:
         self.weekly_att_tbl_name = getattr(settings, "WEEKLY_ATTENDEES_EXCEL_TABLE_NAME", "tbl_weekly_attendees")
         self.weekly_exh_ws_name = getattr(settings, "WEEKLY_EXHIBITOR_WORKSHEET_NAME", "weekly_exhibitors")
         self.weekly_exh_tbl_name = getattr(settings, "WEEKLY_EXHIBITOR_TABLE_NAME", "weekly_exhibitors")
+        self.speakers_replies_ws_name = getattr(settings, "SPEAKER_REPLIES_WORKSHEET_NAME", "Speakers Replies")
+        self.speakers_replies_tbl_name = getattr(settings, "SPEAKER_REPLIES_TABLE_NAME", "tbl_speakers_replies")
 
         self.base_url = settings.MICROSOFT_GRAPH_BASE_URL.rstrip("/")
 
@@ -910,8 +912,8 @@ class OneDriveExcelService:
                 last_checked_str,
                 run_id or spk.weekly_run_id or ""
             ]
-            # Ensure new_row matches exact table width (18 columns on OneDrive)
-            while len(new_row) < 18:
+            # Ensure new_row matches exact table width (20 columns on OneDrive tbl_weekly_speakers)
+            while len(new_row) < 20:
                 new_row.append("")
 
             rows_to_insert.append(new_row)
@@ -1174,3 +1176,121 @@ class OneDriveExcelService:
             "logs": log_res,
             "timestamp": datetime.utcnow().isoformat()
         }
+
+    def ensure_speakers_replies_table_exists(self) -> Dict[str, Any]:
+        """
+        Ensures worksheet 'Speakers Replies' and table 'tbl_speakers_replies' exist in OneDrive Excel.
+        If it already exists, does not recreate or clear it.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+
+        # Check existing worksheets
+        ws_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets")
+        existing_worksheets = [w.get("name") for w in ws_res.get("value", [])]
+
+        if self.speakers_replies_ws_name not in existing_worksheets:
+            logger.info(f"Creating OneDrive worksheet '{self.speakers_replies_ws_name}'...")
+            add_ws = self._api_request(
+                "POST",
+                f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/add",
+                body={"name": self.speakers_replies_ws_name}
+            )
+            if "error" in add_ws:
+                logger.error(f"Failed to create worksheet '{self.speakers_replies_ws_name}': {add_ws}")
+
+        # Check existing tables
+        tbl_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables")
+        existing_tables = [t.get("name") for t in tbl_res.get("value", [])]
+
+        headers = [
+            "spekers_id", "Conference_ID", "Conference_Name", "Speaker_Name", "Job_Title",
+            "Company_Name", "Personal_LinkedIn_URL", "LinkedIn_Status", "Professional_Email",
+            "Email_Source_URL", "Speaker_Source_URL", "Verification_Status", "Last_Checked_At",
+            "Weekly_Run_ID", "outreach status ", "reply status", "reply sentiment ",
+            "received reply", "send message", "thread id", "Reply_Received_At", "Message_ID"
+        ]
+
+        if self.speakers_replies_tbl_name not in existing_tables:
+            logger.info(f"Creating OneDrive table '{self.speakers_replies_tbl_name}'...")
+            range_addr = "A1:V1"
+            self._api_request(
+                "PATCH",
+                f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{self.speakers_replies_ws_name}')/range(address='{range_addr}')",
+                body={"values": [headers]}
+            )
+            add_tbl = self._api_request(
+                "POST",
+                f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{self.speakers_replies_ws_name}')/tables/add",
+                body={"address": range_addr, "hasHeaders": True}
+            )
+            created_id = add_tbl.get("id")
+            if created_id:
+                self._api_request(
+                    "PATCH",
+                    f"/drives/{drive_id}/items/{item_id}/workbook/tables/{created_id}",
+                    body={"name": self.speakers_replies_tbl_name}
+                )
+        else:
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.speakers_replies_tbl_name}/columns")
+            existing_cols = [c.get("name") for c in cols_res.get("value", [])]
+            for h in headers:
+                if h not in existing_cols:
+                    logger.info(f"Adding missing column '{h}' to OneDrive table '{self.speakers_replies_tbl_name}'...")
+                    self._api_request(
+                        "POST",
+                        f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.speakers_replies_tbl_name}/columns",
+                        body={"name": h}
+                    )
+
+        return {"status": "ready", "worksheet": self.speakers_replies_ws_name, "table": self.speakers_replies_tbl_name}
+
+    def get_existing_speakers_replies_message_ids(self) -> Set[str]:
+        """Fetches set of existing Outlook Message IDs stored in tbl_speakers_replies."""
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.speakers_replies_tbl_name}/rows")
+        existing_msg_ids = set()
+        if "value" in res:
+            for row in res["value"]:
+                vals = row.get("values", [[]])[0]
+                if vals and len(vals) >= 22:
+                    mid = str(vals[21] or "").strip()
+                    if mid:
+                        existing_msg_ids.add(mid)
+        return existing_msg_ids
+
+    def append_speaker_reply(self, row_values: List[Any]) -> Dict[str, Any]:
+        """
+        Appends a separate reply record into 'tbl_speakers_replies' in OneDrive Excel.
+        Does NOT touch or modify 'Weekly Speakers' (tbl_weekly_speakers).
+        """
+        if not getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
+            return {"status": "disabled", "message": "SPEAKER_REPLIES_ENABLED is false"}
+
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+
+        msg_id = str(row_values[21] or "").strip() if len(row_values) > 21 else ""
+        if getattr(settings, "SPEAKER_REPLIES_PREVENT_DUPLICATES", True) and msg_id:
+            existing_ids = self.get_existing_speakers_replies_message_ids()
+            if msg_id in existing_ids:
+                logger.info(f"OneDrive tbl_speakers_replies: Message ID '{msg_id}' already exists. Skipping duplicate append.")
+                return {"status": "skipped", "reason": "duplicate_message_id", "message_id": msg_id}
+
+        cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.speakers_replies_tbl_name}/columns")
+        expected_col_count = len(cols_res.get("value", [])) or 22
+        padded_row = list(row_values)
+        while len(padded_row) < expected_col_count:
+            padded_row.append("")
+        if len(padded_row) > expected_col_count:
+            padded_row = padded_row[:expected_col_count]
+
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.speakers_replies_tbl_name}/rows"
+        res = self._api_request("POST", endpoint, body={"values": [padded_row]})
+        if "error" in res:
+            logger.error(f"Failed to append reply row to OneDrive tbl_speakers_replies: {res}")
+            return {"status": "error", "error": res}
+
+        logger.info(f"✅ OneDrive Excel: Successfully appended new reply row to '{self.speakers_replies_tbl_name}'.")
+        return {"status": "success", "inserted": 1}

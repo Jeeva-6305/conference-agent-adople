@@ -430,6 +430,59 @@ class WeeklyExhibitor(Base):
         }
 
 
+class SpeakerReply(Base):
+    """
+    Dedicated Speaker Reply Model:
+    Stores every distinct incoming reply message from an outreach email.
+    Preserves multiple replies per speaker without overwriting.
+    """
+    __tablename__ = "speaker_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    speaker_id = Column(String(50), index=True)
+    conference_id = Column(String(50), index=True)
+    conference_name = Column(String(255), default="")
+    speaker_name = Column(String(255), nullable=False)
+    job_title = Column(String(255), default="")
+    company_name = Column(String(255), default="")
+    personal_linkedin_url = Column(Text, default="")
+    linkedin_status = Column(String(50), default="")
+    professional_email = Column(String(255), index=True)
+    email_source_url = Column(Text, default="")
+    speaker_source_url = Column(Text, default="")
+    verification_status = Column(String(50), default="")
+    last_checked_at = Column(DateTime, default=datetime.utcnow)
+    weekly_run_id = Column(String(100), default="")
+    outreach_status = Column(String(50), default="sent")
+    reply_status = Column(String(50), default="replied")
+    reply_sentiment = Column(String(50), default="Neutral")
+    received_reply = Column(Text, default="")
+    sent_message = Column(Text, default="")
+    thread_id = Column(String(255), index=True)
+    reply_received_at = Column(DateTime, default=datetime.utcnow)
+    message_id = Column(String(255), unique=True, index=True)
+    original_speaker_id = Column(String(50), index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "speaker_id": self.speaker_id,
+            "conference_id": self.conference_id,
+            "conference_name": self.conference_name,
+            "speaker_name": self.speaker_name,
+            "job_title": self.job_title,
+            "company_name": self.company_name,
+            "professional_email": self.professional_email,
+            "reply_sentiment": self.reply_sentiment,
+            "received_reply": self.received_reply,
+            "reply_received_at": self.reply_received_at.isoformat() if self.reply_received_at else "",
+            "message_id": self.message_id,
+            "thread_id": self.thread_id,
+        }
+
+
+
 
 
 
