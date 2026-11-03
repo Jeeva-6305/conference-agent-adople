@@ -110,19 +110,23 @@ def weekly_scrape_job():
 
 def weekly_speaker_reply_watcher_job():
     """
-    Watches mailbox (akash.s@adople.ai) every 60 seconds (or configured interval)
+    Watches mailbox (akash.s@adople.ai / akash@adople.ai) every 60 seconds (or configured interval)
     for replies from weekly conference speakers.
     Matches replies, analyzes sentiment, updates OneDrive tbl_weekly_speakers,
     and sends Microsoft Teams cards.
     """
     if not getattr(settings, "OUTREACH_ENABLED", True):
         return
+    svc = None
     try:
         from ..services.speaker_outreach_service import SpeakerOutreachService
         svc = SpeakerOutreachService()
         svc.poll_replies()
     except Exception as e:
         logger.error(f"❌ [Outreach Watcher] Error in reply watcher job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
 
 
 def weekly_speaker_scheduled_send_job():
@@ -134,12 +138,16 @@ def weekly_speaker_scheduled_send_job():
     if not getattr(settings, "OUTREACH_ACTIVE", False):
         logger.info("ℹ️ [Outreach Sender] OUTREACH_ACTIVE is False. Skipping live email send pass.")
         return
+    svc = None
     try:
         from ..services.speaker_outreach_service import SpeakerOutreachService
         svc = SpeakerOutreachService()
         svc.run_outreach_send_pass()
     except Exception as e:
         logger.error(f"❌ [Outreach Sender] Error in scheduled email send job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
 
 
 def start_scheduler():
@@ -190,13 +198,14 @@ def start_scheduler():
         # 5. Scheduled Outreach Sender (e.g. 19:00 / 20:00)
         # Note: Will safely skip execution until OUTREACH_ACTIVE=True is set after user template approval
         send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "19:00")
+        outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
         try:
             shour, smin = [int(p) for p in send_time_str.split(":", 1)]
         except Exception:
             shour, smin = 19, 0
         scheduler.add_job(
             weekly_speaker_scheduled_send_job,
-            trigger=CronTrigger(hour=shour, minute=smin, timezone=weekly_tz),
+            trigger=CronTrigger(hour=shour, minute=smin, timezone=outreach_tz),
             id="weekly_speaker_scheduled_send_job",
             name="Scheduled Weekly Speaker Outreach Sender",
             replace_existing=True

@@ -127,6 +127,7 @@ class Settings:
     EMAIL_TEAMS_CARD_ENABLED: bool = os.getenv("EMAIL_TEAMS_CARD_ENABLED", os.getenv("EMAIL_TEAMS_CARD", "true")).lower() in ("1", "true", "yes")
     OUTREACH_STATE_FILE: str = os.getenv("STATE_FILE", "outreach_state.json")
     OUTREACH_ACTIVE: bool = os.getenv("OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
+    OUTREACH_TIMEZONE: str = os.getenv("OUTREACH_TIMEZONE", "Asia/Kolkata")
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
 
 settings = Settings()

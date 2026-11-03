@@ -26,16 +26,16 @@ def get_engine():
             logger.info(f"Attempting PostgreSQL connection to {settings.DATABASE_URL}...")
             engine = create_engine(
                 settings.DATABASE_URL,
-                pool_size=3,
-                max_overflow=2,
-                pool_recycle=3600,
+                pool_size=10,
+                max_overflow=10,
+                pool_recycle=1800,
                 pool_pre_ping=True,
-                pool_timeout=5,
-                connect_args={"connect_timeout": 2},
+                pool_timeout=15,
+                connect_args={"connect_timeout": 5},
                 echo_pool=False
             )
             logger.info(f"Connected successfully to PostgreSQL at {settings.DATABASE_URL}")
-            logger.info(f"Connection pool configured: size=3, max_overflow=2, timeout=5s")
+            logger.info(f"Connection pool configured: size=10, max_overflow=10, timeout=15s")
             return engine
         except Exception as e:
             logger.warning(

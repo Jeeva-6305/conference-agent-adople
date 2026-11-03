@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
 import requests
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -26,6 +27,9 @@ logger = logging.getLogger("speaker_outreach")
 # Safety locks for concurrent threads
 state_lock = threading.Lock()
 outreach_lock = threading.Lock()
+
+# Persistent in-memory cache to guarantee zero duplicate Teams notifications across threads
+PROCESSED_REPLY_IDS_GLOBAL = set()
 
 REPLY_INTENTS = {
     "INTERESTED", "MEETING_REQUESTED", "OUT_OF_OFFICE", "REFERRAL",
@@ -49,6 +53,15 @@ def get_first_name(raw_name: str) -> str:
 
 class SafeDict(dict):
     def __missing__(self, key):
+        clean_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
+        if clean_key in self:
+            return self[clean_key]
+        if clean_key in ("company", "company_name"):
+            return self.get("company_name", "") or self.get("company", "")
+        if clean_key in ("first_name", "speaker_name", "name"):
+            return self.get("first_name", "") or self.get("speaker_name", "")
+        if clean_key in ("conference", "conference_name"):
+            return self.get("conference_name", "")
         return ""
 
 
@@ -120,7 +133,13 @@ class MSGraphOutreachClient:
         # Dispatch the message
         send_url = f"{self.base_url}/users/{self.mailbox}/messages/{msg_id}/send"
         r_send = requests.post(send_url, headers=self.headers(), timeout=15)
-        r_send.raise_for_status()
+        if r_send.status_code >= 400:
+            err_msg = r_send.text
+            try:
+                err_msg = r_send.json().get("error", {}).get("message") or r_send.text
+            except Exception:
+                pass
+            raise RuntimeError(f"Microsoft Graph API send failed ({r_send.status_code}): {err_msg}")
 
         return msg_id, conversation_id
 
@@ -283,30 +302,87 @@ def extract_body_text_ms(msg: Dict[str, Any]) -> str:
     return raw.strip()
 
 
+def get_state_file_path() -> str:
+    configured = getattr(settings, "OUTREACH_STATE_FILE", "outreach_state.json")
+    if os.path.isabs(configured):
+        return configured
+    return "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/outreach_state.json"
+
+
 def load_state() -> Dict[str, Any]:
-    state_file = getattr(settings, "OUTREACH_STATE_FILE", "outreach_state.json")
+    state_file = get_state_file_path()
     with state_lock:
         if os.path.exists(state_file):
             try:
                 with open(state_file, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
-                        return json.loads(content)
+                        data = json.loads(content)
+                        PROCESSED_REPLY_IDS_GLOBAL.update(data.get("processed_reply_ids", []))
+                        return data
             except Exception as e:
                 logger.warning(f"Could not read {state_file}: {e}")
-        return {"threads": {}, "sent_log": [], "processed_reply_ids": []}
+        return {"threads": {}, "sent_log": [], "processed_reply_ids": list(PROCESSED_REPLY_IDS_GLOBAL)}
 
 
 def save_state(state: Dict[str, Any]):
-    state_file = getattr(settings, "OUTREACH_STATE_FILE", "outreach_state.json")
+    state_file = get_state_file_path()
     with state_lock:
         try:
+            # Read latest from disk to avoid wiping out concurrent entries
+            current_on_disk = {}
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        current_on_disk = json.loads(f.read().strip() or "{}")
+                except Exception:
+                    pass
+
+            # Merge processed_reply_ids
+            pids = set(current_on_disk.get("processed_reply_ids", []))
+            pids.update(state.get("processed_reply_ids", []))
+            pids.update(PROCESSED_REPLY_IDS_GLOBAL)
+            state["processed_reply_ids"] = list(pids)
+            PROCESSED_REPLY_IDS_GLOBAL.update(pids)
+
+            # Merge threads
+            merged_threads = current_on_disk.get("threads", {})
+            merged_threads.update(state.get("threads", {}))
+            state["threads"] = merged_threads
+
             tmp_file = f"{state_file}.tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
             os.replace(tmp_file, state_file)
         except Exception as e:
             logger.warning(f"Could not save {state_file}: {e}")
+
+
+def mark_reply_processed(msg_id: str):
+    """Atomically commits a message ID to in-memory set and disk immediately."""
+    if not msg_id:
+        return
+    PROCESSED_REPLY_IDS_GLOBAL.add(msg_id)
+    state_file = get_state_file_path()
+    with state_lock:
+        current = {"threads": {}, "sent_log": [], "processed_reply_ids": []}
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    current = json.loads(f.read().strip() or "{}")
+            except Exception:
+                pass
+        pids = set(current.get("processed_reply_ids", []))
+        pids.add(msg_id)
+        pids.update(PROCESSED_REPLY_IDS_GLOBAL)
+        current["processed_reply_ids"] = list(pids)
+        try:
+            tmp_file = f"{state_file}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(current, f, indent=2)
+            os.replace(tmp_file, state_file)
+        except Exception as e:
+            logger.warning(f"Could not atomically mark reply processed: {e}")
 
 
 def get_sent_today(state: Dict[str, Any]) -> int:
@@ -333,7 +409,7 @@ def load_template(template_path: Optional[str] = None) -> Tuple[str, str]:
                     content = f.read().strip()
                 if content:
                     lines = content.splitlines()
-                    subject = "Nice to connect - {conference_name}"
+                    subject = "A practical AI starting point for {company_name}’s operations"
                     body_start = 0
                     if lines and lines[0].lower().startswith("subject:"):
                         subject = lines[0].split(":", 1)[1].strip()
@@ -343,15 +419,7 @@ def load_template(template_path: Optional[str] = None) -> Tuple[str, str]:
             except Exception as e:
                 logger.debug(f"Could not read {p}: {e}")
 
-    # Safe fallback
-    return (
-        "Collaboration regarding your upcoming session at {conference_name}",
-        "Hi {first_name},\n\n"
-        "I noticed that you are scheduled to speak at {conference_name} representing {company}.\n\n"
-        "Would be great to connect with you!\n\n"
-        "Best regards,\n{sender}\n{sender_company}"
-    )
-
+     
 
 def build_email_content(speaker_name: str, job_title: str, company: str, conf_name: str) -> Tuple[str, str]:
     subj_tmpl, body_tmpl = load_template()
@@ -373,7 +441,10 @@ def build_email_content(speaker_name: str, job_title: str, company: str, conf_na
 
 
 def build_conversation_transcript_ms(messages: List[Dict[str, Any]], my_email: str, speaker_name: str) -> str:
-    """Builds chronological back-and-forth conversation transcript."""
+    """
+    Builds chronological transcript containing ONLY the speaker's received replies.
+    Our sent message is excluded from here because it is stored separately in the 'send message' column.
+    """
     blocks = []
     for msg in messages:
         from_obj = msg.get("from", {}).get("emailAddress", {})
@@ -383,10 +454,10 @@ def build_conversation_transcript_ms(messages: List[Dict[str, Any]], my_email: s
 
         is_from_us = (sender_email == my_email.lower()) or ("adople.ai" in sender_email)
         if is_from_us:
-            label = f"You ({getattr(settings, 'OUTREACH_SENDER_NAME', 'Akash')})"
-        else:
-            label = speaker_name or sender_name or sender_email
+            # Exclude our sent outreach emails; only record the speaker's incoming replies
+            continue
 
+        label = speaker_name or sender_name or sender_email
         body = extract_body_text_ms(msg)
         blocks.append(f"[{dt_str}] {label}:\n{body}")
 
@@ -487,11 +558,30 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
 # ==============================================================================
 class SpeakerOutreachService:
     def __init__(self, db: Optional[Session] = None):
-        self.db = db or SessionLocal()
+        if db is None:
+            self.db = SessionLocal()
+            self._owns_db = True
+        else:
+            self.db = db
+            self._owns_db = False
         self.graph = MSGraphOutreachClient()
         self.gemini = GeminiOutreachAgent()
         self.onedrive = OneDriveExcelService()
         self.local_excel_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+
+    def close(self):
+        """Closes database session if owned by this service instance."""
+        if getattr(self, "_owns_db", False) and self.db:
+            try:
+                self.db.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def send_test_outreach_email(
         self,
@@ -510,8 +600,8 @@ class SpeakerOutreachService:
         - Leaves ALL other real conference speakers completely untouched.
         """
         recipient_email = recipient_email.strip().lower()
-        if "@" not in recipient_email or "." not in recipient_email:
-            raise ValueError(f"Invalid recipient email address: '{recipient_email}'")
+        if "@" not in recipient_email or "." not in recipient_email or recipient_email.count("@") != 1:
+            raise ValueError(f"Invalid recipient email address: '{recipient_email}'. An email must contain exactly one '@' (e.g. 'skjeeva2005@gmail.com').")
 
         subject, body = build_email_content(
             speaker_name=speaker_name,
@@ -648,11 +738,20 @@ class SpeakerOutreachService:
         sent_today = get_sent_today(state)
         
         allowed_status = getattr(settings, "OUTREACH_ALLOWED_EMAIL_STATUS", "verified").lower()
-        verified_speakers = self.db.query(WeeklySpeaker).filter(
-            WeeklySpeaker.professional_email != "",
-            WeeklySpeaker.professional_email.isnot(None),
-            WeeklySpeaker.verification_status == allowed_status
-        ).count()
+        if allowed_status in ("all", "*", "any"):
+            verified_speakers = self.db.query(WeeklySpeaker).filter(
+                WeeklySpeaker.professional_email != "",
+                WeeklySpeaker.professional_email.isnot(None),
+                WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
+            ).count()
+        else:
+            allowed_list = [s.strip().lower() for s in allowed_status.split(",") if s.strip()]
+            verified_speakers = self.db.query(WeeklySpeaker).filter(
+                WeeklySpeaker.professional_email != "",
+                WeeklySpeaker.professional_email.isnot(None),
+                func.lower(WeeklySpeaker.verification_status).in_(allowed_list),
+                WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
+            ).count()
 
         sent_speakers = self.db.query(WeeklySpeaker).filter(
             WeeklySpeaker.outreach_status == "sent"
@@ -669,6 +768,7 @@ class SpeakerOutreachService:
             "teams_card_notifications": getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
             "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-3.8-flash"),
             "scheduled_send_time": getattr(settings, "OUTREACH_SEND_TIME", "19:00"),
+            "timezone": getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata"),
             "reply_watch_interval_minutes": getattr(settings, "OUTREACH_WATCH_INTERVAL_MINUTES", 1),
             "verified_speakers_eligible": verified_speakers,
             "emails_sent_count": sent_speakers,
@@ -700,13 +800,22 @@ class SpeakerOutreachService:
             sent_today = get_sent_today(state)
             daily_cap = getattr(settings, "OUTREACH_DAILY_CAP", 0)
 
-            # Query verified speakers with non-empty emails
+            # Query eligible speakers with non-empty emails
             allowed_status = getattr(settings, "OUTREACH_ALLOWED_EMAIL_STATUS", "verified").lower()
-            speakers = self.db.query(WeeklySpeaker).filter(
-                WeeklySpeaker.professional_email != "",
-                WeeklySpeaker.professional_email.isnot(None),
-                WeeklySpeaker.verification_status == allowed_status
-            ).all()
+            if allowed_status in ("all", "*", "any"):
+                speakers = self.db.query(WeeklySpeaker).filter(
+                    WeeklySpeaker.professional_email != "",
+                    WeeklySpeaker.professional_email.isnot(None),
+                    WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
+                ).all()
+            else:
+                allowed_list = [s.strip().lower() for s in allowed_status.split(",") if s.strip()]
+                speakers = self.db.query(WeeklySpeaker).filter(
+                    WeeklySpeaker.professional_email != "",
+                    WeeklySpeaker.professional_email.isnot(None),
+                    func.lower(WeeklySpeaker.verification_status).in_(allowed_list),
+                    WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
+                ).all()
 
             sent_count = 0
             skipped_count = 0
@@ -766,19 +875,20 @@ class SpeakerOutreachService:
 
                     # Record in state
                     dedupe_key = f"{email}|{spk.conference_id.lower()}"
-                    state.setdefault("sent_log", []).append({
+                    fresh_state = load_state()
+                    fresh_state.setdefault("sent_log", []).append({
                         "email": email,
                         "conference_id": spk.conference_id,
                         "sent_at": now_iso(),
                         "status": "sent"
                     })
-                    state.setdefault("threads", {})[dedupe_key] = {
+                    fresh_state.setdefault("threads", {})[dedupe_key] = {
                         "thread_id": conversation_id,
                         "message_id": msg_id,
                         "speaker_id": spk.speaker_id,
                         "sent_at": now_iso()
                     }
-                    save_state(state)
+                    save_state(fresh_state)
 
                     # Sync to OneDrive Excel in-place
                     self._update_onedrive_speaker_row(spk)
@@ -837,7 +947,7 @@ class SpeakerOutreachService:
 
         for msg in inbox_messages:
             msg_id = msg.get("id")
-            if not msg_id or msg_id in processed_ids:
+            if not msg_id or msg_id in processed_ids or msg_id in PROCESSED_REPLY_IDS_GLOBAL:
                 continue
 
             conv_id = msg.get("conversationId", "")
@@ -847,6 +957,10 @@ class SpeakerOutreachService:
             if not target_speaker:
                 # Unrelated email - ignore safely
                 continue
+
+            # IMMEDIATELY claim this message ID in memory and disk before any processing begins
+            processed_ids.add(msg_id)
+            mark_reply_processed(msg_id)
 
             # This is a verified reply from a target speaker
             logger.info(f"📬 Incoming reply detected from {target_speaker.speaker_name} <{from_addr}>!")
@@ -891,10 +1005,8 @@ class SpeakerOutreachService:
 
             self.db.commit()
 
-            # Record in state & deduplication set
-            processed_ids.add(msg_id)
-            state.setdefault("processed_reply_ids", []).append(msg_id)
-            save_state(state)
+            # Ensure persisted in state & deduplication set
+            mark_reply_processed(msg_id)
 
             # Update OneDrive and Local Excel
             self._update_onedrive_speaker_row(target_speaker)
