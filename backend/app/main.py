@@ -680,7 +680,7 @@ def send_test_email_endpoint(
     """
     Sends an isolated test outreach email to your personal email address:
     - Uses approved template.txt formatting.
-    - Dispatches from akash.s@adople.ai via Microsoft Graph API.
+    - Dispatches from akash@adople.ai via Microsoft Graph API.
     - Creates an isolated test record in PostgreSQL and OneDrive Excel.
     - Registers the thread in outreach_state.json for reply monitoring.
     - Does NOT touch or send emails to any actual conference speakers.
@@ -698,7 +698,7 @@ def send_test_email_endpoint(
 @app.post("/api/outreach/poll-replies")
 def poll_outreach_replies(db: Session = Depends(get_db)):
     """
-    Manually triggers a 60-second reply monitoring pass across akash.s@adople.ai:
+    Manually triggers a 60-second reply monitoring pass across akash@adople.ai:
     - Scans recent inbox messages
     - Matches replies to original speaker email threads
     - Analyzes sentiment (Positive / Neutral / Negative) using Gemini with rule fallback

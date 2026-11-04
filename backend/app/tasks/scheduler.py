@@ -114,7 +114,7 @@ def weekly_scrape_job():
 
 def weekly_speaker_reply_watcher_job():
     """
-    Watches mailbox (akash.s@adople.ai / akash@adople.ai) every 60 seconds (or configured interval)
+    Watches mailbox (akash@adople.ai) every 60 seconds (or configured interval)
     for replies from weekly conference speakers.
     Matches replies, analyzes sentiment, updates OneDrive tbl_weekly_speakers,
     and sends Microsoft Teams cards.

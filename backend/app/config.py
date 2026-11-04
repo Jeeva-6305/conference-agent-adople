@@ -111,7 +111,7 @@ class Settings:
     HUNTER_EMAIL_ENRICHMENT_ENABLED: bool = os.getenv("HUNTER_EMAIL_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")
     HUNTER_BASE_URL: str = os.getenv("HUNTER_BASE_URL", "https://api.hunter.io/v2")
 
-    # Microsoft Graph Outreach Configuration (akash.s@adople.ai)
+    # Microsoft Graph Outreach Configuration (akash@adople.ai)
     OUTREACH_MS_TENANT_ID: str = os.getenv("OUTREACH_MS_TENANT_ID", "")
     OUTREACH_MS_CLIENT_ID: str = os.getenv("OUTREACH_MS_CLIENT_ID", "")
     OUTREACH_MS_CLIENT_SECRET: str = os.getenv("OUTREACH_MS_CLIENT_SECRET", "")

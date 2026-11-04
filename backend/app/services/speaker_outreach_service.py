@@ -67,7 +67,7 @@ class SafeDict(dict):
 
 # ==============================================================================
 # Microsoft Graph API Client for Outreach & Mailbox Polling
-# (Using dedicated OUTREACH_MS_* credentials for akash.s@adople.ai)
+# (Using dedicated OUTREACH_MS_* credentials for akash@adople.ai)
 # ==============================================================================
 class MSGraphOutreachClient:
     def __init__(self):
@@ -109,7 +109,7 @@ class MSGraphOutreachClient:
 
     def send_mail(self, to_email: str, subject: str, body: str, content_type: str = "Text") -> Tuple[str, str]:
         """
-        1. Creates message in akash.s@adople.ai to get message ID and conversationId.
+        1. Creates message in akash@adople.ai to get message ID and conversationId.
         2. Sends the message immediately.
         Returns: (message_id, conversation_id)
         """
@@ -597,7 +597,7 @@ class SpeakerOutreachService:
         Sends a single test outreach email to a specified personal email address:
         - Renders email strictly using template.txt.
         - Ensures an isolated test record in PostgreSQL and local/OneDrive Excel exists.
-        - Dispatches via Microsoft Graph API (akash.s@adople.ai).
+        - Dispatches via Microsoft Graph API (akash@adople.ai).
         - Tracks the conversation thread in outreach_state.json for reply monitoring.
         - Leaves ALL other real conference speakers completely untouched.
         """
@@ -764,7 +764,7 @@ class SpeakerOutreachService:
         ).count()
 
         return {
-            "mailbox": getattr(settings, "OUTREACH_MS_MAILBOX", "akash.s@adople.ai"),
+            "mailbox": getattr(settings, "OUTREACH_MS_MAILBOX", "akash@adople.ai"),
             "campaign_active": getattr(settings, "OUTREACH_ACTIVE", False),
             "dry_run": getattr(settings, "OUTREACH_DRY_RUN", True),
             "teams_card_notifications": getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
@@ -786,7 +786,7 @@ class SpeakerOutreachService:
         - Filters speakers with valid, verified email addresses.
         - Skips already sent, unverified, or duplicate speakers.
         - Pre-marks 'sending' before dispatch.
-        - Dispatches email via Microsoft Graph (akash.s@adople.ai).
+        - Dispatches email via Microsoft Graph (akash@adople.ai).
         - Enforces DRY_RUN safety check (no real emails sent if DRY_RUN=True).
         - Syncs status to OneDrive Excel and PostgreSQL.
         """
@@ -918,7 +918,7 @@ class SpeakerOutreachService:
 
     def poll_replies(self) -> Dict[str, Any]:
         """
-        Polls mailbox akash.s@adople.ai for new incoming replies:
+        Polls mailbox akash@adople.ai for new incoming replies:
         - Runs 24/7 every 60s without interrupting existing workflows.
         - Identifies whether incoming messages belong to our reached-out speakers.
         - Captures full back-and-forth transcript into 'Received Reply'.
