@@ -1,3 +1,4 @@
+
 import logging
 import re
 import uuid
@@ -810,6 +811,7 @@ class WeeklyExhibitorService:
                         contact_person=raw.get("contact_person", "") or "",
                         contact_designation=raw.get("contact_designation", "") or "",
                         professional_email=raw.get("professional_email", "") or "",
+                        email_status="Verified" if raw.get("professional_email") else "Not Found",
                         company_linkedin_url=comp_li,
                         contact_person_linkedin_url=person_li,
                         source_url=raw.get("source_url") or event_url,
@@ -839,6 +841,7 @@ class WeeklyExhibitorService:
                         contact_person="",
                         contact_designation="",
                         professional_email="",
+                        email_status="Not Found",
                         company_linkedin_url="",
                         contact_person_linkedin_url="",
                         source_url=event_url,

@@ -426,6 +426,7 @@ class WeeklyAttendee(Base):
     job_title = Column(String(255), default="")
     company_name = Column(String(255), default="")
     professional_email = Column(String(255), default="")
+    email_status = Column(String(50), default="Not Found")  # Verified, Not Found
     personal_linkedin_url = Column(Text, default="")
     linkedin_status = Column(String(50), default="needs_review")  # verified, not_found, not_applicable
     source_url = Column(Text, default="")
@@ -444,6 +445,7 @@ class WeeklyAttendee(Base):
             "job_title": self.job_title,
             "company_name": self.company_name,
             "professional_email": self.professional_email,
+            "email_status": self.email_status,
             "personal_linkedin_url": self.personal_linkedin_url,
             "linkedin_status": self.linkedin_status,
             "source_url": self.source_url,
@@ -469,6 +471,7 @@ class WeeklyExhibitor(Base):
     contact_person = Column(String(255), default="")
     contact_designation = Column(String(255), default="")
     professional_email = Column(String(255), default="")
+    email_status = Column(String(50), default="Not Found")  # Verified, Not Found
     company_linkedin_url = Column(Text, default="")
     contact_person_linkedin_url = Column(Text, default="")
     source_url = Column(Text, default="")
@@ -491,6 +494,7 @@ class WeeklyExhibitor(Base):
             "contact_person": self.contact_person,
             "contact_designation": self.contact_designation,
             "professional_email": self.professional_email,
+            "email_status": self.email_status,
             "company_linkedin_url": self.company_linkedin_url,
             "contact_person_linkedin_url": self.contact_person_linkedin_url,
             "source_url": self.source_url,

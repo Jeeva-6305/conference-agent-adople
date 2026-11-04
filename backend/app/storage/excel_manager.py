@@ -567,7 +567,7 @@ class ExcelManager:
         sheet_name = "weekly_attendees"
         cols = [
             "Conference Name", "Conference Date", "Attendee Name", "Job Title", "Company",
-            "Professional Email", "LinkedIn URL", "Source URL", "Collection Date"
+            "Professional Email", "LinkedIn URL", "Source URL", "Collection Date", "Email Status"
         ]
 
         if sheet_name not in wb.sheetnames:
@@ -622,7 +622,8 @@ class ExcelManager:
                 (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or "",
                 (att.personal_linkedin_url if hasattr(att, "personal_linkedin_url") else att.get("personal_linkedin_url", "")) or "",
                 (att.source_url if hasattr(att, "source_url") else att.get("source_url", "")) or "",
-                coll_date
+                coll_date,
+                (att.email_status if hasattr(att, "email_status") else att.get("email_status", "Not Found")) or "Not Found"
             ])
             existing_keys.add(key)
             added_count += 1
@@ -655,7 +656,7 @@ class ExcelManager:
             "Conference Name", "Conference Date", "Exhibitor Company Name", "Company Website",
             "Exhibitor Category / Industry", "Company Description", "Exhibitor Booth Number",
             "Contact Person", "Contact Person Designation", "Professional Email",
-            "LinkedIn Company URL", "Contact Person LinkedIn URL", "Source URL", "Collection Date"
+            "LinkedIn Company URL", "Contact Person LinkedIn URL", "Source URL", "Collection Date", "Email Status"
         ]
 
         if sheet_name not in wb.sheetnames:
@@ -715,7 +716,8 @@ class ExcelManager:
                 (exh.company_linkedin_url if hasattr(exh, "company_linkedin_url") else exh.get("company_linkedin_url", "")) or "",
                 (exh.contact_person_linkedin_url if hasattr(exh, "contact_person_linkedin_url") else exh.get("contact_person_linkedin_url", "")) or "",
                 (exh.source_url if hasattr(exh, "source_url") else exh.get("source_url", "")) or "",
-                coll_date
+                coll_date,
+                (exh.email_status if hasattr(exh, "email_status") else exh.get("email_status", "Not Found")) or "Not Found"
             ])
             existing_keys.add(key)
             added_count += 1

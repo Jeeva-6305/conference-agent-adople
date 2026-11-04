@@ -999,7 +999,8 @@ class OneDriveExcelService:
                 (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or "",
                 (att.personal_linkedin_url if hasattr(att, "personal_linkedin_url") else att.get("personal_linkedin_url", "")) or "",
                 (att.source_url if hasattr(att, "source_url") else att.get("source_url", "")) or "",
-                coll_date_str
+                coll_date_str,
+                (att.email_status if hasattr(att, "email_status") else att.get("email_status", "Not Found")) or "Not Found"
             ]
             rows_to_insert.append(new_row)
             existing_keys.add(key)
@@ -1087,7 +1088,8 @@ class OneDriveExcelService:
                 (exh.company_linkedin_url if hasattr(exh, "company_linkedin_url") else exh.get("company_linkedin_url", "")) or "",
                 (exh.contact_person_linkedin_url if hasattr(exh, "contact_person_linkedin_url") else exh.get("contact_person_linkedin_url", "")) or "",
                 (exh.source_url if hasattr(exh, "source_url") else exh.get("source_url", "")) or "",
-                coll_date_str
+                coll_date_str,
+                (exh.email_status if hasattr(exh, "email_status") else exh.get("email_status", "Not Found")) or "Not Found"
             ]
             rows_to_insert.append(new_row)
             existing_keys.add(key)
