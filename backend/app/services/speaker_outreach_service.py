@@ -421,7 +421,7 @@ def load_template(template_path: Optional[str] = None) -> Tuple[str, str]:
 
      
 
-def build_email_content(speaker_name: str, job_title: str, company: str, conf_name: str) -> Tuple[str, str]:
+def build_email_content(speaker_name: str, job_title: str, company: str, conf_name: str, pitch_hook: str = "") -> Tuple[str, str]:
     subj_tmpl, body_tmpl = load_template()
     first_name = get_first_name(speaker_name)
     sender = getattr(settings, "OUTREACH_SENDER_NAME", "Akash")
@@ -434,6 +434,7 @@ def build_email_content(speaker_name: str, job_title: str, company: str, conf_na
         "company": company or "your organization",
         "company_name": company or "your organization",
         "conference_name": conf_name or "the conference",
+        "pitch_hook": pitch_hook or "",
         "sender": sender,
         "sender_company": sender_comp
     })
@@ -780,7 +781,7 @@ class SpeakerOutreachService:
             "active_monitored_threads": len(state.get("threads", {}))
         }
 
-    def run_outreach_send_pass(self, force: bool = False) -> Dict[str, Any]:
+    def run_outreach_send_pass(self, force: bool = False, dry_run_override: Optional[bool] = None) -> Dict[str, Any]:
         """
         Executes the scheduled email outreach pass:
         - Filters speakers with valid, verified email addresses.
@@ -791,7 +792,10 @@ class SpeakerOutreachService:
         - Syncs status to OneDrive Excel and PostgreSQL.
         """
         with outreach_lock:
-            dry_run = getattr(settings, "OUTREACH_DRY_RUN", True)
+            if dry_run_override is not None:
+                dry_run = dry_run_override
+            else:
+                dry_run = getattr(settings, "OUTREACH_DRY_RUN", True)
             active = getattr(settings, "OUTREACH_ACTIVE", False)
             if not force and not active and not dry_run:
                 logger.info("Outreach is not active (OUTREACH_ACTIVE=false). Pass skipped.")
@@ -802,14 +806,14 @@ class SpeakerOutreachService:
             sent_today = get_sent_today(state)
             daily_cap = getattr(settings, "OUTREACH_DAILY_CAP", 0)
 
-            # Query eligible speakers with non-empty emails
+            # Query eligible speakers ordered by ICP score descending (highest priority first)
             allowed_status = getattr(settings, "OUTREACH_ALLOWED_EMAIL_STATUS", "verified").lower()
             if allowed_status in ("all", "*", "any"):
                 speakers = self.db.query(WeeklySpeaker).filter(
                     WeeklySpeaker.professional_email != "",
                     WeeklySpeaker.professional_email.isnot(None),
                     WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-                ).all()
+                ).order_by(WeeklySpeaker.icp_score.desc()).all()
             else:
                 allowed_list = [s.strip().lower() for s in allowed_status.split(",") if s.strip()]
                 speakers = self.db.query(WeeklySpeaker).filter(
@@ -817,7 +821,7 @@ class SpeakerOutreachService:
                     WeeklySpeaker.professional_email.isnot(None),
                     func.lower(WeeklySpeaker.verification_status).in_(allowed_list),
                     WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-                ).all()
+                ).order_by(WeeklySpeaker.icp_score.desc()).all()
 
             sent_count = 0
             skipped_count = 0
@@ -826,6 +830,12 @@ class SpeakerOutreachService:
             for spk in speakers:
                 email = (spk.professional_email or "").strip().lower()
                 if "@" not in email or "." not in email:
+                    skipped_count += 1
+                    continue
+
+                # Auto-suppress disqualified non-commercial / academic leads
+                if (spk.icp_score or 0.0) < 40.0:
+                    logger.info(f"Skipping lead {spk.speaker_name} ({spk.company_name}): ICP Score {spk.icp_score} < 40 (Disqualified/Academic).")
                     skipped_count += 1
                     continue
 
@@ -843,7 +853,8 @@ class SpeakerOutreachService:
                     speaker_name=spk.speaker_name,
                     job_title=spk.job_title,
                     company=spk.company_name,
-                    conf_name=spk.conference_name
+                    conf_name=spk.conference_name,
+                    pitch_hook=spk.pitch_hook or ""
                 )
                 full_message = f"Subject: {subject}\n\n{body}"
 

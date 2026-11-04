@@ -98,6 +98,10 @@ class Settings:
     WEEKLY_EXHIBITOR_DUPLICATE_CHECK: bool = os.getenv("WEEKLY_EXHIBITOR_DUPLICATE_CHECK", "true").lower() in ("true", "1", "yes")
     WEEKLY_EXHIBITOR_APPEND_ONLY: bool = os.getenv("WEEKLY_EXHIBITOR_APPEND_ONLY", "true").lower() in ("true", "1", "yes")
 
+    # Weekly ICP Strategic Scoring Configuration
+    WEEKLY_ICP_SCORING_ENABLED: bool = os.getenv("WEEKLY_ICP_SCORING_ENABLED", "true").lower() in ("true", "1", "yes")
+    WEEKLY_LATEST_SCORING_WORKSHEET_NAME: str = os.getenv("WEEKLY_LATEST_SCORING_WORKSHEET_NAME", "latest_week_scoring")
+
     # Prospeo.io API (High Accuracy LinkedIn Profile & Professional Email Enrichment)
     PROSPEO_API_KEY: str = os.getenv("PROSPEO_API_KEY", "")
     PROSPEO_ENRICHMENT_ENABLED: bool = os.getenv("PROSPEO_ENRICHMENT_ENABLED", "true").lower() in ("true", "1", "yes")

@@ -509,6 +509,17 @@ class WeeklyConferenceService:
             except Exception as e:
                 logger.warning(f"⚠️ [Weekly Workflow] Exhibitor collection notice: {e}")
 
+        # 8e. Automated Strategic ICP Scoring & Latest Week Scoring Sheet Sync
+        icp_res = {}
+        if getattr(settings, "WEEKLY_ICP_SCORING_ENABLED", True):
+            try:
+                from .icp_scoring_service import ICPScoringService
+                icp_svc = ICPScoringService(self.db)
+                icp_res = icp_svc.score_and_publish_weekly_run(run_id=run_id)
+                logger.info(f"✅ [Weekly Workflow] Automated ICP scoring & latest-week sheet sync complete: {icp_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Workflow] ICP scoring notice: {e}", exc_info=True)
+
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts
         industry_counts: Dict[str, int] = {}
@@ -548,6 +559,7 @@ class WeeklyConferenceService:
             "speaker_enrichment": enrichment_res,
             "attendees": attendee_res,
             "exhibitors": exhibitor_res,
+            "icp_scoring": icp_res,
             "teams_card": teams_res,
             "duration_seconds": elapsed
         }

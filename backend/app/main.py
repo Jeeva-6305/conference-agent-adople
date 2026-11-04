@@ -637,6 +637,58 @@ def trigger_weekly_exhibitor_collect(
 
 
 # ==========================================
+# Weekly Strategic ICP Scoring & Ranking Leaderboard
+# ==========================================
+
+@app.get("/api/weekly/latest-scoring")
+def get_latest_week_scoring(
+    run_id: Optional[str] = Query(None, description="Optional weekly_run_id (defaults to latest)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns the latest week's ranked conferences and speakers with ICP strategic scores and pitch hooks.
+    """
+    from .models import WeeklyConference, WeeklySpeaker, WeeklyCompany
+    effective_run = run_id
+    if not effective_run:
+        latest = db.query(WeeklyConference.weekly_run_id).filter(WeeklyConference.weekly_run_id.isnot(None)).order_by(WeeklyConference.start_date.desc().nullslast()).first()
+        effective_run = latest[0] if latest else None
+
+    if not effective_run:
+        return {"status": "empty", "message": "No weekly runs found", "conferences": [], "speakers": [], "companies": []}
+
+    confs = db.query(WeeklyConference).filter(WeeklyConference.weekly_run_id == effective_run).order_by(WeeklyConference.icp_rank.asc().nullslast()).all()
+    spks = db.query(WeeklySpeaker).filter(WeeklySpeaker.weekly_run_id == effective_run).order_by(WeeklySpeaker.icp_rank.asc().nullslast()).all()
+    comps = db.query(WeeklyCompany).filter(WeeklyCompany.weekly_run_id == effective_run).order_by(WeeklyCompany.icp_rank.asc().nullslast()).all()
+
+    return {
+        "status": "success",
+        "weekly_run_id": effective_run,
+        "total_conferences": len(confs),
+        "total_speakers": len(spks),
+        "total_companies": len(comps),
+        "conferences": [c.to_dict() for c in confs],
+        "speakers": [s.to_dict() for s in spks],
+        "companies": [comp.to_dict() for comp in comps]
+    }
+
+
+@app.post("/api/trigger/weekly-icp-score")
+def trigger_weekly_icp_score(
+    run_id: Optional[str] = Query(None, description="Optional weekly_run_id (defaults to latest)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Triggers ICP strategic scoring & ranking calculation across PostgreSQL,
+    Local Excel, and OneDrive Live Excel (master sheets + latest_week_scoring).
+    """
+    from .services.icp_scoring_service import ICPScoringService
+    svc = ICPScoringService(db=db)
+    res = svc.score_and_publish_weekly_run(run_id=run_id)
+    return res
+
+
+# ==========================================
 # Weekly Speaker Email Outreach & Reply Monitoring
 # ==========================================
 
@@ -666,7 +718,7 @@ def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_
     """
     from .services.speaker_outreach_service import SpeakerOutreachService
     svc = SpeakerOutreachService(db=db)
-    return svc.run_outreach_send_pass(force=force)
+    return svc.run_outreach_send_pass(force=force, dry_run_override=True)
 
 
 @app.post("/api/outreach/send-test")

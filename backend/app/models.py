@@ -219,6 +219,11 @@ class WeeklyConference(Base):
     link_status = Column(String(50), default="verified")  # verified, needs_review, unverified_access_restricted, broken
     speaker_status = Column(String(50), default="No")  # Yes / No
     weekly_run_id = Column(String(100), nullable=False, index=True)
+    icp_score = Column(Float, default=0.0)
+    icp_rank = Column(Integer, default=0)
+    icp_tier = Column(String(100), default="")
+    industry_fit_score = Column(Float, default=0.0)
+    audience_fit_score = Column(Float, default=0.0)
     last_checked_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -239,6 +244,11 @@ class WeeklyConference(Base):
             "link_status": self.link_status,
             "speaker_status": self.speaker_status,
             "weekly_run_id": self.weekly_run_id,
+            "icp_score": float(self.icp_score or 0.0),
+            "icp_rank": int(self.icp_rank or 0),
+            "icp_tier": self.icp_tier or "",
+            "industry_fit_score": float(self.industry_fit_score or 0.0),
+            "audience_fit_score": float(self.audience_fit_score or 0.0),
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
         }
 
@@ -260,6 +270,13 @@ class WeeklySpeaker(Base):
     speaker_source_url = Column(Text, default="")
     verification_status = Column(String(50), default="needs_review")  # verified, needs_review
     weekly_run_id = Column(String(100), nullable=False, index=True)
+    icp_score = Column(Float, default=0.0)
+    icp_rank = Column(Integer, default=0)
+    icp_tier = Column(String(100), default="")
+    industry_fit_score = Column(Float, default=0.0)
+    scale_fit_score = Column(Float, default=0.0)
+    company_headcount_estimate = Column(String(50), default="")
+    pitch_hook = Column(Text, default="")
     outreach_status = Column(String(50), default="")  # sent, sending, failed, skipped_*
     reply_status = Column(String(50), default="")     # replied, bounced
     reply_sentiment = Column(String(50), default="")  # Positive, Negative, Neutral
@@ -287,12 +304,65 @@ class WeeklySpeaker(Base):
             "speaker_source_url": self.speaker_source_url,
             "verification_status": self.verification_status,
             "weekly_run_id": self.weekly_run_id,
+            "icp_score": float(self.icp_score or 0.0),
+            "icp_rank": int(self.icp_rank or 0),
+            "icp_tier": self.icp_tier or "",
+            "industry_fit_score": float(self.industry_fit_score or 0.0),
+            "scale_fit_score": float(self.scale_fit_score or 0.0),
+            "company_headcount_estimate": self.company_headcount_estimate or "",
+            "pitch_hook": self.pitch_hook or "",
             "outreach_status": self.outreach_status or "",
             "reply_status": self.reply_status or "",
             "reply_sentiment": self.reply_sentiment or "",
             "received_reply": self.received_reply or "",
             "email_thread_id": self.email_thread_id or "",
             "email_sent_at": self.email_sent_at.isoformat() if self.email_sent_at else "",
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
+        }
+
+
+class WeeklyCompany(Base):
+    __tablename__ = "weekly_companies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String(255), nullable=False, index=True)
+    company_domain = Column(String(255), default="")
+    official_website = Column(Text, default="")
+    primary_industry = Column(String(255), default="")
+    headcount_tier = Column(String(100), default="")
+    conference_name = Column(String(255), default="")
+    conference_id = Column(String(50), default="")
+    weekly_run_id = Column(String(100), nullable=False, index=True)
+    icp_score = Column(Float, default=0.0)
+    icp_rank = Column(Integer, default=0)
+    icp_tier = Column(String(100), default="")
+    industry_fit_score = Column(Float, default=0.0)
+    scale_fit_score = Column(Float, default=0.0)
+    qualification_status = Column(String(50), default="")
+    strategic_justification = Column(Text, default="")
+    pitch_hook = Column(Text, default="")
+    last_checked_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "company_name": self.company_name,
+            "company_domain": self.company_domain,
+            "official_website": self.official_website,
+            "primary_industry": self.primary_industry,
+            "headcount_tier": self.headcount_tier,
+            "conference_name": self.conference_name,
+            "conference_id": self.conference_id,
+            "weekly_run_id": self.weekly_run_id,
+            "icp_score": float(self.icp_score or 0.0),
+            "icp_rank": int(self.icp_rank or 0),
+            "icp_tier": self.icp_tier or "",
+            "industry_fit_score": float(self.industry_fit_score or 0.0),
+            "scale_fit_score": float(self.scale_fit_score or 0.0),
+            "qualification_status": self.qualification_status or "",
+            "strategic_justification": self.strategic_justification or "",
+            "pitch_hook": self.pitch_hook or "",
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else ""
         }
 
