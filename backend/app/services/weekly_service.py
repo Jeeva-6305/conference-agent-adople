@@ -520,6 +520,16 @@ class WeeklyConferenceService:
             except Exception as e:
                 logger.warning(f"⚠️ [Weekly Workflow] ICP scoring notice: {e}", exc_info=True)
 
+        # 8f. Automated Sync to Verified Data Sheet
+        verified_res = {}
+        try:
+            from .verified_data_service import VerifiedDataService
+            v_svc = VerifiedDataService(self.db)
+            verified_res = v_svc.sync_all_verified_data()
+            logger.info(f"✅ [Weekly Workflow] Automated Verified Data sync complete: {verified_res}")
+        except Exception as e:
+            logger.warning(f"⚠️ [Weekly Workflow] Verified Data sync notice: {e}", exc_info=True)
+
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts
         industry_counts: Dict[str, int] = {}

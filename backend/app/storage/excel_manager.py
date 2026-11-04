@@ -726,6 +726,20 @@ class ExcelManager:
         logger.info(f"✅ Local Excel weekly_exhibitors sync: {added_count} appended, {skipped_count} skipped/duplicate.")
         return {"status": "success", "inserted_count": added_count, "skipped_count": skipped_count}
 
+    def sync_verified_data_to_excel(self, contacts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Synchronizes verified contacts (speakers, attendees, exhibitors with verified email)
+        to the 'Verified Data' sheet in local Excel.
+        """
+        from ..services.verified_data_service import VerifiedDataService
+        from ..database import SessionLocal
+        db = SessionLocal()
+        try:
+            svc = VerifiedDataService(db)
+            return svc.sync_to_local_excel(contacts)
+        finally:
+            db.close()
+
     def append_speaker_reply_to_excel(self, row_values: List[Any]) -> Dict[str, Any]:
         """
         Appends a separate speaker reply record to the 'Speakers Replies' worksheet in local Excel.

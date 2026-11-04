@@ -413,4 +413,13 @@ class SpeakerEnrichmentService:
             f"Emails enriched: {stats['emails_enriched']} | LinkedIn discovered: {stats['linkedin_discovered']} | "
             f"OneDrive updates: {stats['onedrive_updates']} | DB updates: {stats['db_updates']}"
         )
+
+        # Automated Sync to Verified Data Sheet
+        try:
+            from .verified_data_service import VerifiedDataService
+            VerifiedDataService(self.db).sync_all_verified_data()
+            logger.info("✅ [Speaker Enrichment] Synchronized updated verified speakers to 'Verified Data' sheet.")
+        except Exception as ve:
+            logger.warning(f"⚠️ [Speaker Enrichment] Notice syncing to Verified Data: {ve}")
+
         return stats

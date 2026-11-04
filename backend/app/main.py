@@ -688,6 +688,19 @@ def trigger_weekly_icp_score(
     return res
 
 
+@app.post("/api/weekly/sync-verified-data")
+def trigger_weekly_verified_data_sync(db: Session = Depends(get_db)):
+    """
+    Aggregates all genuine verified contacts across Weekly Speakers, Attendees,
+    and Exhibitors having verified professional emails and synchronizes them to
+    the 'Verified Data' sheet in Local Excel and OneDrive Live Excel.
+    """
+    from .services.verified_data_service import VerifiedDataService
+    svc = VerifiedDataService(db=db)
+    res = svc.sync_all_verified_data()
+    return res
+
+
 # ==========================================
 # Weekly Speaker Email Outreach & Reply Monitoring
 # ==========================================

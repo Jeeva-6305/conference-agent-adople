@@ -880,6 +880,14 @@ class WeeklyExhibitorService:
         except Exception as e:
             logger.warning(f"⚠️ OneDrive Excel weekly_exhibitors sync notice: {e}")
 
+        # Automated Sync to Verified Data Sheet
+        try:
+            from .verified_data_service import VerifiedDataService
+            VerifiedDataService(self.db).sync_all_verified_data()
+            logger.info("✅ [Exhibitor Collection] Synchronized eligible verified exhibitors to 'Verified Data' sheet.")
+        except Exception as ve:
+            logger.warning(f"⚠️ [Exhibitor Collection] Notice syncing to Verified Data: {ve}")
+
         elapsed = round(time.time() - start_time, 2)
         logger.info(
             f"🎉 [Exhibitor Collection] Completed: {len(target_confs)} conferences checked in {elapsed}s | "
