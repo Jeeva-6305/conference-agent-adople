@@ -58,8 +58,10 @@ class SafeDict(dict):
             return self[clean_key]
         if clean_key in ("company", "company_name"):
             return self.get("company_name", "") or self.get("company", "")
-        if clean_key in ("first_name", "speaker_name", "name"):
-            return self.get("first_name", "") or self.get("speaker_name", "")
+        if clean_key in ("first_name", "name"):
+            return self.get("first_name", "") or self.get("name", "")
+        if clean_key in ("speaker_name", "attendee_name", "exhibitor_name", "full_name"):
+            return self.get("full_name", "") or self.get("speaker_name", "") or self.get("name", "")
         if clean_key in ("conference", "conference_name"):
             return self.get("conference_name", "")
         return ""
@@ -393,8 +395,86 @@ def get_sent_today(state: Dict[str, Any]) -> int:
     )
 
 
-def load_template(template_path: Optional[str] = None) -> Tuple[str, str]:
-    """Loads Subject and Body from template file."""
+def normalize_category(category: Optional[str]) -> str:
+    """Normalizes category/contact_type string to 'speaker', 'attendee', or 'exhibitor'."""
+    clean = str(category or "").strip().lower()
+    if "attendee" in clean:
+        return "attendee"
+    if "exhibitor" in clean:
+        return "exhibitor"
+    return "speaker"
+
+
+def parse_template_content(content: str) -> Dict[str, Tuple[str, str]]:
+    """
+    Parses multi-section template content into role-specific templates.
+    Expected sections in template.txt:
+        Speakers templates :
+        Sub : ...
+        Hi {Name}, ...
+
+        Attendees Templates :
+        Sub : ...
+        Hi {Name}, ...
+
+        Exhibitors Template :
+        Sub : ...
+        Hi {Name}, ...
+    """
+    section_pattern = re.compile(
+        r'(?im)^\s*(?:\[|\b)?(speaker|attendee|exhibitor)s?\s*(?:template|templates)?\s*(?:\])?\s*:\s*$'
+    )
+    matches = list(section_pattern.finditer(content))
+    templates: Dict[str, Tuple[str, str]] = {}
+
+    def extract_subj_and_body(block: str) -> Tuple[str, str]:
+        # Strip trailing horizontal divider lines like --- or ===
+        block = re.sub(r'[\r\n]+\s*[-=]{3,}\s*$', '', block).strip()
+        lines = block.splitlines()
+        subj = ""
+        body_lines = []
+        in_body = False
+        for line in lines:
+            sub_m = re.match(r'(?i)^\s*(?:sub|subject)\s*:\s*(.+)$', line)
+            if sub_m and not in_body and not subj:
+                subj = sub_m.group(1).strip()
+            elif not in_body and not line.strip():
+                continue
+            else:
+                in_body = True
+                body_lines.append(line)
+        body = "\n".join(body_lines).strip()
+        if not subj:
+            subj = "Akash from Adople AI – Referred by {Conference Name}"
+        return subj, body
+
+    if not matches:
+        # Fallback for single-template files
+        subj, body = extract_subj_and_body(content)
+        templates["default"] = (subj, body)
+        templates["speaker"] = (subj, body)
+        templates["attendee"] = (subj, body)
+        templates["exhibitor"] = (subj, body)
+        return templates
+
+    for i, match in enumerate(matches):
+        role_raw = match.group(1).lower()
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        subj, body = extract_subj_and_body(block)
+        templates[role_raw] = (subj, body)
+
+    if "speaker" in templates:
+        templates["default"] = templates["speaker"]
+    elif templates:
+        templates["default"] = next(iter(templates.values()))
+
+    return templates
+
+
+def load_templates(template_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
+    """Loads all role-specific templates from template.txt."""
     path = template_path or getattr(settings, "OUTREACH_TEMPLATE_FILE", "template.txt")
     candidates = [
         path,
@@ -408,29 +488,52 @@ def load_template(template_path: Optional[str] = None) -> Tuple[str, str]:
                 with open(p, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                 if content:
-                    lines = content.splitlines()
-                    subject = "A practical AI starting point for {company_name}’s operations"
-                    body_start = 0
-                    if lines and lines[0].lower().startswith("subject:"):
-                        subject = lines[0].split(":", 1)[1].strip()
-                        body_start = 1
-                    body = "\n".join(lines[body_start:]).strip()
-                    return subject, body
+                    templates = parse_template_content(content)
+                    if templates:
+                        return templates
             except Exception as e:
-                logger.debug(f"Could not read {p}: {e}")
+                logger.debug(f"Could not read template from {p}: {e}")
 
-     
+    # Fallback template
+    fallback = (
+        "Akash from Adople AI – Referred by {Conference Name}",
+        "Hi {Name},\n\nI hope this finds you well. I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology."
+    )
+    return {
+        "speaker": fallback,
+        "attendee": fallback,
+        "exhibitor": fallback,
+        "default": fallback
+    }
 
-def build_email_content(speaker_name: str, job_title: str, company: str, conf_name: str, pitch_hook: str = "") -> Tuple[str, str]:
-    subj_tmpl, body_tmpl = load_template()
+
+def load_template(template_path: Optional[str] = None, category: str = "Speaker") -> Tuple[str, str]:
+    """Loads Subject and Body for a specific category (Speaker, Attendee, or Exhibitor)."""
+    templates = load_templates(template_path)
+    role = normalize_category(category)
+    return templates.get(role) or templates.get("default", ("Akash from Adople AI – Referred by {Conference Name}", "Hi {Name},"))
+
+
+def build_email_content(
+    speaker_name: str,
+    job_title: str,
+    company: str,
+    conf_name: str,
+    pitch_hook: str = "",
+    category: str = "Speaker",
+    template_path: Optional[str] = None
+) -> Tuple[str, str]:
+    subj_tmpl, body_tmpl = load_template(template_path=template_path, category=category)
     first_name = get_first_name(speaker_name)
     sender = getattr(settings, "OUTREACH_SENDER_NAME", "Akash")
     sender_comp = getattr(settings, "OUTREACH_COMPANY", "Adople AI")
 
     ctx = SafeDict({
         "first_name": first_name,
+        "name": first_name,
+        "full_name": speaker_name or "there",
         "speaker_name": speaker_name or "there",
-        "job_title": job_title or "Speaker",
+        "job_title": job_title or "Professional",
         "company": company or "your organization",
         "company_name": company or "your organization",
         "conference_name": conf_name or "the conference",
@@ -592,15 +695,16 @@ class SpeakerOutreachService:
         speaker_name: str = "Test Speaker",
         company_name: str = "Adople Test Co",
         conference_name: str = "AI Innovation Summit 2026",
-        conference_id: str = "CONF-TEST-OUTREACH"
+        conference_id: str = "CONF-TEST-OUTREACH",
+        category: str = "Speaker"
     ) -> Dict[str, Any]:
         """
         Sends a single test outreach email to a specified personal email address:
-        - Renders email strictly using template.txt.
+        - Renders email strictly using the role-specific pitch in template.txt.
         - Ensures an isolated test record in PostgreSQL and local/OneDrive Excel exists.
         - Dispatches via Microsoft Graph API (akash@adople.ai).
         - Tracks the conversation thread in outreach_state.json for reply monitoring.
-        - Leaves ALL other real conference speakers completely untouched.
+        - Leaves ALL other real conference contacts completely untouched.
         """
         recipient_email = recipient_email.strip().lower()
         if "@" not in recipient_email or "." not in recipient_email or recipient_email.count("@") != 1:
@@ -608,9 +712,10 @@ class SpeakerOutreachService:
 
         subject, body = build_email_content(
             speaker_name=speaker_name,
-            job_title="Keynote Speaker",
+            job_title="Keynote Speaker" if "speaker" in category.lower() else "Professional",
             company=company_name,
-            conf_name=conference_name
+            conf_name=conference_name,
+            category=category
         )
 
         logger.info(f"🧪 [Manual Test] Dispatching test outreach email to {recipient_email}...")
@@ -1023,13 +1128,15 @@ class SpeakerOutreachService:
                 job_title = lead.get("job_title") or "Professional"
                 company = lead.get("company_name") or "your organization"
                 conf_name = lead.get("conference_name") or "the upcoming conference"
-                c_type = lead.get("contact_type") or "Contact"
+                cat_lead = lead.get("category", "Speaker")
+                c_type = lead.get("contact_type") or f"Verified {cat_lead}"
 
                 subject, body = build_email_content(
                     speaker_name=name,
                     job_title=job_title,
                     company=company,
-                    conf_name=conf_name
+                    conf_name=conf_name,
+                    category=cat_lead
                 )
                 full_message = f"Subject: {subject}\n\n{body}"
 

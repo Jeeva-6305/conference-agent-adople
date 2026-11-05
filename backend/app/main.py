@@ -750,11 +750,12 @@ def send_test_email_endpoint(
     speaker_name: str = Query("Akash Tester", description="Test recipient name"),
     company_name: str = Query("Adople AI", description="Test company name"),
     conference_name: str = Query("AI Innovation Summit 2026", description="Test conference name"),
+    category: str = Query("Speaker", description="Role category: Speaker, Attendee, or Exhibitor"),
     db: Session = Depends(get_db)
 ):
     """
     Sends an isolated test outreach email to your personal email address:
-    - Uses approved template.txt formatting.
+    - Uses approved template.txt role-specific formatting.
     - Dispatches from akash@adople.ai via Microsoft Graph API.
     - Creates an isolated test record in PostgreSQL and OneDrive Excel.
     - Registers the thread in outreach_state.json for reply monitoring.
@@ -766,7 +767,8 @@ def send_test_email_endpoint(
         recipient_email=test_email,
         speaker_name=speaker_name,
         company_name=company_name,
-        conference_name=conference_name
+        conference_name=conference_name,
+        category=category
     )
 
 
