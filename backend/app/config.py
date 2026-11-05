@@ -64,6 +64,17 @@ class Settings:
     SHAREPOINT_CLIENT_ID: str = os.getenv("SHAREPOINT_CLIENT_ID", "")
     SHAREPOINT_CLIENT_SECRET: str = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
     SHAREPOINT_TENANT_ID: str = os.getenv("SHAREPOINT_TENANT_ID", "")
+    SHAREPOINT_DRIVE_ID: str = os.getenv("SHAREPOINT_DRIVE_ID", "")
+    SHAREPOINT_ITEM_ID: str = os.getenv("SHAREPOINT_ITEM_ID", "")
+    SHAREPOINT_MASTER_SHEET: str = os.getenv("SHAREPOINT_MASTER_SHEET", "Verified Data")
+    SHAREPOINT_LATEST_SHEET: str = os.getenv("SHAREPOINT_LATEST_SHEET", "latest_week_scoring")
+    SHAREPOINT_HISTORY_SHEET: str = os.getenv("SHAREPOINT_HISTORY_SHEET", "Companies scoring")
+
+    # Azure OpenAI & Tavily for AI Reranking Pipeline
+    AZURE_OPENAI_BASE_URL: str = os.getenv("AZURE_OPENAI_BASE_URL", "https://dv-aus-es-resource.services.ai.azure.com/openai/v1")
+    AZURE_OPENAI_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+    AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
     CONFERENCE_ONEDRIVE_HOSTNAME: str = os.getenv("CONFERENCE_ONEDRIVE_HOSTNAME", "adopleaiinf-my.sharepoint.com")
     CONFERENCE_ONEDRIVE_USER: str = os.getenv("CONFERENCE_ONEDRIVE_USER", "jeevanandham_adople_ai")
     CONFERENCE_EXCEL_FILE_NAME: str = os.getenv("CONFERENCE_EXCEL_FILE_NAME", "Conference_Agent_Conferences.xlsx")

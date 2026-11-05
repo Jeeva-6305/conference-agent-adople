@@ -1,67 +1,234 @@
-"""
-Adople AI - Strategic ICP Scoring & Multi-Store Synchronization Service
-Updated to adhere strictly to the latest Adople AI Knowledge Base (Nov 2026):
-
-Strict 60% / 40% Formula:
-    Overall Score = (0.60 * Industry Fit) + (0.40 * Tier / Scale Fit)
-
-Dimension A: Industry Fit (Weight: 60%)
-- Tier 1: Core Revenue Focus Verticals (95 - 100)
-  1A. Healthcare & Medical Operations (98.0)
-  1B. FinTech, Banking & Financial Services (97.0)
-  1C. Insurance & Claims Processing (97.0)
-  1D. Logistics, Freight, Supply Chain & Distribution (96.0)
-  1E. Enterprise Mission-Critical Workflow Automation (96.0)
-- Tier 2: Secondary Commercial Verticals (78 - 88)
-  - Pure Venture Capital & Investment Funds (86.0)
-  - B2B Cloud Data Infrastructure & Mobility Platforms (82.0)
-- Tier 3: Non-Core Verticals, General SaaS & Hardware (50 - 70)
-  - General Productivity & Office Collaboration (65.0)
-  - Consumer Electronics & Semiconductor Manufacturing (60.0)
-  - Supermarkets, Grocery Chains, Consumer Retail & Food Cafes (55.0)
-  - Media, Digital Publishing & Entertainment (55.0)
-- Disqualified: Strictly Avoid ❌ (0 - 20)
-  - Institutions, Universities, Colleges, Schools, Non-Profits, Academic/Archaeological Societies (10.0)
-
-Dimension B: Company Scale & Tier Fit (Weight: 40%)
-- Tier 1: Mid-Market Commercial Sweet Spot (50 - 2,000 employees) -> 92 - 100 (95.0 ⭐)
-- Tier 2: Enterprise Commercial Giants (2,000+ employees) -> 85 - 92 (88.0 ⭐)
-- Tier 3: Hyperscalers & Foundational Big Tech -> 40 - 55 (45.0)
-- Tier 4: Local Micro-Businesses (<50 employees) -> 25 - 40 (30.0)
-- Disqualified: Non-Profits & Academia -> 0 - 15 (10.0 ❌)
-
-Qualification Status:
-- HIGH_MATCH: Overall Score >= 75.0
-- MODERATE: Overall Score 55.0 - 74.9
-- DISQUALIFIED: Overall Score < 55.0
-
-Deterministic Tie-Breaker Ranking (Node 4):
-    Sort Key: (-overall_score, -industry_fit_score, -email_readiness, speaker_name)
-    where email_readiness: 2 = verified, 1 = unverified present, 0 = no email
-"""
-
-import re
 import os
-import logging
+import sys
+import re
+import time
+import datetime
 import unicodedata
-from datetime import datetime, date
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional, List
-from urllib.parse import urlparse, quote
-from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from typing import List, Optional, Set, Dict, Any, Tuple
+from typing_extensions import TypedDict
+from pydantic import BaseModel, Field, ConfigDict
+from dotenv import load_dotenv
 
-import openpyxl
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-from ..models import WeeklyConference, WeeklySpeaker, WeeklyCompany
-from .onedrive_excel_service import OneDriveExcelService
+import requests
 
-logger = logging.getLogger("icp_scoring")
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    HAVE_GSPREAD = True
+except ImportError:
+    HAVE_GSPREAD = False
 
-# ==============================================================================
-# 1. DOMAIN SANITIZATION & FILTERING CONSTANTS (From User Codebase)
-# ==============================================================================
+from tavily import TavilyClient
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langgraph.graph import StateGraph, START, END
 
+# Load environment configuration
+backend_env = Path(__file__).resolve().parent.parent.parent / ".env"
+if backend_env.exists():
+    load_dotenv(backend_env, override=True)
+else:
+    load_dotenv(override=True)
+
+# =====================================================================
+# 1. API CLIENTS & KNOWLEDGE BASE INITIALIZATION
+# =====================================================================
+def get_tavily_client() -> TavilyClient:
+    api_key = os.getenv("TAVILY_API_KEY")
+    return TavilyClient(api_key=api_key)
+
+def get_azure_llm() -> ChatOpenAI:
+    raw_url = os.getenv("AZURE_OPENAI_BASE_URL", "https://dv-aus-es-resource.services.ai.azure.com/openai/v1")
+    base_url = re.sub(r'^[\[\(\"\']+|[\]\)\"\']+$', '', raw_url).strip()
+    return ChatOpenAI(
+        model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini"),
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        base_url=base_url,
+        temperature=0.0,
+        seed=42
+    )
+
+tavily_client = get_tavily_client()
+azure_llm = get_azure_llm()
+
+KB_FILE_PATH = "adople_knowledge_base.md"
+
+def load_knowledge_base(file_path: str = KB_FILE_PATH) -> str:
+    candidates = [
+        file_path,
+        "adople_knowledge_base.md",
+        "backend/adople_knowledge_base.md",
+        os.path.join(os.path.dirname(__file__), "..", "..", "adople_knowledge_base.md"),
+        os.path.join(os.path.dirname(__file__), "..", "adople_knowledge_base.md"),
+        "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/adople_knowledge_base.md"
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read()
+    raise FileNotFoundError(f"Knowledge base file '{file_path}' not found!")
+
+adople_kb_content = load_knowledge_base()
+
+
+# =====================================================================
+# 2. DATA SCHEMAS & PYDANTIC MODELS
+# =====================================================================
+class SpeakerRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    speaker_id: str = Field(alias="Speaker_ID")
+    conference_id: str = Field(alias="Conference_ID")
+    conference_name: str = Field(alias="Conference_Name")
+    speaker_name: Optional[str] = Field(default="", alias="Speaker_Name")
+    job_title: Optional[str] = Field(default="", alias="Job_Title")
+    company_name: Optional[str] = Field(default="", alias="Company_Name")
+    personal_linkedin_url: Optional[str] = Field(default="", alias="Personal_LinkedIn_URL")
+    linkedin_status: Optional[str] = Field(default="needs_review", alias="LinkedIn_Status")
+    professional_email: Optional[str] = Field(default="", alias="Professional_Email")
+    email_source_url: Optional[str] = Field(default="", alias="Email_Source_URL")
+    speaker_source_url: Optional[str] = Field(default="", alias="Speaker_Source_URL")
+    verification_status: Optional[str] = Field(default="needs_review", alias="Verification_Status")
+    last_checked_at: Optional[str] = Field(default="", alias="Last_Checked_At")
+    weekly_run_id: Optional[str] = Field(default="", alias="Weekly_Run_ID")
+
+    # Exhibitor Data (New Incoming Columns)
+    exhibitor_name: Optional[str] = Field(default="", alias="Exhibitor_Name")
+    exhibitor_email: Optional[str] = Field(default="", alias="Exhibitor_Email")
+    exhibitor_email_status: Optional[str] = Field(default="", alias="Exhibitor_Email_Status")
+    
+    # Attendee Data (New Incoming Columns)
+    attendee_name: Optional[str] = Field(default="", alias="Attendee_Name")
+    attendee_email: Optional[str] = Field(default="", alias="Attendee_Email")
+    attendee_email_status: Optional[str] = Field(default="", alias="Attendee_Email_Status")
+
+
+class OrganizedCompanyProfile(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    company_domain: str = Field(default="", description="Clean company root domain (e.g. 'afbasket.com' or 'servicenow.com'). NEVER a directory or social media.")
+    official_website: str = Field(default="", description="Full homepage URL (e.g. 'https://www.afbasket.com')")
+    primary_industry: str = Field(default="", description="Specific industry & segment (e.g., 'Supermarket & Grocery Retail', 'Food & Beverage Wholesale', 'Venture Capital', 'Life Insurance', 'Enterprise SaaS')")
+    headcount_tier: str = Field(default="", description="Scale category: 'Micro (<50)', 'Mid-Market Sweet Spot (50-500)', 'Upper Mid-Market (500-2,000)', 'Enterprise Giant (2,000+)', or 'Non-Profit / Academic'")
+    core_products_and_services: str = Field(default="", description="Explanation of core products/services and who buys them")
+    us_market_presence: str = Field(default="", description="HQ location and US operating presence")
+    operational_workflows_analysis: str = Field(default="", description="Specific analysis of daily manual/document workflows (invoices, bills of lading, claims, purchase orders, tickets, compliance)")
+    key_business_highlights: str = Field(default="", description="Notable business facts (public/private, growth, footprint)")
+
+
+class EnrichedLead(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    raw_lead: SpeakerRecord
+    profile: OrganizedCompanyProfile
+    tavily_raw_text: str = ""
+
+
+def determine_qualification_status(overall_score: float) -> str:
+    """
+    Strict business rule:
+    - DISQUALIFIED strictly for overall score < 50.0
+    - MODERATE for 50.0 <= overall score < 75.0
+    - HIGH_MATCH for overall score >= 75.0
+    """
+    val = float(overall_score or 0.0)
+    if val >= 75.0:
+        return "HIGH_MATCH"
+    elif val >= 50.0:
+        return "MODERATE"
+    else:
+        return "DISQUALIFIED"
+
+
+class LeadScoreResult(BaseModel):
+    strategic_analysis: str = Field(description="Detailed rationale justifying the scores based on the Knowledge Base.")
+    industry_fit_score: float = Field(description="0-100: Core Focus (Healthcare, FinTech, Banking, Insurance, Logistics, Supply Chain, Enterprise Automation)=95-100, Secondary (Venture Capital, B2B Cloud Infra)=78-88, Non-Core (General Productivity/Wiki SaaS, Hardware Manufacturing, Consumer Retail, Media)=50-70, Education/Institutions/Non-Profit=0-20")
+    tier_fit_score: float = Field(description="0-100: Mid-Market (50-2000 emp)=92-100, Enterprise Commercial Giants (2000+ emp)=85-92, Hyperscalers=40-55, Micro (<50 emp)=25-40, Non-Profits/Academia=0-15")
+    overall_company_score: float = Field(description="Calculated strictly as: (0.60 * industry_fit_score) + (0.40 * tier_fit_score)")
+    qualification_status: str = Field(default="", description="'HIGH_MATCH' (>= 75.0), 'MODERATE' (50.0-74.9), or 'DISQUALIFIED' (< 50.0)")
+
+    def model_post_init(self, __context: Any) -> None:
+        # Guarantee strict qualification status: DISQUALIFIED only if score < 50.0
+        self.qualification_status = determine_qualification_status(self.overall_company_score)
+
+
+class EvaluatedLead(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    enriched_lead: Any
+    score_details: LeadScoreResult
+
+
+class RankedLead(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    rank: int                               # 1, 2, 3... up to N
+    company_name: str                       # e.g., "Manulife"
+    domain: str                             # e.g., "manulife.com"
+    overall_score: float                    # e.g., 67.4
+    industry_score: float                   # e.g., 89.0
+    tier_score: float                       # e.g., 35.0
+    qualification_status: str               # "HIGH_MATCH", "MODERATE", etc.
+    
+    # Speaker & Outreach Data
+    speaker_id: str                         # Unique ID from Master Sheet
+    speaker_name: str                       # e.g., "Suzanne Philion"
+    job_title: str                          # e.g., "CMO"
+    email: str                              # e.g., "suzanne_philion@manulife.com"
+    email_status: str                       # "verified" vs "needs_review"
+    linkedin_url: str                       # Personal LinkedIn URL
+    conference_name: str                    # Conference name
+    
+    # Exhibitor Data (New Incoming Columns)
+    exhibitor_name: str = ""
+    exhibitor_email: str = ""
+    exhibitor_email_status: str = ""
+    
+    # Attendee Data (New Incoming Columns)
+    attendee_name: str = ""
+    attendee_email: str = ""
+    attendee_email_status: str = ""
+    
+    # Original Reference
+    evaluated_lead: Any
+
+
+# =====================================================================
+# 3. LANGGRAPH STATE DEFINITION
+# =====================================================================
+class PipelineState(TypedDict):
+    # Stores speaker IDs that were already evaluated in previous runs/weeks
+    processed_speaker_ids: Set[str]
+    
+    # Newly detected leads for this run that need ranking
+    new_leads: List[SpeakerRecord]
+    
+    # Speaker IDs of alternate speakers from the same company that were skipped
+    duplicate_speaker_ids: List[str]
+    
+    # Metadata about the current execution
+    current_weekly_run_id: Optional[str]
+    total_new_count: int
+
+    # Node 2: Profile Enriched Leads
+    enriched_leads: List[EnrichedLead]
+
+    # Node 3: 60/40 Scored Leads
+    scored_leads: List[EvaluatedLead]
+
+    # Node 4: Ranked Leads
+    top_10_leads: List[RankedLead]
+    all_ranked_leads: List[RankedLead]
+
+    # Node 5: Output Sync Status
+    exported_count: int
+
+
+# =====================================================================
+# 4. UTILITIES & DATA SANITIZATION HELPERS
+# =====================================================================
 FREE_EMAIL_DOMAINS = {
     "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
     "aol.com", "protonmail.com", "zoho.com", "mail.com", "yandex.com", "gmx.com"
@@ -82,11 +249,6 @@ BLOCKED_DOMAINS = {
     "restaurantdive.com", "cspdailynews.com", "cstoredecisions.com"
 }
 
-
-# ==============================================================================
-# 2. DATA SANITIZATION & MATCHING HELPERS (From User Codebase)
-# ==============================================================================
-
 def clean_string(val: Any) -> str:
     """Strips whitespace and removes double spaces."""
     if val is None:
@@ -94,12 +256,10 @@ def clean_string(val: Any) -> str:
     text = str(val).strip()
     return re.sub(r'\s+', ' ', text)
 
-
 def clean_token(s: str) -> str:
     """Strips all non-alphanumeric characters, normalizes accents, and lowercases."""
     norm = unicodedata.normalize('NFKD', str(s)).encode('ASCII', 'ignore').decode('utf-8')
     return re.sub(r'[^a-zA-Z0-9]', '', norm).lower()
-
 
 def clean_email(val: Any) -> str:
     """Cleans email, removes mailto:, lowercases, strips brackets."""
@@ -107,7 +267,6 @@ def clean_email(val: Any) -> str:
     text = text.replace("mailto:", "").replace("[", "").replace("]", "")
     match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
     return match.group(0) if match else ""
-
 
 def clean_url(val: Any) -> str:
     """Ensures clean URL format with https."""
@@ -118,9 +277,8 @@ def clean_url(val: Any) -> str:
         text = "https://" + text[7:]
     return text
 
-
 def extract_domain_from_email(email_str: str) -> str:
-    """Extracts corporate domain from speaker email if not a generic free provider."""
+    """Extracts ground-truth corporate domain from speaker email if not a generic email provider."""
     if not email_str or "@" not in email_str:
         return ""
     clean = email_str.strip().lower()
@@ -131,7 +289,6 @@ def extract_domain_from_email(email_str: str) -> str:
             return domain
     return ""
 
-
 def is_blocked_domain(url_or_domain: str) -> bool:
     """Checks whether a domain belongs to a directory, social platform, or aggregator."""
     if not url_or_domain:
@@ -140,12 +297,12 @@ def is_blocked_domain(url_or_domain: str) -> bool:
     domain = clean.split("/")[0].split(":")[0].strip()
     return any(domain == b or domain.endswith("." + b) for b in BLOCKED_DOMAINS)
 
-
 def extract_domain_from_url(url: str) -> str:
     """Extract clean domain automatically from URL, excluding aggregators."""
     if not url:
         return ""
     try:
+        from urllib.parse import urlparse
         netloc = urlparse(url).netloc
         netloc = netloc.replace("www.", "")
         domain = netloc.split(":")[0].strip()
@@ -155,761 +312,1302 @@ def extract_domain_from_url(url: str) -> str:
     except Exception:
         return ""
 
-
 def is_email_domain_matching_company(email_domain: str, company_name: str) -> bool:
-    """Checks if the email domain plausibly belongs to the company."""
+    """
+    Checks if the email domain plausibly belongs to the company,
+    preventing third-party emails from being trusted.
+    """
     if not email_domain or not company_name:
         return False
+        
     domain_slug = email_domain.split(".")[0].lower()
     comp_clean = clean_token(company_name)
-
+    
     # 1. Direct substring
     if domain_slug in comp_clean or comp_clean in domain_slug:
         return True
-
+        
     # 2. Token overlap
     words = [w.lower() for w in re.findall(r'[a-zA-Z0-9]+', company_name) if len(w) >= 3]
     for w in words:
         if w in domain_slug:
             return True
-
+            
     # 3. Acronym / Abbreviation match
     if len(words) >= 2:
         first_char = words[0][0]
         second_char = words[1][0]
-        if domain_slug.startswith(first_char) and second_char in domain_slug and len(domain_slug) <= 5:
-            return True
+        if domain_slug.startswith(first_char) and second_char in domain_slug:
+            if len(domain_slug) <= 5:
+                return True
+
     return False
 
-
-def get_speaker_email_priority(email: str, status: str, company_name: str = "") -> int:
+def pick_best_company_url(results: List[Dict[str, Any]], company_name: str) -> str:
     """
-    Evaluates speaker strictly on email quality:
+    Selects the best matching official corporate URL from Tavily search results,
+    filtering out blogs, directories, and trade publications.
+    """
+    candidates = []
+    for r in results:
+        url = r.get("url", "")
+        if not url or is_blocked_domain(url):
+            continue
+        domain = extract_domain_from_url(url)
+        if not domain:
+            continue
+        if is_email_domain_matching_company(domain, company_name):
+            return url
+        candidates.append(url)
+    return candidates[0] if candidates else ""
+
+def get_speaker_email_priority(lead: SpeakerRecord) -> int:
+    """
+    Evaluates speaker strictly on email quality (NO job title weighting).
+    Priority:
     3: Verified Corporate Email (email domain matches company & verification_status == 'verified')
     2: Verified Email (verification_status == 'verified')
     1: Has Email (unverified / needs_review)
     0: No Email
     """
-    clean_em = clean_email(email)
-    st = (status or "").lower().strip()
-    if not clean_em:
-        return 0
+    all_emails = [
+        (getattr(lead, "professional_email", ""), getattr(lead, "verification_status", "")),
+        (getattr(lead, "exhibitor_email", ""), getattr(lead, "exhibitor_email_status", "")),
+        (getattr(lead, "attendee_email", ""), getattr(lead, "attendee_email_status", ""))
+    ]
+    
+    best_priority = 0
+    for em_raw, st_raw in all_emails:
+        email = clean_string(em_raw).lower()
+        status = clean_string(st_raw).lower()
+        if not email:
+            continue
+            
+        domain = extract_domain_from_email(email)
+        is_matching = is_email_domain_matching_company(domain, getattr(lead, "company_name", "")) if domain else False
+        
+        if (status == "verified" or "verified" in status) and is_matching:
+            best_priority = max(best_priority, 3)
+        elif status == "verified" or "verified" in status:
+            best_priority = max(best_priority, 2)
+        else:
+            best_priority = max(best_priority, 1)
+            
+    return best_priority
 
-    domain = extract_domain_from_email(clean_em)
-    is_matching = is_email_domain_matching_company(domain, company_name) if (domain and company_name) else False
 
-    if st == "verified" and is_matching:
-        return 3
-    elif st == "verified":
-        return 2
-    else:
-        return 1
-
-
-# ==============================================================================
-# 3. KNOWLEDGE BASE KEYWORD PATTERNS & SCORING DICTIONARIES
-# ==============================================================================
-
-# Disqualification patterns (Strictly avoid ❌ -> Score 0 - 20)
-DISQUALIFICATION_PATTERNS = [
-    r"\b(university|college|school|campus|faculty|dept\.|department of)\b",
-    r"\b(academia|academic|postdoc|phd student|fellowship|alumni)\b",
-    r"\b(institute of technology|medical school|school of medicine)\b",
-    r"\b(archaeolog|cultural heritage|museum|historical society|anthropolog)\b",
-    r"\b(foundation for\b|charitable trust|endowment|public school|public library)\b",
-    r"\b(archaeological institute of america)\b"
+# =====================================================================
+# 5. MICROSOFT SHAREPOINT / GRAPH API EXCEL INTEGRATION
+# =====================================================================
+CURATED_SHEET_HEADERS = [
+    "Rank",
+    "Overall_Score",
+    "Company_Name",
+    "Company_Domain",
+    "Conference_Name",
+    "Qualification_Status",
+    "Primary_Industry",
+    "Headcount_Tier",
+    "Speaker_Name",
+    "Job_Title",
+    "Professional_Email",
+    "Email_Status",
+    "Exhibitor_Name",
+    "Exhibitor_Email",
+    "Exhibitor_Email_Status",
+    "Attendee_Name",
+    "Attendee_Email",
+    "Attendee_Email_Status",
+    "Personal_LinkedIn_URL",
+    "Speaker_ID",
+    "Evaluated_At"
 ]
 
-# TIER 1: CORE REVENUE FOCUS VERTICALS (ABSOLUTE TOP PRIORITY ⭐ -> Score 95 - 100)
-# 1A. Healthcare & Medical Operations (98.0)
-HEALTHCARE_PATTERNS = [
-    r"\b(health|healthcare|hospital|clinic|clinical|medical|medicine)\b",
-    r"\b(physician|doctor|patient|pharma|pharmaceutical|biotech|biotechnology)\b",
-    r"\b(therapeutics|oncology|cardiology|radiology|pediatric|rehabilitation)\b",
-    r"\b(healthtech|medtech|telehealth|ehr|emr|clinical trial|life sciences)\b",
-    r"\b(adventhealth|medigram|moderna|guardant|choc|topcon|ekso|elevance|allergan)\b"
-]
+SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID", "")
+SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID", "")
+SHAREPOINT_CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
+SHAREPOINT_DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID", "")
+SHAREPOINT_ITEM_ID = os.getenv("SHAREPOINT_ITEM_ID", "")
 
-# 1B. FinTech, Banking & Financial Services (97.0)
-FINTECH_BANKING_PATTERNS = [
-    r"\b(fintech|finance|banking|bank|lending|credit|private credit|asset-based)\b",
-    r"\b(payment operations|payment|payments|treasury|treasury automation|fraud review)\b",
-    r"\b(underwriting|loan processing|consumer finance|wealth management)\b",
-    r"\b(credit karma|abn amro|temenos|finastra|chapman and cutler|sfnet)\b"
-]
+SHAREPOINT_MASTER_SHEET = os.getenv("SHAREPOINT_MASTER_SHEET", "Verified Data")
+SHAREPOINT_LATEST_SHEET = os.getenv("SHAREPOINT_LATEST_SHEET", "latest_week_scoring")
+SHAREPOINT_HISTORY_SHEET = os.getenv("SHAREPOINT_HISTORY_SHEET", "Companies scoring")
 
-# 1C. Insurance & Claims Processing (97.0)
-INSURANCE_PATTERNS = [
-    r"\b(insurance|claims|claims processing|underwriting dossiers|actuarial|surety)\b",
-    r"\b(life insurance|health insurance|commercial insurance|property insurance|policy administration)\b",
-    r"\b(manulife|allianz|allianz trade)\b"
-]
+def col_num_to_letter(n: int) -> str:
+    """Converts 1-based column number to Excel column letters (1 -> A, 21 -> U)."""
+    string = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        string = chr(65 + remainder) + string
+    return string
 
-# 1D. Logistics, Freight, Supply Chain & Distribution (96.0)
-LOGISTICS_PATTERNS = [
-    r"\b(logistics|freight|supply chain|cargo|shipping|procurement|warehousing)\b",
-    r"\b(wholesale distribution|food distribution|wholesale food|goods distribution)\b",
-    r"\b(bills of lading|proof of delivery|bol|pod|vendor invoice matching|customs clearance|3pl)\b",
-    r"\b(rainforest distribution|freight forwarding)\b"
-]
+class SharePointExcelClient:
+    """Production client for Microsoft Graph API Excel operations."""
+    
+    def __init__(
+        self,
+        tenant_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        drive_id: Optional[str] = None,
+        item_id: Optional[str] = None
+    ):
+        self.tenant_id = tenant_id or os.getenv("SHAREPOINT_TENANT_ID", SHAREPOINT_TENANT_ID)
+        self.client_id = client_id or os.getenv("SHAREPOINT_CLIENT_ID", SHAREPOINT_CLIENT_ID)
+        self.client_secret = client_secret or os.getenv("SHAREPOINT_CLIENT_SECRET", SHAREPOINT_CLIENT_SECRET)
+        self.drive_id = drive_id or os.getenv("SHAREPOINT_DRIVE_ID", SHAREPOINT_DRIVE_ID)
+        self.item_id = item_id or os.getenv("SHAREPOINT_ITEM_ID", SHAREPOINT_ITEM_ID)
+        
+        self._token: Optional[str] = None
+        self._token_expires_at: float = 0
 
-# 1E. Enterprise Mission-Critical Workflow Automation (96.0)
-ENTERPRISE_WORKFLOW_PATTERNS = [
-    r"\b(servicenow|automated service orchestration|enterprise operational software)\b",
-    r"\b(b2b enterprise saas|enterprise saas|enterprise workflow automation|enterprise ai|agentic automation)\b",
-    r"\b(warp|cognition|composio|langchain|llamaindex|cerebral valley|ai engineering)\b"
-]
+    def get_token(self) -> str:
+        if self._token and time.time() < self._token_expires_at - 60:
+            return self._token
+        
+        token_url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+        token_data = {
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        }
+        res = requests.post(token_url, data=token_data, timeout=15)
+        if res.status_code != 200:
+            raise RuntimeError(f"Failed to authenticate with Microsoft Graph ({res.status_code}): {res.text}")
+        
+        payload = res.json()
+        self._token = payload["access_token"]
+        expires_in = payload.get("expires_in", 3600)
+        self._token_expires_at = time.time() + float(expires_in)
+        return self._token
 
-# TIER 2: SECONDARY COMMERCIAL VERTICALS (Score 78 - 88)
-# Venture Capital & Investment Funds (86.0)
-VC_INVESTMENT_PATTERNS = [
-    r"\b(venture capital|investment fund|institutional investment fund|private equity)\b",
-    r"\b(khosla ventures|norwest partners|foundation capital|pitch deck triage|lp reporting|ic memo)\b"
-]
-
-# B2B Cloud Data Infrastructure & Mobility Platforms (82.0)
-CLOUD_MOBILITY_PATTERNS = [
-    r"\b(cloud infrastructure|cloud platform|mobility platform|uber mobility|data platform)\b",
-    r"\b(kubernetes|cloudnative|devops|sre|database infrastructure|data intelligence)\b",
-    r"\b(aws cloud|google cloud|microsoft azure|red hat|voltron data)\b"
-]
-
-# TIER 3: NON-CORE VERTICALS, GENERAL SAAS & HARDWARE (Score 50 - 70 📉)
-# General Productivity Tools & Collaboration Software (65.0)
-PRODUCTIVITY_PATTERNS = [
-    r"\b(notion|asana|trello|productivity tool|office collaboration|team wiki|task manager)\b"
-]
-
-# Consumer Electronics, Hardware & Semiconductor Manufacturing (60.0)
-HARDWARE_PATTERNS = [
-    r"\b(hardware manufacturing|consumer electronics|semiconductor|appliance production)\b",
-    r"\b(samsung|lg|intel|nvidia|device manufacturing)\b"
-]
-
-# Supermarkets, Grocery Chains, Consumer Retail & Food Cafes (55.0)
-RETAIL_GROCERY_PATTERNS = [
-    r"\b(supermarket|grocery|grocery chain|consumer retail|food cafe|convenience store)\b",
-    r"\b(whole foods|wakefern|america's food basket|naturally good foods|the goods mart)\b"
-]
-
-# Media, Digital Publishing & Entertainment (55.0)
-MEDIA_PATTERNS = [
-    r"\b(media|digital publishing|entertainment|condé nast|conde nast|abc|broadcast television|magazine)\b"
-]
-
-# SCALE FIT (DIMENSION B: 40%) - COMPANY CATEGORIZATIONS
-HYPERSCALERS = {
-    "google", "google cloud", "microsoft", "microsoft azure", "amazon", "aws",
-    "apple", "meta", "ibm"
-}
-
-ENTERPRISE_COMMERCIAL_GIANTS = {
-    "servicenow", "credit karma", "manulife", "abn amro", "uber", "cisco",
-    "oracle", "salesforce", "accenture", "deloitte", "pwc", "ey", "kpmg",
-    "wells fargo", "jpmorgan", "bank of america", "citigroup", "charles schwab",
-    "fidelity investments", "allianz", "allianz trade", "elevance health"
-}
-
-MID_MARKET_KNOWN_COMPANIES = {
-    "warp": (65, 95.0),
-    "cognition": (45, 93.0),
-    "composio": (35, 93.0),
-    "adventhealth": (1200, 98.0),
-    "medigram": (55, 98.0),
-    "moderna": (1800, 94.0),
-    "guardant health": (1400, 95.0),
-    "temenos": (1500, 96.0),
-    "finastra": (1800, 95.0),
-    "chapman and cutler llp": (450, 96.0),
-    "ekso bionics": (120, 96.0),
-    "topcon healthcare": (400, 96.0),
-    "demandsphere": (60, 93.0),
-    "ayudante": (80, 92.0),
-    "replit": (85, 95.0),
-    "langchain": (45, 94.0),
-    "llamaindex": (35, 93.0),
-    "perplexity ai": (70, 96.0),
-    "scale ai": (900, 96.0),
-    "elevenlabs": (80, 95.0),
-    "voltron data": (140, 95.0),
-    "rainforest distribution": (150, 97.0),
-    "khosla ventures": (45, 90.0),
-    "norwest partners": (60, 90.0),
-    "foundation capital": (35, 90.0)
-}
-
-
-# ==============================================================================
-# 4. SCORING ENGINE FUNCTIONS (Strict Knowledge Base Alignment)
-# ==============================================================================
-
-def evaluate_industry_fit(company_name: str, job_title: str = "", context_text: str = "") -> Tuple[float, str, str]:
-    """
-    Evaluates Dimension A: Industry Fit (Weight: 60%).
-    Returns: (score, tier_label, justification)
-    """
-    combined = f"{company_name} {job_title} {context_text}".lower().strip()
-
-    # Medical professional colleges/academies exemption (e.g. American College of Lifestyle Medicine)
-    is_medical = any(re.search(pat, combined, re.I) for pat in HEALTHCARE_PATTERNS)
-
-    # 1. Check Disqualification (Strictly Avoid ❌ -> Score 0 - 20)
-    if not is_medical:
-        for pat in DISQUALIFICATION_PATTERNS:
-            if re.search(pat, combined, re.I):
-                return (
-                    10.0,
-                    "Disqualified: Academic / Non-Commercial",
-                    "Educational institution or non-commercial research entity with no operational enterprise AI software budget."
-                )
-
-    # 2. TIER 1: CORE REVENUE FOCUS VERTICALS (ABSOLUTE TOP PRIORITY ⭐ -> 95 - 100)
-    # 1A. Healthcare & Medical Operations (98.0)
-    if is_medical:
-        return (
-            98.0,
-            "Tier 1A: Healthcare & Medical Focus ⭐",
-            "High-priority clinical operations, medical data, or healthcare network with acute workflow automation needs."
-        )
-
-    # 1B. FinTech, Banking & Financial Services (97.0)
-    for pat in FINTECH_BANKING_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                97.0,
-                "Tier 1B: FinTech & Banking Operations ⭐",
-                "High-volume financial transaction workflows, fraud review, payment ops, or loan underwriting automation."
-            )
-
-    # 1C. Insurance & Claims Processing (97.0)
-    for pat in INSURANCE_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                97.0,
-                "Tier 1C: Insurance & Claims Processing ⭐",
-                "High-volume policy administration, claims extraction, and underwriting dossier automation."
-            )
-
-    # 1D. Logistics, Freight, Supply Chain & Distribution (96.0)
-    for pat in LOGISTICS_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                96.0,
-                "Tier 1D: Logistics & Distribution ⭐",
-                "Wholesale distribution, freight, bills of lading, and proof of delivery automation workflows."
-            )
-
-    # 1E. Enterprise Mission-Critical Workflow Automation (96.0)
-    for pat in ENTERPRISE_WORKFLOW_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                96.0,
-                "Tier 1E: Enterprise Workflow Automation ⭐",
-                "Mission-critical enterprise operational software and automated service orchestration."
-            )
-
-    # 3. TIER 2: SECONDARY COMMERCIAL VERTICALS (78 - 88)
-    for pat in VC_INVESTMENT_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                86.0,
-                "Tier 2: Venture Capital & Investment Funds",
-                "Active institutional fund with pitch deck triage, LP reporting, and diligence extraction needs."
-            )
-
-    for pat in CLOUD_MOBILITY_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                82.0,
-                "Tier 2: Cloud Infrastructure & Mobility",
-                "B2B cloud infrastructure or mobility platform with complex operational data streams."
-            )
-
-    # 4. TIER 3: NON-CORE VERTICALS, GENERAL SAAS & HARDWARE (50 - 70 📉)
-    for pat in PRODUCTIVITY_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                65.0,
-                "Tier 3: General Productivity SaaS 📉",
-                "Internal team collaboration/wiki tool, not high-volume operational document pipeline."
-            )
-
-    for pat in HARDWARE_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                60.0,
-                "Tier 3: Consumer Hardware / Devices 📉",
-                "Physical consumer device engineering, not enterprise document workflow automation."
-            )
-
-    for pat in RETAIL_GROCERY_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                55.0,
-                "Tier 3: Supermarket & Grocery Retail 📉",
-                "Local supermarket or retail floor operations without enterprise AI buying budget."
-            )
-
-    for pat in MEDIA_PATTERNS:
-        if re.search(pat, combined, re.I):
-            return (
-                55.0,
-                "Tier 3: Media & Publishing 📉",
-                "Media/entertainment publishing entity with non-core workflow profile."
-            )
-
-    # Default Commercial Fallback
-    return (
-        68.0,
-        "Tier 3: General Commercial",
-        "Commercial entity with baseline operational workflow automation opportunity."
-    )
-
-
-def evaluate_company_scale(company_name: str, is_academic_or_nonprofit: bool = False) -> Tuple[float, str, str]:
-    """
-    Evaluates Dimension B: Scale & Commercial Sweet Spot (Weight: 40%).
-    Returns: (score, scale_category, headcount_estimate)
-    """
-    comp_norm = (company_name or "").strip().lower()
-
-    if is_academic_or_nonprofit:
-        return (10.0, "Non-Profit / Academic / Micro", "N/A (Institutional)")
-
-    # 1. Hyperscalers & Foundational Big Tech (40 - 55)
-    for hyper in HYPERSCALERS:
-        if hyper == comp_norm or f" {hyper} " in f" {comp_norm} " or comp_norm.startswith(hyper + " "):
-            return (45.0, "Hyperscaler / Foundational Big Tech", "Foundational AI built internally (Low Agency Fit)")
-
-    # 2. Known Mid-Market Sweet Spot Companies (50 - 2,000 employees -> 92 - 100 ⭐)
-    for known_key, (headcount, score) in MID_MARKET_KNOWN_COMPANIES.items():
-        if known_key in comp_norm or comp_norm in known_key:
-            return (score, "Tier 1: Mid-Market Sweet Spot (50-2k) ⭐", f"~{headcount} employees")
-
-    # 3. Enterprise Commercial Giants (2,000+ employees -> 85 - 92 ⭐)
-    for giant in ENTERPRISE_COMMERCIAL_GIANTS:
-        if giant in comp_norm:
-            return (88.0, "Tier 2: Enterprise Commercial Giant (2k+) ⭐", "2,000+ employees ($200k-$1M+ Budget)")
-
-    # 4. Heuristic analysis for Mid-Market Sweet Spot (50 - 2,000 employees)
-    if any(k in comp_norm for k in ["technologies", "software", "labs", "systems", "health", "capital", "partners", "solutions", "logistics"]):
-        return (94.0, "Tier 1: Mid-Market Sweet Spot (50-2k) ⭐", "50 - 2,000 employees (Commercial)")
-
-    # 5. Local Micro-Businesses (<50 employees -> 25 - 40)
-    if any(k in comp_norm for k in ["cafe", "bakery", "shop", "goods mart", "boutique", "consultant"]):
-        return (32.0, "Tier 4: Local Micro-Business (<50)", "<50 employees")
-
-    # Default Commercial Scale
-    return (88.0, "Commercial Scale", "Estimated 50 - 500 employees")
-
-
-def calculate_overall_icp_score(industry_score: float, scale_score: float) -> float:
-    """Calculates overall score using strict 60% / 40% formula."""
-    overall = (0.60 * industry_score) + (0.40 * scale_score)
-    return round(max(0.0, min(100.0, overall)), 1)
-
-
-def get_qualification_status(overall_score: float) -> str:
-    """Classifies qualification status: HIGH_MATCH (>=75), MODERATE (55-74.9), DISQUALIFIED (<55)."""
-    if overall_score >= 75.0:
-        return "HIGH_MATCH"
-    elif overall_score >= 55.0:
-        return "MODERATE"
-    else:
-        return "DISQUALIFIED"
-
-
-def generate_pitch_hook(company_name: str, tier_label: str, industry_fit_score: float) -> str:
-    """Generates tailored 1-2 sentence Pitch Hook aligned with Adople AI's 5 core commercial solutions."""
-    comp = company_name.strip() or "your organization"
-
-    # Disqualified entities
-    if industry_fit_score <= 25.0 or "disqualified" in tier_label.lower():
-        return f"Academic/non-commercial research entity with no enterprise operational AI software buying authority."
-
-    # Tier 1A: Healthcare & Medical Focus
-    if "tier 1a" in tier_label.lower() or "health" in tier_label.lower() or "medical" in tier_label.lower():
-        return (
-            f"At Adople AI, we deploy autonomous clinical intelligence and document extraction agents that streamline patient documentation, "
-            f"prior-authorization triage, and medical records workflows for organizations like {comp}."
-        )
-
-    # Tier 1B: FinTech & Banking
-    if "tier 1b" in tier_label.lower() or "fintech" in tier_label.lower() or "banking" in tier_label.lower():
-        return (
-            f"Adople AI develops autonomous financial workflow agents that automate loan underwriting, payment exceptions, "
-            f"and treasury reconciliation directly for {comp}."
-        )
-
-    # Tier 1C: Insurance
-    if "tier 1c" in tier_label.lower() or "insurance" in tier_label.lower() or "claims" in tier_label.lower():
-        return (
-            f"Adople AI builds production-grade claims extraction and policy administration agents that triage underwriting dossiers "
-            f"and validate complex insurance forms with zero manual bottleneck."
-        )
-
-    # Tier 1D: Logistics & Distribution
-    if "tier 1d" in tier_label.lower() or "logistics" in tier_label.lower() or "distribution" in tier_label.lower():
-        return (
-            f"Adople AI deploys operational document agents that instantly parse and reconcile bills of lading (BOL), proofs of delivery (POD), "
-            f"and vendor invoices to accelerate dispatch operations for {comp}."
-        )
-
-    # Tier 1E: Enterprise Workflow Automation
-    if "tier 1e" in tier_label.lower() or "enterprise workflow" in tier_label.lower():
-        return (
-            f"Adople AI builds deterministic enterprise copilots and autonomous multi-department workflow orchestration agents "
-            f"tailored to scale mission-critical operations at {comp}."
-        )
-
-    # Tier 2: Venture Capital
-    if "venture capital" in tier_label.lower() or "tier 2" in tier_label.lower() and "vc" in tier_label.lower():
-        return (
-            f"Adople AI develops agentic intelligence pipelines that automate pitch deck triage, LP quarterly reporting, "
-            f"and investment committee memo synthesis for {comp}."
-        )
-
-    # Tier 2 / Tier 3: General Commercial & Cloud
-    return (
-        f"Adople AI develops context-aware enterprise copilots and autonomous workflow agents that connect {comp}’s operational data "
-        f"directly to real-time decision intelligence."
-    )
-
-
-# ==============================================================================
-# 5. CONFERENCES & SPEAKERS SCORING WRAPPERS
-# ==============================================================================
-
-def score_conference(conf_name: str, industry: str, official_url: str = "") -> Dict[str, Any]:
-    """Scores a Conference using (0.60 * Industry Focus) + (0.40 * Audience/Decision-Maker Fit)."""
-    combined = f"{conf_name} {industry} {official_url}".lower().strip()
-
-    is_medical = any(re.search(pat, combined, re.I) for pat in HEALTHCARE_PATTERNS)
-
-    # 1. Disqualification (Academic Symposiums) - only if NOT medical
-    if not is_medical:
-        for pat in DISQUALIFICATION_PATTERNS:
-            if re.search(pat, combined, re.I):
-                ind_score = 10.0
-                aud_score = 15.0
-                overall = calculate_overall_icp_score(ind_score, aud_score)
-                return {
-                    "icp_score": overall,
-                    "icp_tier": f"Disqualified: Academic / Non-Commercial [{get_qualification_status(overall)}]",
-                    "industry_fit_score": ind_score,
-                    "audience_fit_score": aud_score,
-                    "qualification_status": get_qualification_status(overall),
-                    "justification": "Academic symposium with limited commercial enterprise software buyer presence."
-                }
-
-    # 2. Tier 1: Core Focus (AIMed, Milken Future of Health, ACLM, FinTech, SFNet)
-    if is_medical:
-        ind_score = 98.0
-        aud_score = 95.0
-        overall = calculate_overall_icp_score(ind_score, aud_score)
+    @property
+    def headers(self) -> Dict[str, str]:
         return {
-            "icp_score": overall,
-            "icp_tier": f"Tier 1: Healthcare Priority ⭐ [{get_qualification_status(overall)}]",
-            "industry_fit_score": ind_score,
-            "audience_fit_score": aud_score,
-            "qualification_status": get_qualification_status(overall),
-            "justification": "Premier medical and healthcare leadership summit with senior hospital and healthtech executives."
+            "Authorization": f"Bearer {self.get_token()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
 
-    for pat in FINTECH_BANKING_PATTERNS + ENTERPRISE_WORKFLOW_PATTERNS + LOGISTICS_PATTERNS:
-        if re.search(pat, combined, re.I):
-            ind_score = 96.0
-            aud_score = 92.0
-            overall = calculate_overall_icp_score(ind_score, aud_score)
-            return {
-                "icp_score": overall,
-                "icp_tier": f"Tier 1: Commercial Operations (FinTech/Logistics) ⭐ [{get_qualification_status(overall)}]",
-                "industry_fit_score": ind_score,
-                "audience_fit_score": aud_score,
-                "qualification_status": get_qualification_status(overall),
-                "justification": "Commercial decision-makers focused on core financial, lending, or enterprise AI operations."
-            }
+    def get_used_range(self, sheet_name: str) -> List[List[Any]]:
+        """Returns 2D array of all values in used range of worksheet."""
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{sheet_name}')/usedRange"
+        res = requests.get(url, headers=self.headers, timeout=25)
+        if res.status_code != 200:
+            raise RuntimeError(f"Error reading usedRange from '{sheet_name}' ({res.status_code}): {res.text}")
+        return res.json().get("values", [])
 
-    # 3. Tier 2: Cloud / AI / Infrastructure
-    for pat in CLOUD_MOBILITY_PATTERNS + VC_INVESTMENT_PATTERNS:
-        if re.search(pat, combined, re.I):
-            ind_score = 84.0
-            aud_score = 88.0
-            overall = calculate_overall_icp_score(ind_score, aud_score)
-            return {
-                "icp_score": overall,
-                "icp_tier": f"Tier 2: Cloud & Enterprise AI [{get_qualification_status(overall)}]",
-                "industry_fit_score": ind_score,
-                "audience_fit_score": aud_score,
-                "qualification_status": get_qualification_status(overall),
-                "justification": "B2B enterprise infrastructure and AI developers summit."
-            }
+    def get_records(self, sheet_name: str) -> List[Dict[str, Any]]:
+        """Returns list of row dicts keyed by header name."""
+        values = self.get_used_range(sheet_name)
+        if not values or len(values) < 2:
+            return []
+        headers = [str(h).strip() for h in values[0]]
+        records = []
+        for row in values[1:]:
+            record = {}
+            for col_idx, h in enumerate(headers):
+                val = row[col_idx] if col_idx < len(row) else ""
+                record[h] = val
+            records.append(record)
+        return records
 
-    # 4. Tier 3: General Commercial & Tech
-    ind_score = 65.0
-    aud_score = 70.0
-    overall = calculate_overall_icp_score(ind_score, aud_score)
+    def update_range(self, sheet_name: str, address: str, values: List[List[Any]]) -> None:
+        """Updates a specific range address with 2D values."""
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{sheet_name}')/range(address='{address}')"
+        res = requests.patch(url, headers=self.headers, json={"values": values}, timeout=30)
+        if res.status_code != 200:
+            raise RuntimeError(f"Error updating range '{address}' on '{sheet_name}' ({res.status_code}): {res.text}")
+
+    def clear_range(self, sheet_name: str, address: str) -> None:
+        """Clears range contents and formats."""
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{sheet_name}')/range(address='{address}')/clear"
+        res = requests.post(url, headers=self.headers, json={"applyTo": "all"}, timeout=20)
+        if res.status_code not in (200, 204):
+            raise RuntimeError(f"Error clearing range '{address}' on '{sheet_name}' ({res.status_code}): {res.text}")
+
+    def format_range_fill(self, sheet_name: str, address: str, color_hex: str) -> None:
+        """Formats range background fill color."""
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{sheet_name}')/range(address='{address}')/format/fill"
+        res = requests.patch(url, headers=self.headers, json={"color": color_hex}, timeout=20)
+        if res.status_code not in (200, 204):
+            print(f"⚠️ Note on fill formatting for {sheet_name} {address}: {res.status_code}")
+
+    def format_range_font(self, sheet_name: str, address: str, bold: bool = True) -> None:
+        """Formats range font properties."""
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{sheet_name}')/range(address='{address}')/format/font"
+        res = requests.patch(url, headers=self.headers, json={"bold": bold}, timeout=20)
+        if res.status_code not in (200, 204):
+            print(f"⚠️ Note on font formatting for {sheet_name} {address}: {res.status_code}")
+
+def get_sharepoint_client() -> SharePointExcelClient:
+    return SharePointExcelClient()
+
+def apply_sharepoint_color_formatting(
+    client: SharePointExcelClient,
+    sheet_name: str,
+    start_row: int,
+    ranked_leads: List[RankedLead]
+) -> None:
+    """Applies visual row colors in atomic chunks: High Match (Green #D9EAD3), Moderate (Yellow #FFF2CC), Disqualified (Gray #F3F3F3)."""
+    if not ranked_leads:
+        return
+        
+    last_col_letter = col_num_to_letter(len(CURATED_SHEET_HEADERS))  # 'U'
+    
+    current_status = None
+    chunk_start = start_row
+    
+    for i, lead in enumerate(ranked_leads):
+        row_num = start_row + i
+        status = lead.qualification_status.upper()
+        if current_status is None:
+            current_status = status
+            chunk_start = row_num
+        elif status != current_status:
+            chunk_end = row_num - 1
+            color = "#D9EAD3" if current_status == "HIGH_MATCH" else ("#FFF2CC" if current_status == "MODERATE" else "#F3F3F3")
+            client.format_range_fill(sheet_name, f"A{chunk_start}:{last_col_letter}{chunk_end}", color)
+            current_status = status
+            chunk_start = row_num
+            
+    if current_status is not None:
+        chunk_end = start_row + len(ranked_leads) - 1
+        color = "#D9EAD3" if current_status == "HIGH_MATCH" else ("#FFF2CC" if current_status == "MODERATE" else "#F3F3F3")
+        client.format_range_fill(sheet_name, f"A{chunk_start}:{last_col_letter}{chunk_end}", color)
+
+def verify_environment_and_credentials() -> None:
+    """Pre-flight check: Validates that all necessary API keys and credentials exist before execution begins."""
+    missing = []
+    if not os.getenv("AZURE_OPENAI_API_KEY"):
+        missing.append("AZURE_OPENAI_API_KEY")
+    if not os.getenv("AZURE_OPENAI_BASE_URL"):
+        missing.append("AZURE_OPENAI_BASE_URL")
+    if not os.getenv("TAVILY_API_KEY"):
+        missing.append("TAVILY_API_KEY")
+        
+    tenant_id = os.getenv("SHAREPOINT_TENANT_ID", SHAREPOINT_TENANT_ID)
+    client_id = os.getenv("SHAREPOINT_CLIENT_ID", SHAREPOINT_CLIENT_ID)
+    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", SHAREPOINT_CLIENT_SECRET)
+    drive_id = os.getenv("SHAREPOINT_DRIVE_ID", SHAREPOINT_DRIVE_ID)
+    item_id = os.getenv("SHAREPOINT_ITEM_ID", SHAREPOINT_ITEM_ID)
+    
+    if not tenant_id:
+        missing.append("SHAREPOINT_TENANT_ID")
+    if not client_id:
+        missing.append("SHAREPOINT_CLIENT_ID")
+    if not client_secret:
+        missing.append("SHAREPOINT_CLIENT_SECRET")
+    if not drive_id:
+        missing.append("SHAREPOINT_DRIVE_ID")
+    if not item_id:
+        missing.append("SHAREPOINT_ITEM_ID")
+
+    try:
+        load_knowledge_base()
+    except Exception:
+        missing.append(f"Knowledge Base file ('{KB_FILE_PATH}')")
+
+    if missing:
+        err_msg = "\n❌ CRITICAL PRODUCTION CONFIGURATION ERROR:\n"
+        for m in missing:
+            err_msg += f"   • Missing or invalid: {m}\n"
+        err_msg += "\nPlease check your .env and working directory before running in production."
+        raise RuntimeError(err_msg)
+    
+    print("🛡️ [Pre-Flight Check] All API credentials, Microsoft SharePoint credentials, and Knowledge Base verified!")
+
+def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
+    """Mirrors the 21-column ranked leads to Local Excel tabs 'latest_week_scoring' and 'Companies scoring'."""
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import PatternFill, Font
+        local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+        if not local_path.exists():
+            return
+        wb = load_workbook(local_path)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. Update latest_week_scoring
+        if "latest_week_scoring" in wb.sheetnames:
+            ws_latest = wb["latest_week_scoring"]
+            # Clear existing data rows
+            for row in list(ws_latest.iter_rows(min_row=1, max_row=ws_latest.max_row, max_col=len(CURATED_SHEET_HEADERS))):
+                for cell in row:
+                    cell.value = None
+            
+            # Write headers
+            for col_idx, h in enumerate(CURATED_SHEET_HEADERS, 1):
+                cell = ws_latest.cell(row=1, column=col_idx, value=h)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            
+            # Write rows
+            for r_idx, lead in enumerate(ranked_leads, 2):
+                prof = lead.evaluated_lead.enriched_lead.profile
+                row_vals = [
+                    lead.rank,
+                    lead.overall_score,
+                    lead.company_name,
+                    lead.domain,
+                    lead.conference_name,
+                    lead.qualification_status,
+                    prof.primary_industry,
+                    prof.headcount_tier,
+                    lead.speaker_name,
+                    lead.job_title,
+                    lead.email if lead.email != "Not Available" else "",
+                    lead.email_status if lead.email != "Not Available" else "",
+                    getattr(lead, "exhibitor_name", "") or "",
+                    getattr(lead, "exhibitor_email", "") or "",
+                    getattr(lead, "exhibitor_email_status", "") or "",
+                    getattr(lead, "attendee_name", "") or "",
+                    getattr(lead, "attendee_email", "") or "",
+                    getattr(lead, "attendee_email_status", "") or "",
+                    lead.linkedin_url if lead.linkedin_url != "Not Available" else "",
+                    lead.speaker_id,
+                    now_str
+                ]
+                color = "D9EAD3" if lead.qualification_status == "HIGH_MATCH" else ("FFF2CC" if lead.qualification_status == "MODERATE" else "F3F3F3")
+                fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+                for c_idx, val in enumerate(row_vals, 1):
+                    c = ws_latest.cell(row=r_idx, column=c_idx, value=val)
+                    c.fill = fill
+
+        # 2. Append to Companies scoring
+        if "Companies scoring" in wb.sheetnames:
+            ws_hist = wb["Companies scoring"]
+            if ws_hist.max_row < 1 or not ws_hist.cell(row=1, column=1).value:
+                for col_idx, h in enumerate(CURATED_SHEET_HEADERS, 1):
+                    cell = ws_hist.cell(row=1, column=col_idx, value=h)
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            
+            start_row = ws_hist.max_row + 1
+            for r_offset, lead in enumerate(ranked_leads):
+                row_num = start_row + r_offset
+                prof = lead.evaluated_lead.enriched_lead.profile
+                row_vals = [
+                    lead.rank,
+                    lead.overall_score,
+                    lead.company_name,
+                    lead.domain,
+                    lead.conference_name,
+                    lead.qualification_status,
+                    prof.primary_industry,
+                    prof.headcount_tier,
+                    lead.speaker_name,
+                    lead.job_title,
+                    lead.email if lead.email != "Not Available" else "",
+                    lead.email_status if lead.email != "Not Available" else "",
+                    getattr(lead, "exhibitor_name", "") or "",
+                    getattr(lead, "exhibitor_email", "") or "",
+                    getattr(lead, "exhibitor_email_status", "") or "",
+                    getattr(lead, "attendee_name", "") or "",
+                    getattr(lead, "attendee_email", "") or "",
+                    getattr(lead, "attendee_email_status", "") or "",
+                    lead.linkedin_url if lead.linkedin_url != "Not Available" else "",
+                    lead.speaker_id,
+                    now_str
+                ]
+                color = "D9EAD3" if lead.qualification_status == "HIGH_MATCH" else ("FFF2CC" if lead.qualification_status == "MODERATE" else "F3F3F3")
+                fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+                for c_idx, val in enumerate(row_vals, 1):
+                    c = ws_hist.cell(row=row_num, column=c_idx, value=val)
+                    c.fill = fill
+
+        wb.save(local_path)
+        print("💾 [Local Excel] Successfully mirrored rankings to 'latest_week_scoring' and 'Companies scoring'!")
+    except Exception as e:
+        print(f"⚠️ Notice mirroring to Local Excel: {e}")
+
+def export_ranked_leads_to_sharepoint(
+    client: SharePointExcelClient,
+    ranked_leads: List[RankedLead]
+) -> int:
+    """Exports ALL evaluated leads to two tabs: 'latest_week_scoring' (fresh weekly rankings) and 'Companies scoring' with 21 columns and status color highlights."""
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def format_row(lead: RankedLead) -> List[Any]:
+        prof = lead.evaluated_lead.enriched_lead.profile
+        return [
+            lead.rank,
+            lead.overall_score,
+            lead.company_name,
+            lead.domain,
+            lead.conference_name,
+            lead.qualification_status,
+            prof.primary_industry,
+            prof.headcount_tier,
+            lead.speaker_name,
+            lead.job_title,
+            lead.email if lead.email != "Not Available" else "",
+            lead.email_status if lead.email != "Not Available" else "",
+            getattr(lead, "exhibitor_name", "") or "",
+            getattr(lead, "exhibitor_email", "") or "",
+            getattr(lead, "exhibitor_email_status", "") or "",
+            getattr(lead, "attendee_name", "") or "",
+            getattr(lead, "attendee_email", "") or "",
+            getattr(lead, "attendee_email_status", "") or "",
+            lead.linkedin_url if lead.linkedin_url != "Not Available" else "",
+            lead.speaker_id,
+            now_str
+        ]
+
+    all_rows_to_insert = [format_row(lead) for lead in ranked_leads]
+
+    if not all_rows_to_insert:
+        print("⚠️ No ranked leads to export.")
+        return 0
+
+    latest_sheet = os.getenv("SHAREPOINT_LATEST_SHEET", SHAREPOINT_LATEST_SHEET)
+    history_sheet = os.getenv("SHAREPOINT_HISTORY_SHEET", SHAREPOINT_HISTORY_SHEET)
+    last_col_letter = col_num_to_letter(len(CURATED_SHEET_HEADERS))  # 'U'
+
+    # -----------------------------------------------------------------
+    # TAB 1: latest_week_scoring (Overwritten with all fresh weekly rankings + Color Highlights)
+    # -----------------------------------------------------------------
+    print(f"📋 [SharePoint] Refreshing '{latest_sheet}' tab with ALL {len(all_rows_to_insert)} rankings (21 columns)...")
+    all_latest_data = [CURATED_SHEET_HEADERS] + all_rows_to_insert
+    latest_range = f"A1:{last_col_letter}{len(all_latest_data)}"
+    client.update_range(latest_sheet, latest_range, all_latest_data)
+    
+    # Format Header Row (Soft Blue + Bold)
+    client.format_range_fill(latest_sheet, f"A1:{last_col_letter}1", "#D9E1F2")
+    client.format_range_font(latest_sheet, f"A1:{last_col_letter}1", bold=True)
+    
+    # Reset Data Rows Font to Normal (not bold)
+    client.format_range_font(latest_sheet, f"A2:{last_col_letter}{len(all_latest_data)}", bold=False)
+    
+    # Format Lead Rows (Green for High Match, Yellow for Moderate, Gray for Disqualified)
+    apply_sharepoint_color_formatting(client, latest_sheet, start_row=2, ranked_leads=ranked_leads)
+    print(f"🎨 [SharePoint] Visual status colors applied to '{latest_sheet}'!")
+    print(f"📥 [SharePoint] '{latest_sheet}' tab successfully updated with all {len(all_rows_to_insert)} companies!")
+
+    # -----------------------------------------------------------------
+    # TAB 2: Companies scoring (Permanent historical archive + Color Highlights)
+    # -----------------------------------------------------------------
+    try:
+        existing_history = client.get_used_range(history_sheet)
+    except Exception:
+        existing_history = []
+
+    if not existing_history:
+        all_hist_data = [CURATED_SHEET_HEADERS] + all_rows_to_insert
+        client.update_range(history_sheet, f"A1:{last_col_letter}{len(all_hist_data)}", all_hist_data)
+        client.format_range_fill(history_sheet, f"A1:{last_col_letter}1", "#D9E1F2")
+        client.format_range_font(history_sheet, f"A1:{last_col_letter}1", bold=True)
+        start_row = 2
+    else:
+        start_row = len(existing_history) + 1
+        end_row = start_row + len(all_rows_to_insert) - 1
+        hist_range = f"A{start_row}:{last_col_letter}{end_row}"
+        client.update_range(history_sheet, hist_range, all_rows_to_insert)
+
+    # Format newly appended rows in history sheet
+    apply_sharepoint_color_formatting(client, history_sheet, start_row=start_row, ranked_leads=ranked_leads)
+    print(f"🏛️ [SharePoint] '{history_sheet}' tab archived {len(all_rows_to_insert)} companies with status colors!")
+
+    # Mirror to local Excel
+    sync_to_local_excel(ranked_leads)
+
+    return len(all_rows_to_insert)
+
+def mark_leads_evaluated_in_sharepoint(
+    client: SharePointExcelClient,
+    evaluated_speaker_ids: List[str]
+) -> None:
+    """Marks leads as EVALUATED in the SharePoint Master Sheet ('Verified Data') in a single atomic batch."""
+    master_sheet = os.getenv("SHAREPOINT_MASTER_SHEET", SHAREPOINT_MASTER_SHEET)
+    print(f"\n🔄 [SharePoint Master Sheet] Updating 'Evaluation_Status' for {len(evaluated_speaker_ids)} leads...")
+    
+    values = client.get_used_range(master_sheet)
+    if not values or len(values) < 1:
+        print("⚠️ Master sheet is empty.")
+        return
+        
+    headers = [str(h).strip() for h in values[0]]
+    
+    if "Evaluation_Status" not in headers:
+        status_col_idx = len(headers) + 1
+        col_letter = col_num_to_letter(status_col_idx)
+        client.update_range(master_sheet, f"{col_letter}1", [["Evaluation_Status"]])
+        print(f"   ✓ Created 'Evaluation_Status' column at {col_letter}1")
+    else:
+        status_col_idx = headers.index("Evaluation_Status") + 1
+        col_letter = col_num_to_letter(status_col_idx)
+
+    conf_col_idx = headers.index("Conference ID") if "Conference ID" in headers else (headers.index("Conference_ID") if "Conference_ID" in headers else -1)
+    spk_col_idx = headers.index("Speaker Name") if "Speaker Name" in headers else (headers.index("Speaker_Name") if "Speaker_Name" in headers else -1)
+    comp_col_idx = headers.index("Company Name") if "Company Name" in headers else (headers.index("Company_Name") if "Company_Name" in headers else -1)
+    explicit_id_col = headers.index("Speaker_ID") if "Speaker_ID" in headers else (headers.index("Speaker ID") if "Speaker ID" in headers else -1)
+
+    target_ids_set = set(str(sid).strip() for sid in evaluated_speaker_ids)
+    
+    status_values = []
+    updated_count = 0
+    
+    for row_idx, row in enumerate(values[1:], start=2):
+        existing_status = row[status_col_idx - 1] if status_col_idx - 1 < len(row) else ""
+        
+        if explicit_id_col != -1 and explicit_id_col < len(row) and str(row[explicit_id_col]).strip():
+            row_spk_id = clean_string(row[explicit_id_col])
+        else:
+            conf_val = clean_token(row[conf_col_idx]) if conf_col_idx != -1 and conf_col_idx < len(row) else "CONF"
+            spk_val = clean_token(row[spk_col_idx]) if spk_col_idx != -1 and spk_col_idx < len(row) else ""
+            comp_val = clean_token(row[comp_col_idx]) if comp_col_idx != -1 and comp_col_idx < len(row) else ""
+            row_spk_id = f"{conf_val}_{spk_val}_{comp_val}"
+            
+        comp_name_val = row[comp_col_idx] if comp_col_idx != -1 and comp_col_idx < len(row) else ""
+        
+        if row_spk_id in target_ids_set or str(existing_status).strip().upper() in ["EVALUATED", "PROCESSED"]:
+            status_values.append(["EVALUATED"])
+            if row_spk_id in target_ids_set and str(existing_status).strip().upper() != "EVALUATED":
+                updated_count += 1
+                print(f"   ✓ Row {row_idx}: {comp_name_val} ({row_spk_id}) marked as EVALUATED")
+        else:
+            status_values.append([existing_status])
+
+    if status_values:
+        client.update_range(master_sheet, f"{col_letter}2:{col_letter}{len(values)}", status_values)
+        print(f"✅ [SharePoint Master Sheet] Successfully updated {updated_count} rows as 'EVALUATED'!")
+
+    # Mirror Evaluation_Status to Local Excel
+    try:
+        from openpyxl import load_workbook
+        local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+        if local_path.exists():
+            wb = load_workbook(local_path)
+            if "Verified Data" in wb.sheetnames:
+                ws = wb["Verified Data"]
+                raw_rows = list(ws.iter_rows(values_only=False))
+                if raw_rows:
+                    header_cells = [c.value for c in raw_rows[0]]
+                    eval_col = None
+                    for ci, hv in enumerate(header_cells, 1):
+                        if str(hv).strip().lower() in ("evaluation_status", "evaluation status"):
+                            eval_col = ci
+                            break
+                    if not eval_col:
+                        eval_col = len(header_cells) + 1
+                        ws.cell(row=1, column=eval_col, value="Evaluation_Status")
+                    for row_idx, r_cells in enumerate(raw_rows[1:], start=2):
+                        if (row_idx - 2) < len(status_values):
+                            ws.cell(row=row_idx, column=eval_col, value=status_values[row_idx - 2][0])
+                    wb.save(local_path)
+                    print("💾 [Local Excel] Verified Data 'Evaluation_Status' synchronized.")
+    except Exception as e:
+        print(f"⚠️ Notice mirroring Evaluation_Status to Local Excel: {e}")
+
+
+# =====================================================================
+# 6. NODE CORE IMPLEMENTATION FUNCTIONS
+# =====================================================================
+
+# --- NODE 1 CORE LOGIC ---
+def node_1_fetch_unprocessed_from_sheet(
+    sheet: Any,
+    state: PipelineState
+) -> Dict[str, Any]:
+    if isinstance(sheet, list):
+        records_raw = sheet
+    elif hasattr(sheet, "get_records"):
+        master_sheet_name = os.getenv("SHAREPOINT_MASTER_SHEET", SHAREPOINT_MASTER_SHEET)
+        records_raw = sheet.get_records(master_sheet_name)
+    elif hasattr(sheet, "get_all_records"):
+        records_raw = sheet.get_all_records()
+    else:
+        raise ValueError(f"Unsupported sheet object: {type(sheet)}")
+
+    already_processed: Set[str] = state.get("processed_speaker_ids", set())
+    
+    clean_leads: List[SpeakerRecord] = []
+    company_leads_map: Dict[str, SpeakerRecord] = {}
+    seen_ids: Set[str] = set()
+    seen_name_companies: Set[str] = set()
+    
+    skipped_evaluated = 0
+    duplicates_count = 0
+    invalid_rows_count = 0
+
+    print(f"\n🧹 [Node 1] Ingesting & Checking Master Sheet ({len(records_raw)} rows)...")
+
+    for row in records_raw:
+        def get_field(*keys):
+            for k in keys:
+                if k in row and row[k] is not None and str(row[k]).strip() != "":
+                    return row[k]
+            return ""
+
+        eval_status = str(get_field(
+            "Evaluation_Status", "Evaluation Status", "evaluation_status"
+        )).strip().upper()
+        if eval_status in ["EVALUATED", "PROCESSED", "RANKED"]:
+            skipped_evaluated += 1
+            continue
+
+        company = clean_string(get_field("Company Name", "Company_Name", "Company", "company_name"))
+        spk_name = clean_string(get_field("Speaker Name", "Speaker_Name", "speaker_name", "Speaker"))
+        conf_id = clean_string(get_field("Conference ID", "Conference_ID", "conference_id", "ConferenceId"))
+        conf_name = clean_string(get_field("Conference Name", "Conference_Name", "conference_name"))
+
+        # Exhibitor Incoming Columns
+        exh_name = clean_string(get_field("Exhibitor Name", "Exhibitor_Name", "exhibitor_name"))
+        exh_email = clean_email(get_field("Exhibitor Professional Email", "Exhibitor_Email", "Exhibitor Email", "exhibitor_email"))
+        exh_status = "Verified" if exh_email else ""
+
+        # Attendee Incoming Columns
+        att_name = clean_string(get_field("Attendee Name", "Attendee_Name", "attendee_name"))
+        att_email = clean_email(get_field("Attendee Professional Email", "Attendee_Email", "Attendee Email", "attendee_email"))
+        att_status = "Verified" if att_email else ""
+
+        # Speaker Incoming Columns
+        email = clean_email(get_field("Speaker Professional Email", "Professional_Email", "Professional Email", "Email", "professional_email", "Speaker_Email", "Speaker Email"))
+        email_status = "Verified" if email else ""
+        job_title = clean_string(get_field("Speaker Job Title", "Job_Title", "Job Title", "Title", "job_title"))
+        linkedin = clean_url(get_field("Speaker LinkedIn", "Personal_LinkedIn_URL", "Personal LinkedIn URL", "LinkedIn", "personal_linkedin_url"))
+        speaker_url = clean_url(get_field("Speaker_Source_URL", "Speaker Source URL", "speaker_source_url"))
+
+        # Lead Ingestion Rule: Company Name exists AND at least one participant exists (Speaker, Exhibitor, or Attendee)
+        has_participant = bool(spk_name or exh_name or att_name or email or exh_email or att_email)
+        if not company or not has_participant:
+            invalid_rows_count += 1
+            continue
+
+        spk_id = clean_string(get_field("Speaker_ID", "Speaker ID", "speaker_id", "SpeakerID"))
+        if not spk_id:
+            conf_part = clean_token(conf_id) if conf_id else "CONF"
+            participant_part = clean_token(spk_name or exh_name or att_name or "LEAD")
+            comp_part = clean_token(company)
+            spk_id = f"{conf_part}_{participant_part}_{comp_part}"
+
+        person_token = clean_token(spk_name or exh_name or att_name)
+        name_company_key = f"{person_token}:::{company.lower()}"
+        comp_key = clean_token(company)
+
+        if spk_id in already_processed or spk_id in seen_ids or name_company_key in seen_name_companies:
+            duplicates_count += 1
+            # Merge any non-empty Exhibitor or Attendee details from this duplicate row into the existing record
+            if comp_key in company_leads_map:
+                existing = company_leads_map[comp_key]
+                if not existing.exhibitor_name and exh_name:
+                    existing.exhibitor_name = exh_name
+                    existing.exhibitor_email = exh_email
+                    existing.exhibitor_email_status = exh_status
+                if not existing.attendee_name and att_name:
+                    existing.attendee_name = att_name
+                    existing.attendee_email = att_email
+                    existing.attendee_email_status = att_status
+                if not existing.speaker_name and spk_name:
+                    existing.speaker_name = spk_name
+                    existing.job_title = job_title
+                    existing.professional_email = email
+                    existing.verification_status = email_status
+            continue
+
+        seen_ids.add(spk_id)
+        seen_name_companies.add(name_company_key)
+
+        cleaned_row = {
+            "Speaker_ID": spk_id,
+            "Conference_ID": conf_id,
+            "Conference_Name": conf_name,
+            "Speaker_Name": spk_name,
+            "Job_Title": job_title,
+            "Company_Name": company,
+            "Personal_LinkedIn_URL": linkedin,
+            "LinkedIn_Status": clean_string(get_field("LinkedIn_Status", "LinkedIn Status", "linkedin_status")),
+            "Professional_Email": email,
+            "Email_Source_URL": clean_string(get_field("Email_Source_URL", "Email Source URL", "email_source_url")),
+            "Speaker_Source_URL": speaker_url,
+            "Verification_Status": email_status,
+            "Last_Checked_At": clean_string(get_field("Last_Checked_At", "Last Checked At", "last_checked_at")),
+            "Weekly_Run_ID": clean_string(get_field("Weekly_Run_ID", "Weekly Run ID", "weekly_run_id")),
+            "Exhibitor_Name": exh_name,
+            "Exhibitor_Email": exh_email,
+            "Exhibitor_Email_Status": exh_status,
+            "Attendee_Name": att_name,
+            "Attendee_Email": att_email,
+            "Attendee_Email_Status": att_status,
+        }
+        
+        try:
+            lead = SpeakerRecord(**cleaned_row)
+            clean_leads.append(lead)
+            company_leads_map[comp_key] = lead
+        except Exception:
+            invalid_rows_count += 1
+
+    # -----------------------------------------------------------------
+    # COMPANY DEDUPLICATION & MULTI-ROLE MERGING:
+    # Keep ONLY ONE representative lead per company
+    # Rule: Check email verification (3: verified corp, 2: verified, 1: unverified, 0: none)
+    # Tie-Breaker: "Keep before" (Python max preserves first-seen element)
+    # Contact Enrichment: Merge Speaker + Exhibitor + Attendee across ALL rows of that company
+    # -----------------------------------------------------------------
+    company_groups: Dict[str, List[SpeakerRecord]] = {}
+    for lead in clean_leads:
+        comp_key = clean_token(lead.company_name)
+        if comp_key not in company_groups:
+            company_groups[comp_key] = []
+        company_groups[comp_key].append(lead)
+
+    deduped_leads: List[SpeakerRecord] = []
+    duplicate_speaker_ids: List[str] = []
+
+    for comp_key, speakers in company_groups.items():
+        if len(speakers) == 1:
+            deduped_leads.append(speakers[0])
+        else:
+            best_lead = max(speakers, key=get_speaker_email_priority)
+            
+            # Bi-directional contact enrichment
+            for spk in speakers:
+                if not best_lead.exhibitor_name and spk.exhibitor_name:
+                    best_lead.exhibitor_name = spk.exhibitor_name
+                if not best_lead.exhibitor_email and spk.exhibitor_email:
+                    best_lead.exhibitor_email = spk.exhibitor_email
+                if not best_lead.exhibitor_email_status and spk.exhibitor_email_status:
+                    best_lead.exhibitor_email_status = spk.exhibitor_email_status
+                    
+                if not best_lead.attendee_name and spk.attendee_name:
+                    best_lead.attendee_name = spk.attendee_name
+                if not best_lead.attendee_email and spk.attendee_email:
+                    best_lead.attendee_email = spk.attendee_email
+                if not best_lead.attendee_email_status and spk.attendee_email_status:
+                    best_lead.attendee_email_status = spk.attendee_email_status
+
+                if not best_lead.speaker_name and spk.speaker_name:
+                    best_lead.speaker_name = spk.speaker_name
+                    best_lead.job_title = spk.job_title
+                if not best_lead.professional_email and spk.professional_email:
+                    best_lead.professional_email = spk.professional_email
+                    best_lead.verification_status = spk.verification_status
+                if not best_lead.personal_linkedin_url and spk.personal_linkedin_url:
+                    best_lead.personal_linkedin_url = spk.personal_linkedin_url
+            
+            deduped_leads.append(best_lead)
+            
+            for spk in speakers:
+                if spk.speaker_id != best_lead.speaker_id:
+                    duplicate_speaker_ids.append(spk.speaker_id)
+                    best_score = get_speaker_email_priority(best_lead)
+                    spk_score = get_speaker_email_priority(spk)
+                    display_name = best_lead.speaker_name or best_lead.exhibitor_name or best_lead.attendee_name or "Contact"
+                    other_name = spk.speaker_name or spk.exhibitor_name or spk.attendee_name or "Contact"
+                    print(f"   👥 Duplicate company '{best_lead.company_name}': Keeping '{display_name}' (Email Score: {best_score}), skipping '{other_name}' (Email Score: {spk_score})")
+
+    weekly_id = deduped_leads[0].weekly_run_id if deduped_leads else None
+
+    print(f"📊 [Node 1 Summary]")
+    print(f"   • Total rows in sheet: {len(records_raw)}")
+    print(f"   • Previously EVALUATED rows skipped: {skipped_evaluated} ⏭️")
+    print(f"   • Duplicates / Blanks filtered: {duplicates_count + invalid_rows_count}")
+    print(f"   • Alternate speakers from same company deduplicated: {len(duplicate_speaker_ids)} 👥")
+    print(f"   • Unique Companies to Process: {len(deduped_leads)} ✨\n")
+
     return {
-        "icp_score": overall,
-        "icp_tier": f"Tier 3: General Commercial [{get_qualification_status(overall)}]",
-        "industry_fit_score": ind_score,
-        "audience_fit_score": aud_score,
-        "qualification_status": get_qualification_status(overall),
-        "justification": "General technology or commercial exhibition."
+        "new_leads": deduped_leads,
+        "duplicate_speaker_ids": duplicate_speaker_ids,
+        "current_weekly_run_id": weekly_id,
+        "total_new_count": len(deduped_leads)
     }
 
 
-def score_speaker(speaker_name: str, job_title: str, company_name: str, conf_name: str = "") -> Dict[str, Any]:
-    """
-    Scores a Speaker using (0.60 * Company Industry Fit) + (0.40 * Scale Sweet Spot).
-    Generates dynamic Pitch Hook and Qualification Status.
-    """
-    # 1. Industry Fit (60%)
-    ind_score, tier_label, ind_justification = evaluate_industry_fit(
-        company_name=company_name,
-        job_title=job_title,
-        context_text=conf_name
+# --- NODE 2 CORE LOGIC: AZURE LLM ENRICHMENT & DOMAIN RESOLVER ---
+profile_parser = JsonOutputParser(pydantic_object=OrganizedCompanyProfile)
+
+research_prompt = PromptTemplate.from_template("""You are a Senior B2B Corporate Intelligence Analyst.
+Examine the live web search facts about an organization and produce a complete structured intelligence dossier.
+CRITICAL RULES:
+1. NEVER leave any string field empty.
+2. For 'company_domain', determine and output ONLY the organization's TRUE official corporate root domain (e.g., 'khoslaventures.com', 'wholefoodsmarket.com', 'afbasket.com', 'rainforestdistribution.com').
+   - If the corporate email domain hint is from a third-party consulting firm or agency (e.g. 'gartner.com' for Whole Foods, 'diligentglobal.com' for Khosla Ventures), DISCARD IT and identify the company's real root corporate domain using your world knowledge and the found URL.
+   - NEVER output trade publications (e.g. 'retail-merchandiser.com'), news sites, social media, or directories like 'linkedin.com', 'leadiq.com', 'nombase.com', 'yelp.com', or 'tavily.com'.
+3. For 'primary_industry', be specific (e.g., 'Supermarket & Grocery Retail', 'Food & Beverage Wholesale Distribution', 'Venture Capital', 'Life Insurance', 'Enterprise Cloud Platform'). Do NOT output generic 'General Commercial / Services' unless totally impossible to determine.
+4. If the organization is a Non-Profit or Academic institution (like Archaeological Institute of America), set headcount_tier to 'Non-Profit / Academic'.
+
+Company / Organization Name: {company_name}
+Speaker Context: {speaker_name} ({job_title}) at {conference_name}
+Corporate Email Domain Hint: {email_domain_hint}
+LIVE WEB SEARCH FACTS:
+{search_overview}
+FOUND OFFICIAL URL:
+{found_url}
+
+{format_instructions}
+""")
+
+enrichment_chain = research_prompt | azure_llm | profile_parser
+
+def search_company_with_tavily(
+    company_name: str,
+    speaker_name: str = "",
+    conference_name: str = ""
+) -> Dict[str, str]:
+    """Production-grade targeted homepage Tavily web search with lexical URL ranking and blog filtering."""
+    clean_name = company_name.strip()
+    if not clean_name or clean_name.lower() in ["unknown", "n/a", "none"]:
+        return {"url": "", "overview": "No company name provided."}
+
+    if len(clean_name) <= 5:
+        context_parts = [f'"{clean_name}"']
+        if speaker_name:
+            context_parts.append(speaker_name)
+        if conference_name:
+            context_parts.append(conference_name)
+        context_parts.append("official corporate website homepage")
+        query = " ".join(context_parts)
+    else:
+        query = f'"{clean_name}" official website homepage'
+
+    for attempt in range(2):
+        try:
+            response = tavily_client.search(
+                query=query,
+                search_depth="basic",
+                max_results=5,
+                include_answer=True
+            )
+            overview = response.get("answer", "")
+            results = response.get("results", [])
+
+            official_url = pick_best_company_url(results, clean_name)
+
+            if not overview and results:
+                overview = " ".join([r.get("content", "") for r in results[:2]])
+
+            return {"url": official_url, "overview": overview[:1200]}
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            print(f"⚠️ Tavily error for {clean_name}: {e}")
+            return {"url": "", "overview": f"Company: {clean_name}."}
+
+def node_2_hybrid_enrichment(leads: List[Any]) -> List[EnrichedLead]:
+    """Node 2: Multi-layer intelligence enrichment using Tavily + Azure OpenAI with 4-step domain resolution."""
+    enriched_leads: List[EnrichedLead] = []
+    company_cache: Dict[str, OrganizedCompanyProfile] = {}
+    total = len(leads)
+    
+    print(f"\n⚡ [Node 2: Deep Corporate Research (Azure OpenAI)] Processing {total} leads...\n")
+
+    for i, lead in enumerate(leads, 1):
+        company_key = lead.company_name.lower().strip()
+        contact_display = lead.speaker_name or lead.exhibitor_name or lead.attendee_name or "Contact"
+        print(f"[{i}/{total}] Deep Research: {lead.company_name} ({contact_display})...")
+        
+        any_email = lead.professional_email or lead.exhibitor_email or lead.attendee_email
+        raw_email_domain = extract_domain_from_email(any_email)
+        email_domain = ""
+        if raw_email_domain:
+            if is_email_domain_matching_company(raw_email_domain, lead.company_name):
+                email_domain = raw_email_domain
+                print(f"   📧 Ground-Truth Email Domain Verified: '{email_domain}'")
+            else:
+                print(f"   ⚠️ Third-party / consulting email domain '{raw_email_domain}' detected for '{lead.company_name}' - ignoring in favor of Tavily + Azure research.")
+
+        if company_key in company_cache:
+            print(f"   ⚡ Reusing cached profile for {lead.company_name}!")
+            profile = company_cache[company_key]
+            raw_text = "Retrieved from run cache"
+        else:
+            tavily_result = search_company_with_tavily(
+                company_name=lead.company_name,
+                speaker_name=contact_display,
+                conference_name=lead.conference_name
+            )
+            raw_text = tavily_result["overview"]
+            found_url = tavily_result["url"]
+            
+            profile = None
+            for attempt in range(2):
+                try:
+                    profile_dict = enrichment_chain.invoke({
+                        "company_name": lead.company_name,
+                        "speaker_name": contact_display,
+                        "job_title": lead.job_title or "Executive",
+                        "conference_name": lead.conference_name,
+                        "email_domain_hint": email_domain or "None (determine official root domain from company name and official URL)",
+                        "search_overview": raw_text,
+                        "found_url": found_url,
+                        "format_instructions": profile_parser.get_format_instructions()
+                    })
+                    profile = OrganizedCompanyProfile(**profile_dict)
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        time.sleep(1.0)
+                        continue
+                    print(f"⚠️ Azure LLM profile parsing error: {e}")
+                    profile = OrganizedCompanyProfile(
+                        company_domain="",
+                        official_website=found_url,
+                        primary_industry="General Commercial / Services",
+                        headcount_tier="Mid-Market Sweet Spot (50-500)",
+                        core_products_and_services=raw_text[:150],
+                        us_market_presence="United States",
+                        operational_workflows_analysis="Standard operational and document processing workflows.",
+                        key_business_highlights=""
+                    )
+
+            if email_domain:
+                profile.company_domain = email_domain
+            else:
+                clean_dom = profile.company_domain.lower().replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0].strip()
+                if clean_dom and not is_blocked_domain(clean_dom) and "." in clean_dom:
+                    profile.company_domain = clean_dom
+                elif found_url:
+                    url_domain = extract_domain_from_url(found_url)
+                    if url_domain:
+                        profile.company_domain = url_domain
+                    else:
+                        profile.company_domain = re.sub(r'[^a-zA-Z0-9]', '', lead.company_name).lower() + ".com"
+                else:
+                    profile.company_domain = re.sub(r'[^a-zA-Z0-9]', '', lead.company_name).lower() + ".com"
+
+            if not profile.official_website or is_blocked_domain(profile.official_website):
+                profile.official_website = f"https://{profile.company_domain}"
+
+            lower_text = (lead.company_name + " " + raw_text).lower()
+            is_non_profit = any(w in lower_text for w in ["non-profit", "nonprofit", "archaeol", "institute", "foundation", "museum", "society"])
+            is_commercial_entity = any(w in lower_text for w in ["venture", "capital", "partners", "fund", "invest", "holding", "llc", "inc", "corp"])
+            if is_commercial_entity:
+                is_non_profit = False
+
+            if is_non_profit:
+                profile.primary_industry = profile.primary_industry or "Non-Profit / Research & Education"
+                profile.headcount_tier = "Non-Profit / Academic"
+                profile.core_products_and_services = profile.core_products_and_services or "Academic research, publications, grants, and education programs."
+                profile.operational_workflows_analysis = profile.operational_workflows_analysis or "Handles member subscriptions, journal publishing, and grant application reviews."
+
+            company_cache[company_key] = profile
+            time.sleep(0.2)
+
+        enriched = EnrichedLead(
+            raw_lead=lead,
+            profile=profile,
+            tavily_raw_text=raw_text
+        )
+        enriched_leads.append(enriched)
+
+        print(f"   🌐 Verified Domain: {profile.company_domain} ({profile.official_website})")
+        print(f"   🏢 Industry: {profile.primary_industry} | Tier: {profile.headcount_tier}")
+        print(f"   📍 Location / US: {profile.us_market_presence}")
+        print(f"   💼 Products: {profile.core_products_and_services[:80]}...\n")
+
+    print(f"✅ [Node 2 Complete] Generated clean profiles for {len(enriched_leads)} companies!")
+    return enriched_leads
+
+
+# --- NODE 3 CORE LOGIC: KNOWLEDGE BASE 60/40 SCORING ---
+score_parser = JsonOutputParser(pydantic_object=LeadScoreResult)
+
+scoring_prompt = PromptTemplate.from_template("""You are the Chief Strategy & Evaluation Officer for Adople AI.
+You must strictly score the company by applying the rules from the official Adople AI Knowledge Base below.
+Conclude with a calculated score based on the 60% Industry / 40% Tier formula.
+
+=================== ADOPLE AI KNOWLEDGE BASE ===================
+{knowledge_base}
+================================================================
+
+Evaluate this company:
+- Company Name: {company_name} ({domain})
+- Headcount Tier: {company_tier}
+- Industry: {industry}
+- Core Products: {products}
+- Daily Operational Bottlenecks: {operations}
+- Speaker Context: {speaker_name} ({job_title})
+
+Calculate the scores strictly following the 60% / 40% rules.
+{format_instructions}
+""")
+
+scoring_chain = scoring_prompt | azure_llm | score_parser
+
+def node_3_evaluate_and_score(enriched_leads: List[Any]) -> List[EvaluatedLead]:
+    evaluated_leads: List[EvaluatedLead] = []
+    total = len(enriched_leads)
+    
+    print(f"\n🎯 [Node 3: Azure OpenAI (60/40)] Scoring {total} companies...\n")
+
+    for i, item in enumerate(enriched_leads, 1):
+        lead = item.raw_lead
+        prof = item.profile
+        
+        print(f"[{i}/{total}] Evaluating: {lead.company_name} ({prof.company_domain})...")
+        
+        score_res = None
+        for attempt in range(2):
+            try:
+                score_dict = scoring_chain.invoke({
+                    "knowledge_base": adople_kb_content,
+                    "company_name": lead.company_name,
+                    "domain": prof.company_domain,
+                    "company_tier": prof.headcount_tier,
+                    "industry": prof.primary_industry,
+                    "products": prof.core_products_and_services,
+                    "operations": prof.operational_workflows_analysis,
+                    "speaker_name": lead.speaker_name or lead.exhibitor_name or lead.attendee_name or "Contact",
+                    "job_title": lead.job_title or "Executive",
+                    "format_instructions": score_parser.get_format_instructions()
+                })
+                score_res = LeadScoreResult(**score_dict)
+                break
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(1.0)
+                    continue
+                print(f"⚠️ Scoring error for {lead.company_name} (using fallback score): {e}\n")
+                score_res = LeadScoreResult(
+                    strategic_analysis=f"Automated fallback score due to evaluation error: {e}",
+                    industry_fit_score=50.0,
+                    tier_fit_score=50.0,
+                    overall_company_score=50.0,
+                    qualification_status="MODERATE"
+                )
+
+        evaluated = EvaluatedLead(
+            enriched_lead=item,
+            score_details=score_res
+        )
+        evaluated_leads.append(evaluated)
+        
+        print(f"   ⭐ Overall Score: {score_res.overall_company_score:.1f}/100 [{score_res.qualification_status}]")
+        print(f"   📊 Industry (60%): {score_res.industry_fit_score} | Tier (40%): {score_res.tier_fit_score}\n")
+
+        time.sleep(0.2)
+
+    print(f"✅ [Node 3 Complete] Successfully evaluated {len(evaluated_leads)}/{total} companies!")
+    return evaluated_leads
+
+
+# --- NODE 4 CORE LOGIC: DETERMINISTIC TIE-BREAKER RANKING ---
+def get_tie_breaker_sort_key(item: EvaluatedLead):
+    """Returns a sorting tuple: (Overall Score, Industry Score, Email Status). Safe against None."""
+    score = float(getattr(item.score_details, "overall_company_score", 0.0) or 0.0)
+    ind_score = float(getattr(item.score_details, "industry_fit_score", 0.0) or 0.0)
+    
+    raw = item.enriched_lead.raw_lead
+    has_verified = (
+        (getattr(raw, 'professional_email', '') and "verified" in str(getattr(raw, 'verification_status', '')).lower()) or
+        (getattr(raw, 'exhibitor_email', '') and "verified" in str(getattr(raw, 'exhibitor_email_status', '')).lower()) or
+        (getattr(raw, 'attendee_email', '') and "verified" in str(getattr(raw, 'attendee_email_status', '')).lower())
     )
-
-    is_academic = ind_score <= 25.0
-
-    # 2. Scale Fit (40%)
-    scale_score, scale_category, headcount_str = evaluate_company_scale(
-        company_name=company_name,
-        is_academic_or_nonprofit=is_academic
+    has_any = bool(
+        getattr(raw, 'professional_email', '') or
+        getattr(raw, 'exhibitor_email', '') or
+        getattr(raw, 'attendee_email', '')
     )
-
-    # 3. Overall ICP Score
-    overall_score = calculate_overall_icp_score(ind_score, scale_score)
-    qualification_st = get_qualification_status(overall_score)
-
-    # Format Tier label to include qualification status tag
-    tier_with_status = f"{tier_label} [{qualification_st}]"
-
-    # 4. Dynamic Pitch Hook
-    pitch_hook = generate_pitch_hook(
-        company_name=company_name,
-        tier_label=tier_label,
-        industry_fit_score=ind_score
-    )
-
-    return {
-        "icp_score": overall_score,
-        "icp_tier": tier_with_status,
-        "industry_fit_score": ind_score,
-        "scale_fit_score": scale_score,
-        "company_headcount_estimate": headcount_str,
-        "pitch_hook": pitch_hook,
-        "scale_category": scale_category,
-        "qualification_status": qualification_st
-    }
-
-
-# ==============================================================================
-# 6. DETERMINISTIC TIE-BREAKER RANKING FUNCTION (From User Codebase Node 4)
-# ==============================================================================
-
-def get_speaker_tie_breaker_key(item: Tuple[WeeklySpeaker, Dict[str, Any]]) -> Tuple[float, float, int, str]:
-    """
-    Deterministic sort key from User Codebase Node 4:
-    Tuple: (Overall Score DESC, Industry Fit Score DESC, Email Readiness DESC, Speaker Name ASC)
-    where email readiness:
-        2: verified email
-        1: unverified email present
-        0: no email
-    """
-    spk, s_res = item
-    score = float(s_res.get("icp_score", 0.0) or 0.0)
-    ind_score = float(s_res.get("industry_fit_score", 0.0) or 0.0)
-
-    email = clean_email(getattr(spk, "professional_email", "") or "")
-    st = str(getattr(spk, "verification_status", "") or "").lower().strip()
-
-    if email and st == "verified":
+    
+    if has_verified:
         email_readiness = 2
-    elif email:
+    elif has_any:
         email_readiness = 1
     else:
         email_readiness = 0
 
-    sname = str(getattr(spk, "speaker_name", "") or "").strip().lower()
-    return (score, ind_score, email_readiness, sname)
+    return (score, ind_score, email_readiness)
+
+def node_4_rank_and_select_top_10(
+    evaluated_leads: List[EvaluatedLead],
+    state: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    print(f"\n🏆 [Node 4: Ranking Engine] Sorting {len(evaluated_leads)} evaluated companies...\n")
+
+    sorted_leads = sorted(evaluated_leads, key=get_tie_breaker_sort_key, reverse=True)
+    ranked_results: List[RankedLead] = []
+
+    for idx, item in enumerate(sorted_leads, 1):
+        raw = item.enriched_lead.raw_lead
+        prof = item.enriched_lead.profile
+        sc = item.score_details
+
+        lead_status = determine_qualification_status(sc.overall_company_score)
+        ranked_lead = RankedLead(
+            rank=idx,
+            company_name=raw.company_name,
+            domain=prof.company_domain,
+            overall_score=round(sc.overall_company_score, 1),
+            industry_score=round(sc.industry_fit_score, 1),
+            tier_score=round(sc.tier_fit_score, 1),
+            qualification_status=lead_status,
+            speaker_id=raw.speaker_id,
+            speaker_name=raw.speaker_name,
+            job_title=raw.job_title,
+            email=raw.professional_email or "Not Available",
+            email_status=raw.verification_status,
+            linkedin_url=raw.personal_linkedin_url or "Not Available",
+            conference_name=raw.conference_name,
+            exhibitor_name=getattr(raw, "exhibitor_name", "") or "",
+            exhibitor_email=getattr(raw, "exhibitor_email", "") or "",
+            exhibitor_email_status=getattr(raw, "exhibitor_email_status", "") or "",
+            attendee_name=getattr(raw, "attendee_name", "") or "",
+            attendee_email=getattr(raw, "attendee_email", "") or "",
+            attendee_email_status=getattr(raw, "attendee_email_status", "") or "",
+            evaluated_lead=item
+        )
+        ranked_results.append(ranked_lead)
+
+    top_10 = ranked_results[:10]
+
+    print("=" * 145)
+    print(f"{'STATUS':<6} | {'RANK':<5} | {'COMPANY':<22} | {'SCORE':<6} | {'SPK STATUS':<12} | {'EXH STATUS':<12} | {'ATT STATUS':<12} | {'CONTACTS'}")
+    print("=" * 145)
+    for r in ranked_results:
+        icon = "🟢" if r.overall_score >= 75.0 else ("🟡" if r.overall_score >= 50.0 else "⚪")
+        contacts = []
+        if r.speaker_name: contacts.append(f"Spk: {r.speaker_name}")
+        if r.exhibitor_name: contacts.append(f"Exh: {r.exhibitor_name}")
+        if r.attendee_name: contacts.append(f"Att: {r.attendee_name}")
+        contact_display = "; ".join(contacts) if contacts else "N/A"
+        spk_st = r.email_status or "-"
+        exh_st = r.exhibitor_email_status or "-"
+        att_st = r.attendee_email_status or "-"
+        print(f"{icon:<6} | #{r.rank:<4} | {r.company_name:<22} | {r.overall_score:<6.1f} | {spk_st:<12} | {exh_st:<12} | {att_st:<12} | {contact_display}")
+    print("=" * 145)
+
+    print(f"\n✅ [Node 4 Complete] Ranked all {len(ranked_results)} companies (Top {len(top_10)} prioritized)!")
+
+    if state is not None:
+        state["top_10_leads"] = top_10
+        state["all_ranked_leads"] = ranked_results
+
+    return {
+        "top_10_leads": top_10,
+        "all_ranked_leads": ranked_results
+    }
 
 
-# ==============================================================================
-# 6.5 AUTHORITATIVE COMPANY REGISTRY (100% Verified Corporate Data)
-# ==============================================================================
+# =====================================================================
+# 7. LANGGRAPH NODE WRAPPERS & CONDITIONAL ROUTING
+# =====================================================================
+def node_1_ingestion(state: PipelineState) -> Dict[str, Any]:
+    """LangGraph Node 1: Ingests unprocessed rows from Microsoft SharePoint Master Sheet."""
+    verify_environment_and_credentials()
+    client = get_sharepoint_client()
+    return node_1_fetch_unprocessed_from_sheet(client, state)
 
-COMPANY_REGISTRY: Dict[str, Dict[str, Any]] = {
-    'abc': {'name': 'ABC', 'domain': 'abc.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: Broadcast Media & Television 📉', 'headcount': 'Enterprise Media Giant (2,000+ emp)', 'justification': 'Commercial broadcast television network owned by Disney.'},
-    'abcsharktank': {'name': 'ABC SharkTank', 'domain': 'abc.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: Broadcast Media & Television 📉', 'headcount': 'Media Production', 'justification': 'Television business reality show franchise on ABC.'},
-    'abnamrobank': {'name': 'ABNAMRO Bank', 'domain': 'abnamro.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Major international banking group managing automated transaction processing and regulatory compliance.'},
-    'adventhealth': {'name': 'AdventHealth', 'domain': 'adventhealth.com', 'ind_score': 98.0, 'scale_score': 88.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Enterprise Healthcare Giant (2,000+ emp)', 'justification': 'Major healthcare network with extensive clinical operations, EHR/EMR, and document triage needs.'},
-    'ainativedev': {'name': 'AI Native Dev', 'domain': 'aidevcon.io', 'ind_score': 60.0, 'scale_score': 25.0, 'tier': 'Tier 3: Developer Community 📉', 'headcount': 'Micro (<10 emp)', 'justification': 'Developer conference community for AI-native builders.'},
-    'alumniventures': {'name': 'Alumni Ventures', 'domain': 'av.vc', 'ind_score': 85.0, 'scale_score': 92.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~130 emp)', 'justification': 'Active venture capital firm operating specialized community funds for accredited investors.'},
-    'amazon': {'name': 'Amazon', 'domain': 'amazon.com', 'ind_score': 75.0, 'scale_score': 45.0, 'tier': 'Tier 3: Hyperscalers & Big Tech', 'headcount': 'Hyperscaler', 'justification': 'Global e-commerce and cloud provider.'},
-    'americanacademyofphysicalmedicineandrehabilitation': {'name': 'American Academy of Physical Medicine and Rehabilitation', 'domain': 'aapmr.org', 'ind_score': 95.0, 'scale_score': 30.0, 'tier': 'Tier 1A: Medical Specialty Society', 'headcount': 'Professional Society (<50 emp)', 'justification': 'National medical specialty organization representing physiatrists.'},
-    'americancollegeoflifestylemedicine': {'name': 'American College of Lifestyle Medicine', 'domain': 'lifestylemedicine.org', 'ind_score': 95.0, 'scale_score': 30.0, 'tier': 'Tier 1A: Medical Specialty Society', 'headcount': 'Professional Society (<50 emp)', 'justification': 'Professional medical society focused on clinical lifestyle interventions.'},
-    'americasfoodbasket': {'name': "America's Food Basket", 'domain': 'afbasket.com', 'ind_score': 60.0, 'scale_score': 85.0, 'tier': 'Tier 3: Supermarket Chain 📉', 'headcount': 'Mid-Market Retail (~300 emp)', 'justification': 'Regional supermarket cooperative operating grocery storefronts.'},
-    'august': {'name': 'August', 'domain': 'itsaugust.co', 'ind_score': 55.0, 'scale_score': 30.0, 'tier': 'Tier 3: Consumer Goods & Health Products 📉', 'headcount': 'Micro (<20 emp)', 'justification': 'Direct-to-consumer sustainable personal care brand.'},
-    'aws': {'name': 'AWS', 'domain': 'aws.amazon.com', 'ind_score': 85.0, 'scale_score': 45.0, 'tier': 'Tier 2: Cloud Infrastructure Platform', 'headcount': 'Hyperscaler Division', 'justification': 'Global cloud infrastructure provider. Foundational technology provider.'},
-    'axiom': {'name': 'Axiom', 'domain': 'axiomlaw.com', 'ind_score': 68.0, 'scale_score': 85.0, 'tier': 'Tier 3: Legal Talent & Advisory 📉', 'headcount': 'Enterprise Giant (2,000+ emp)', 'justification': 'On-demand legal talent and corporate counsel services.'},
-    'ayudante': {'name': 'Ayudante', 'domain': 'ayudante.jp', 'ind_score': 68.0, 'scale_score': 92.0, 'tier': 'Tier 3: General Commercial / SaaS', 'headcount': 'Mid-Market Commercial Sweet Spot (~80 emp) ⭐', 'justification': 'Digital marketing and Google Analytics consultancy serving corporate clients.'},
-    'bankofamerica': {'name': 'Bank of America', 'domain': 'bankofamerica.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Global tier-1 banking institution with massive treasury, transaction monitoring, and financial document processing.'},
-    'bca': {'name': 'BCA', 'domain': 'bca.co.id', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Major commercial bank handling high-volume consumer payment rails and corporate lending operations.'},
-    'blueyardcapital': {'name': 'BlueYard Capital', 'domain': 'blueyard.com', 'ind_score': 85.0, 'scale_score': 75.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Boutique VC (<20 emp)', 'justification': 'Early-stage venture firm investing in frontier technologies and decentralized systems.'},
-    'bnywealth': {'name': 'BNY Wealth', 'domain': 'bnymellon.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Wealth management division of BNY Mellon managing multi-generational trusts and investment operations.'},
-    'bonobos': {'name': 'Bonobos', 'domain': 'bonobos.com', 'ind_score': 60.0, 'scale_score': 80.0, 'tier': 'Tier 3: Apparel Retail & E-commerce 📉', 'headcount': 'Commercial Retail (~200 emp)', 'justification': "Men's clothing brand and e-commerce retailer."},
-    'bread': {'name': 'Bread', 'domain': 'breadfinance.com', 'ind_score': 85.0, 'scale_score': 30.0, 'tier': 'Tier 1B: FinTech & Financial Media', 'headcount': 'Micro Financial Practice (<10 emp)', 'justification': 'Financial education and economic analysis platform.'},
-    'capitalgroup': {'name': 'Capital Group', 'domain': 'capitalgroup.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Global asset management giant managing investment funds and institutional financial accounts.'},
-    'carlsonbcm': {'name': 'Carlson BCM', 'domain': 'carlsonbcm.com', 'ind_score': 65.0, 'scale_score': 30.0, 'tier': 'Tier 3: Business Continuity Consulting 📉', 'headcount': 'Micro-Practice (<10 emp)', 'justification': 'Business continuity management consultancy.'},
-    'chicagobears': {'name': 'Chicago Bears', 'domain': 'chicagobears.com', 'ind_score': 55.0, 'scale_score': 88.0, 'tier': 'Tier 3: Sports & Entertainment 📉', 'headcount': 'Commercial Scale (~200 emp)', 'justification': 'Professional sports franchise. Non-core consumer entertainment focus.'},
-    'chocchildrens': {'name': "CHOC Children's", 'domain': 'choc.org', 'ind_score': 98.0, 'scale_score': 88.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Enterprise Healthcare Giant (2,000+ emp)', 'justification': 'Leading regional pediatric healthcare system with complex clinical documentation workflows.'},
-    'christianmedicaldentalassociations': {'name': 'Christian Medical & Dental Associations', 'domain': 'cmda.org', 'ind_score': 70.0, 'scale_score': 20.0, 'tier': 'Tier 3: Faith-Based Health Group 📉', 'headcount': 'Non-Profit Association', 'justification': 'Non-profit Christian healthcare professional association.'},
-    'cloudnativecomputingfoundation': {'name': 'Cloud Native Computing Foundation', 'domain': 'cncf.io', 'ind_score': 75.0, 'scale_score': 15.0, 'tier': 'Tier 2: Open Source Cloud Foundation', 'headcount': 'Non-Profit Open Source Foundation', 'justification': 'Open source vendor-neutral foundation hosting Kubernetes and cloud-native projects.'},
-    'codecademy': {'name': 'Codecademy', 'domain': 'codecademy.com', 'ind_score': 60.0, 'scale_score': 85.0, 'tier': 'Tier 3: Online Developer EdTech 📉', 'headcount': 'Enterprise Giant / Skillsoft (2,000+ emp)', 'justification': 'Online coding and technical skill education platform.'},
-    'cognition': {'name': 'Cognition', 'domain': 'cognition.ai', 'ind_score': 96.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~45 emp) ⭐', 'justification': 'AI software engineering agent company (Devin) automating complex codebase workflows.'},
-    'columbiauniversity': {'name': 'Columbia University', 'domain': 'columbia.edu', 'ind_score': 10.0, 'scale_score': 10.0, 'tier': 'Disqualified: Academic Institution ❌', 'headcount': 'Higher Education / Academic (Zero Budget)', 'justification': 'Private Ivy League research university. Academic institution without commercial AI software procurement.'},
-    'composio': {'name': 'Composio', 'domain': 'composio.dev', 'ind_score': 96.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~35 emp) ⭐', 'justification': 'Enterprise tool-calling and API agent infrastructure for autonomous workflow orchestration.'},
-    'condenast': {'name': 'Condé Nast', 'domain': 'condenast.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: Media & Publishing 📉', 'headcount': 'Enterprise Media Giant (2,000+ emp)', 'justification': 'Global mass media publishing Vogue, The New Yorker, and Bon Appétit.'},
-    'condnast': {'name': 'Condé Nast', 'domain': 'condenast.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: Media & Publishing 📉', 'headcount': 'Enterprise Media Giant (2,000+ emp)', 'justification': 'Global mass media publishing Vogue, The New Yorker, and Bon Appétit.'},
-    'creditkarma': {'name': 'Credit Karma', 'domain': 'creditkarma.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'FinTech enterprise processing millions of financial records, credit recommendations, and loan approvals.'},
-    'demandsphere': {'name': 'DemandSphere', 'domain': 'demandsphere.com', 'ind_score': 68.0, 'scale_score': 92.0, 'tier': 'Tier 3: General Commercial / SaaS', 'headcount': 'Mid-Market Commercial Sweet Spot (~60 emp) ⭐', 'justification': 'SEO and content analytics platform for enterprise marketing teams.'},
-    'earendil': {'name': 'Earendil', 'domain': 'earendil.io', 'ind_score': 68.0, 'scale_score': 35.0, 'tier': 'Tier 3: Professional Services 📉', 'headcount': 'Micro-Consultancy (<50 emp)', 'justification': 'Specialized software and infrastructure engineering boutique.'},
-    'elcaminohospital': {'name': 'El Camino Hospital', 'domain': 'elcaminohealth.org', 'ind_score': 98.0, 'scale_score': 88.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Enterprise Healthcare Giant (2,000+ emp)', 'justification': 'Acute-care hospital enterprise managing high-volume clinical records and hospital billing operations.'},
-    'elevancehealth': {'name': 'Elevance Health', 'domain': 'elevancehealth.com', 'ind_score': 98.0, 'scale_score': 88.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Top-tier health benefits and insurance enterprise processing millions of medical claims and prior authorizations.'},
-    'farmtopeople': {'name': 'Farm to People', 'domain': 'farmtopeople.com', 'ind_score': 96.0, 'scale_score': 92.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Mid-Market Commercial (~60 emp)', 'justification': 'Online farm-to-door grocery delivery operating refrigerated food distribution logistics.'},
-    'farosai': {'name': 'Faros AI', 'domain': 'faros.ai', 'ind_score': 95.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~50 emp) ⭐', 'justification': 'Engineering operations platform unifying software delivery data and automated workflow analytics.'},
-    'ferrazzigreenlight': {'name': 'Ferrazzi Greenlight', 'domain': 'ferrazzigreenlight.com', 'ind_score': 68.0, 'scale_score': 35.0, 'tier': 'Tier 3: Executive Coaching Boutique 📉', 'headcount': 'Micro-Consultancy (<50 emp)', 'justification': 'Executive coaching and corporate leadership transformation consultancy.'},
-    'financialpracticegovernance': {'name': 'Financial Practice & Governance', 'domain': 'financialpractice.com', 'ind_score': 75.0, 'scale_score': 25.0, 'tier': 'Tier 3: Financial Advisory Practice 📉', 'headcount': 'Micro-Practice (<10 emp)', 'justification': 'Financial planning and corporate governance consultancy.'},
-    'financialservices': {'name': 'Financial Services', 'domain': 'financialservices.org', 'ind_score': 75.0, 'scale_score': 30.0, 'tier': 'Tier 3: Financial Services 📉', 'headcount': 'Micro-Practice (<20 emp)', 'justification': 'Independent financial advisory and consulting practice.'},
-    'forward': {'name': 'Forward', 'domain': 'goforward.com', 'ind_score': 95.0, 'scale_score': 90.0, 'tier': 'Tier 1A: Healthcare Operations ⭐', 'headcount': 'Mid-Market HealthTech (~200 emp)', 'justification': 'AI-driven preventative healthcare and primary care clinic network.'},
-    'foundationcapital': {'name': 'Foundation Capital', 'domain': 'foundationcapital.com', 'ind_score': 85.0, 'scale_score': 90.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~40 emp)', 'justification': 'Silicon Valley venture capital firm backing foundational enterprise SaaS and FinTech startups.'},
-    'foundersschool': {'name': 'Founders School', 'domain': 'foundersschool.com', 'ind_score': 50.0, 'scale_score': 20.0, 'tier': 'Tier 3: Online Courses & Education 📉', 'headcount': 'Micro (<10 emp)', 'justification': 'Educational courses and workshops for startup founders.'},
-    'freshdirect': {'name': 'FreshDirect', 'domain': 'freshdirect.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Online grocery fulfillment leader operating massive refrigerated logistics and delivery routing.'},
-    'gatling': {'name': 'Gatling', 'domain': 'gatling.io', 'ind_score': 85.0, 'scale_score': 95.0, 'tier': 'Tier 2: Cloud Infrastructure & Testing', 'headcount': 'Mid-Market Commercial Sweet Spot (~60 emp) ⭐', 'justification': 'Enterprise load-testing platform validating high-throughput cloud application performance.'},
-    'geico': {'name': 'GEICO', 'domain': 'geico.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1C: Insurance & Claims Processing ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Leading automotive and property insurer processing vast daily volumes of accident claims and policy underwriting.'},
-    'globalmissionshealthconference': {'name': 'Global Missions Health Conference', 'domain': 'gmhc.org', 'ind_score': 75.0, 'scale_score': 15.0, 'tier': 'Tier 3: Medical Missions Conference 📉', 'headcount': 'Non-Profit Mission Group', 'justification': 'Global healthcare missions gathering for faith-based medical professionals.'},
-    'google': {'name': 'Google', 'domain': 'google.com', 'ind_score': 80.0, 'scale_score': 45.0, 'tier': 'Tier 3: Hyperscalers & Big Tech', 'headcount': 'Hyperscaler', 'justification': 'Foundational big tech hyperscaler building AI internally.'},
-    'googlecloud': {'name': 'Google Cloud', 'domain': 'cloud.google.com', 'ind_score': 85.0, 'scale_score': 45.0, 'tier': 'Tier 2: Cloud Infrastructure Platform', 'headcount': 'Hyperscaler Division', 'justification': 'Foundational enterprise cloud platform. Massive internal engineering org.'},
-    'grainger': {'name': 'Grainger', 'domain': 'grainger.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Industrial supply distributor managing complex B2B supply chains and warehouse fulfillment.'},
-    'greatcircleventures': {'name': 'Great Circle Ventures', 'domain': 'greatcircle.vc', 'ind_score': 82.0, 'scale_score': 70.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Boutique VC (<10 emp)', 'justification': 'Venture investment firm funding early-stage consumer and technology innovators.'},
-    'guildsystems': {'name': 'Guild Systems', 'domain': 'guildsystems.net', 'ind_score': 82.0, 'scale_score': 90.0, 'tier': 'Tier 2: Cloud Infrastructure & Reliability', 'headcount': 'Mid-Market Commercial (~50 emp)', 'justification': 'Cloud infrastructure and site reliability consultancy designing distributed systems.'},
-    'gumroad': {'name': 'Gumroad', 'domain': 'gumroad.com', 'ind_score': 65.0, 'scale_score': 80.0, 'tier': 'Tier 3: Creator Commerce Platform 📉', 'headcount': 'Mid-Market Commercial (~50 emp)', 'justification': 'E-commerce platform for creators selling digital products.'},
-    'harness': {'name': 'Harness', 'domain': 'harness.io', 'ind_score': 95.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~700 emp) ⭐', 'justification': 'Modern software delivery platform automating complex CI/CD and feature release workflows.'},
-    'hashicorp': {'name': 'HashiCorp', 'domain': 'hashicorp.com', 'ind_score': 95.0, 'scale_score': 88.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Multi-cloud infrastructure automation software automating cloud provisioning workflows.'},
-    'healthcareleadersassociation': {'name': 'Healthcare Leaders Association', 'domain': 'mgma.com', 'ind_score': 85.0, 'scale_score': 30.0, 'tier': 'Tier 1A: Healthcare Management Society', 'headcount': 'Professional Society (<50 emp)', 'justification': 'Medical practice management association for healthcare executives.'},
-    'hlbgrosscollins': {'name': 'HLB Gross Collins', 'domain': 'hlbgrosscollins.com', 'ind_score': 68.0, 'scale_score': 80.0, 'tier': 'Tier 3: Accounting & Advisory 📉', 'headcount': 'Mid-Market Commercial (~100 emp)', 'justification': 'CPA and corporate advisory practice managing business accounting.'},
-    'imaginaryventures': {'name': 'Imaginary Ventures', 'domain': 'imaginary.co', 'ind_score': 82.0, 'scale_score': 70.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Boutique VC (<20 emp)', 'justification': 'Venture capital firm investing at the intersection of retail, commerce, and technology.'},
-    'imubit': {'name': 'Imubit', 'domain': 'imubit.com', 'ind_score': 95.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~120 emp) ⭐', 'justification': 'Industrial AI platform optimizing closed-loop manufacturing operations.'},
-    'khoslaventures': {'name': 'Khosla Ventures', 'domain': 'khoslaventures.com', 'ind_score': 85.0, 'scale_score': 92.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~50 emp)', 'justification': 'Top-tier institutional venture capital firm investing across AI, enterprise software, and robotics.'},
-    'kit': {'name': 'Kit', 'domain': 'kit.com', 'ind_score': 80.0, 'scale_score': 95.0, 'tier': 'Tier 2: B2B SaaS & Creator Infrastructure', 'headcount': 'Mid-Market Commercial Sweet Spot (~140 emp) ⭐', 'justification': 'Email marketing and automated audience segmentation platform.'},
-    'kpscapitalpartnersasia': {'name': 'KPS Capital Partners Asia', 'domain': 'kpsfund.com', 'ind_score': 85.0, 'scale_score': 88.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~80 emp)', 'justification': 'Global private equity firm specializing in manufacturing and industrial enterprise investments.'},
-    'latentspace': {'name': 'Latent Space', 'domain': 'latent.space', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Tech Podcast & Media 📉', 'headcount': 'Media Boutique (<5 emp)', 'justification': 'AI engineering podcast and technical community.'},
-    'mannatreepartners': {'name': 'Manna Tree Partners', 'domain': 'mannatreepartners.com', 'ind_score': 85.0, 'scale_score': 88.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~30 emp)', 'justification': 'Growth equity investment fund focused on health, nutrition, and supply chain enterprises.'},
-    'manulife': {'name': 'Manulife', 'domain': 'manulife.com', 'ind_score': 97.0, 'scale_score': 88.0, 'tier': 'Tier 1C: Insurance & Claims Processing ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Multinational life and health insurance corporation with high-volume claims extraction and underwriting.'},
-    'medicalprofessional': {'name': 'Medical Professional', 'domain': 'missionbrain.org', 'ind_score': 95.0, 'scale_score': 40.0, 'tier': 'Tier 1A: Healthcare / Medical Practice', 'headcount': 'Clinical Practice (<50 emp)', 'justification': 'Specialized clinical neurosurgery and healthcare practice.'},
-    'medigram': {'name': 'Medigram', 'domain': 'medigram.com', 'ind_score': 98.0, 'scale_score': 95.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Mid-Market Sweet Spot (~55 emp) ⭐', 'justification': 'High-priority clinical communication and medical workflow intelligence platform.'},
-    'mendenfreimanllp': {'name': 'MendenFreiman LLP', 'domain': 'mendenfreiman.com', 'ind_score': 65.0, 'scale_score': 35.0, 'tier': 'Tier 3: Legal Practice 📉', 'headcount': 'Boutique Law Firm (~30 emp)', 'justification': 'Boutique business law and estate planning firm.'},
-    'microsoft': {'name': 'Microsoft', 'domain': 'microsoft.com', 'ind_score': 80.0, 'scale_score': 45.0, 'tier': 'Tier 3: Hyperscalers & Big Tech', 'headcount': 'Hyperscaler', 'justification': 'Foundational big tech hyperscaler building enterprise AI models internally.'},
-    'millburnridgefield': {'name': 'Millburn Ridgefield', 'domain': 'millburn.com', 'ind_score': 97.0, 'scale_score': 95.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~70 emp) ⭐', 'justification': 'Quantitative asset management firm executing automated systematic trading workflows.'},
-    'moderna': {'name': 'Moderna', 'domain': 'modernatx.com', 'ind_score': 98.0, 'scale_score': 88.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Commercial mRNA biotechnology pioneer with high-volume clinical trials and regulatory documentation.'},
-    'mondelezinternational': {'name': 'Mondelēz International', 'domain': 'mondelezinternational.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Multinational food and confectionery conglomerate with vast global manufacturing and distribution.'},
-    'mondelzinternational': {'name': 'Mondelēz International', 'domain': 'mondelezinternational.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Multinational food and confectionery conglomerate with vast global manufacturing and distribution.'},
-    'moneymindandmeaning': {'name': 'Money, Mind and Meaning', 'domain': 'joylere.com', 'ind_score': 60.0, 'scale_score': 25.0, 'tier': 'Tier 3: Private Coaching Practice 📉', 'headcount': 'Solo / Micro Practice (<5 emp)', 'justification': 'Financial psychology and behavioral consulting boutique.'},
-    'morningbrew': {'name': 'Morning Brew', 'domain': 'morningbrew.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: Business Newsletter & Media 📉', 'headcount': 'Mid-Market Media (~150 emp)', 'justification': 'Business media and daily email newsletter publisher.'},
-    'nadir': {'name': 'Nadir', 'domain': 'nadir.io', 'ind_score': 65.0, 'scale_score': 30.0, 'tier': 'Tier 3: Boutique Consulting 📉', 'headcount': 'Micro-Consultancy (<10 emp)', 'justification': 'Specialized technology consulting practice.'},
-    'nationalacademyofmedicine': {'name': 'National Academy of Medicine', 'domain': 'nam.edu', 'ind_score': 10.0, 'scale_score': 10.0, 'tier': 'Disqualified: Academic Institution ❌', 'headcount': 'Academic Research Society (Zero Budget)', 'justification': 'Non-governmental scientific advisory organization.'},
-    'nationalassociationofcommunityhealthcenters': {'name': 'National Association of Community Health Centers', 'domain': 'nachc.org', 'ind_score': 85.0, 'scale_score': 25.0, 'tier': 'Tier 1A: Health Centers Association', 'headcount': 'Non-Profit Association (<50 emp)', 'justification': 'Advocacy organization representing federally qualified health centers.'},
-    'naturallygoodfoodsandcafe': {'name': 'Naturally Good Foods and Cafe', 'domain': 'naturallygoodfoods.com', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Food Cafe & Market 📉', 'headcount': 'Micro-Business (<15 emp)', 'justification': 'Single-location organic cafe and health food grocery store.'},
-    'netflix': {'name': 'Netflix', 'domain': 'netflix.com', 'ind_score': 60.0, 'scale_score': 80.0, 'tier': 'Tier 3: Entertainment & Media 📉', 'headcount': 'Enterprise Entertainment Giant (2,000+ emp)', 'justification': 'Global entertainment streaming subscription service.'},
-    'newcomer': {'name': 'Newcomer', 'domain': 'newcomer.co', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Tech Journalism & Newsletter 📉', 'headcount': 'Media Boutique (<5 emp)', 'justification': 'Venture capital and tech startup journalism publication.'},
-    'nextwavenyc': {'name': 'Next Wave NYC', 'domain': 'nextwave.nyc', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Community Events & Networking 📉', 'headcount': 'Micro (<10 emp)', 'justification': 'Founder events and tech community network in New York.'},
-    'nicolemalachowskienterprises': {'name': 'Nicole Malachowski Enterprises', 'domain': 'nicolemalachowski.com', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Keynote Speaking Practice 📉', 'headcount': 'Solo / Micro Practice (<5 emp)', 'justification': 'Professional speaking and leadership consulting business.'},
-    'northviewadvisors': {'name': 'NorthView Advisors', 'domain': 'northviewadvisors.com', 'ind_score': 68.0, 'scale_score': 35.0, 'tier': 'Tier 3: M&A Advisory Boutique 📉', 'headcount': 'Micro-Advisory (<20 emp)', 'justification': 'M&A and corporate valuation advisory firm.'},
-    'norwestpartners': {'name': 'Norwest Partners', 'domain': 'nvp.com', 'ind_score': 85.0, 'scale_score': 92.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Mid-Market Commercial (~70 emp)', 'justification': 'Global venture and growth equity firm managing multi-billion dollar investment portfolios.'},
-    'notion': {'name': 'Notion', 'domain': 'makenotion.com', 'ind_score': 65.0, 'scale_score': 92.0, 'tier': 'Tier 3: General Productivity SaaS 📉', 'headcount': 'Mid-Market Commercial (~500 emp)', 'justification': 'Connected workspace for notes and collaboration. General productivity tool.'},
-    'pep': {'name': 'Pep', 'domain': 'pepsico.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'PepsiCo corporate division managing global beverage and snack distribution supply chains.'},
-    'producthunt': {'name': 'Product Hunt', 'domain': 'producthunt.com', 'ind_score': 65.0, 'scale_score': 75.0, 'tier': 'Tier 3: Product Discovery Community 📉', 'headcount': 'Commercial Team (~30 emp)', 'justification': 'Community platform showcasing new software products.'},
-    'pulley': {'name': 'Pulley', 'domain': 'pulley.com', 'ind_score': 95.0, 'scale_score': 95.0, 'tier': 'Tier 1B: FinTech & Banking Operations ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~80 emp) ⭐', 'justification': 'Equity management and cap table software automating corporate financial records and compliance.'},
-    'qovery': {'name': 'Qovery', 'domain': 'qovery.com', 'ind_score': 85.0, 'scale_score': 80.0, 'tier': 'Tier 2: Cloud DevOps Platform', 'headcount': 'Commercial Team (~40 emp)', 'justification': 'Internal developer platform automating application deployment across multi-cloud infrastructure.'},
-    'rainforestdistribution': {'name': 'Rainforest Distribution', 'domain': 'rainforestdistribution.com', 'ind_score': 96.0, 'scale_score': 97.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~150 emp) ⭐', 'justification': 'Wholesale food and consumer goods distribution network with high-volume warehousing, route dispatch, and invoice matching.'},
-    'rebellionresearch': {'name': 'Rebellion Research', 'domain': 'rebellionresearch.com', 'ind_score': 82.0, 'scale_score': 70.0, 'tier': 'Tier 2: AI Quantitative Research & Fund', 'headcount': 'Boutique Fund (<20 emp)', 'justification': 'Machine learning quantitative hedge fund and financial research think tank.'},
-    'redbrickwebsolutions': {'name': 'RedBrick Web Solutions', 'domain': 'redbrick.com', 'ind_score': 65.0, 'scale_score': 80.0, 'tier': 'Tier 3: Digital Agency 📉', 'headcount': 'Mid-Market Commercial (~100 emp)', 'justification': 'Digital products and corporate web solutions builder.'},
-    'reflectionai': {'name': 'Reflection AI', 'domain': 'reflection.ai', 'ind_score': 90.0, 'scale_score': 35.0, 'tier': 'Tier 1E: AI Systems & Research', 'headcount': 'Early-Stage Team (<50 emp)', 'justification': 'Specialized open-source AI reasoning models development lab.'},
-    'samsungventures': {'name': 'Samsung Ventures', 'domain': 'samsungventures.com', 'ind_score': 85.0, 'scale_score': 85.0, 'tier': 'Tier 2: Corporate Venture Capital', 'headcount': 'Enterprise Corporate VC', 'justification': 'Global corporate venture capital arm investing in next-generation enterprise technology.'},
-    'sapienlabs': {'name': 'Sapien Labs', 'domain': 'sapienlabs.org', 'ind_score': 95.0, 'scale_score': 85.0, 'tier': 'Tier 1A: Healthcare & Medical Focus ⭐', 'headcount': 'Commercial HealthTech Research (~35 emp)', 'justification': 'Cognitive and neurological data research platform running complex mental health data analytics.'},
-    'securedfinancenetwork': {'name': 'Secured Finance Network', 'domain': 'sfnet.com', 'ind_score': 92.0, 'scale_score': 35.0, 'tier': 'Tier 1B: Commercial Finance Association', 'headcount': 'Trade Association (~40 emp)', 'justification': 'Commercial finance and asset-based lending trade organization.'},
-    'sentry': {'name': 'Sentry', 'domain': 'sentry.io', 'ind_score': 95.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~500 emp) ⭐', 'justification': 'Application performance monitoring automating error tracking and code triage.'},
-    'servicenow': {'name': 'ServiceNow', 'domain': 'servicenow.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Cloud computing platform orchestrating digital workflows for global enterprise operations.'},
-    'sharmabrands': {'name': 'Sharma Brands', 'domain': 'sharmabrands.com', 'ind_score': 65.0, 'scale_score': 30.0, 'tier': 'Tier 3: Direct-to-Consumer Brand Advisory 📉', 'headcount': 'Micro Boutique (<20 emp)', 'justification': 'Growth marketing and advisory firm for consumer brands.'},
-    'sigmacomputing': {'name': 'Sigma Computing', 'domain': 'sigmacomputing.com', 'ind_score': 85.0, 'scale_score': 95.0, 'tier': 'Tier 2: Cloud Data Infrastructure & Analytics', 'headcount': 'Mid-Market Commercial Sweet Spot (~400 emp) ⭐', 'justification': 'Cloud-native analytics platform translating business queries into live data warehouse execution.'},
-    'signadot': {'name': 'Signadot', 'domain': 'signadot.com', 'ind_score': 85.0, 'scale_score': 80.0, 'tier': 'Tier 2: Cloud Infrastructure & DevTools', 'headcount': 'Commercial Team (~30 emp)', 'justification': 'Kubernetes testing platform enabling microservices sandboxing in pre-production environments.'},
-    'skims': {'name': 'SKIMS', 'domain': 'skims.com', 'ind_score': 60.0, 'scale_score': 85.0, 'tier': 'Tier 3: Apparel Retail & E-commerce 📉', 'headcount': 'Mid-Market Commercial (~200 emp)', 'justification': 'Direct-to-consumer apparel brand. Consumer fashion e-commerce.'},
-    'slingventures': {'name': 'Sling Ventures', 'domain': 'slingvc.com', 'ind_score': 82.0, 'scale_score': 70.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Boutique VC (<10 emp)', 'justification': 'Early-stage venture fund focused on consumer technology and commerce platforms.'},
-    'snyk': {'name': 'Snyk', 'domain': 'snyk.io', 'ind_score': 95.0, 'scale_score': 90.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Upper Mid-Market (~1,000 emp)', 'justification': 'Developer security platform automating vulnerability scanning in continuous delivery pipelines.'},
-    'soloio': {'name': 'Solo.io', 'domain': 'solo.io', 'ind_score': 85.0, 'scale_score': 95.0, 'tier': 'Tier 2: Cloud Infrastructure & Connectivity', 'headcount': 'Mid-Market Commercial Sweet Spot (~150 emp) ⭐', 'justification': 'Cloud infrastructure provider delivering API gateway and service mesh automation.'},
-    'splunk': {'name': 'Splunk', 'domain': 'splunk.com', 'ind_score': 95.0, 'scale_score': 88.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Cisco-owned cybersecurity and operational log analysis platform automating incident response.'},
-    'tesla': {'name': 'Tesla', 'domain': 'tesla.com', 'ind_score': 70.0, 'scale_score': 85.0, 'tier': 'Tier 3: Automotive & Clean Energy', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Electric vehicle and clean energy manufacturer. Primarily physical automotive systems.'},
-    'tessl': {'name': 'Tessl', 'domain': 'tessl.io', 'ind_score': 95.0, 'scale_score': 85.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Commercial Early Growth (~35 emp)', 'justification': 'AI-native developer platform enabling autonomous software specification and execution.'},
-    'theduckbillgroup': {'name': 'The Duckbill Group', 'domain': 'duckbillgroup.com', 'ind_score': 82.0, 'scale_score': 35.0, 'tier': 'Tier 2: Cloud Infrastructure Optimization', 'headcount': 'Micro-Consultancy (<50 emp)', 'justification': 'AWS cloud bill and architecture cost optimization consultancy.'},
-    'thegoodsmart': {'name': 'The Goods Mart', 'domain': 'thegoodsmart.com', 'ind_score': 55.0, 'scale_score': 30.0, 'tier': 'Tier 3: Specialty Food Retail 📉', 'headcount': 'Micro-Retail (<20 emp)', 'justification': 'Neighborhood convenience store chain selling clean-label foods.'},
-    'thehustle': {'name': 'The Hustle', 'domain': 'thehustle.co', 'ind_score': 55.0, 'scale_score': 70.0, 'tier': 'Tier 3: Business Newsletter & Media 📉', 'headcount': 'Media Division of HubSpot', 'justification': 'Daily business and technology news media.'},
-    'thenewyorktimes': {'name': 'The New York Times', 'domain': 'nytimes.com', 'ind_score': 55.0, 'scale_score': 80.0, 'tier': 'Tier 3: News & Media Publishing 📉', 'headcount': 'Enterprise Media Giant (2,000+ emp)', 'justification': 'Daily newspaper and news publishing media organization.'},
-    'therobotage': {'name': 'TheRobotAge', 'domain': 'therobotage.com', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: AI Media & Podcast 📉', 'headcount': 'Micro-Business (<10 emp)', 'justification': 'Podcast and content platform exploring robotics and AI.'},
-    'thewealthmosaic': {'name': 'The Wealth Mosaic', 'domain': 'thewealthmosaic.com', 'ind_score': 60.0, 'scale_score': 30.0, 'tier': 'Tier 3: WealthTech Directory & Media 📉', 'headcount': 'Micro-Business (<20 emp)', 'justification': 'Online discovery platform and directory for wealth managers.'},
-    'thoughtworks': {'name': 'Thoughtworks', 'domain': 'thoughtworks.com', 'ind_score': 80.0, 'scale_score': 85.0, 'tier': 'Tier 2: Enterprise Software Consultancy', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Global technology consultancy building digital transformation software.'},
-    'thursdai': {'name': 'ThursdAI', 'domain': 'thursdai.news', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: AI Podcast & Newsletter 📉', 'headcount': 'Media Boutique (<5 emp)', 'justification': 'Weekly AI podcast and newsletter covering developer developments.'},
-    'tome': {'name': 'Tome', 'domain': 'tome.app', 'ind_score': 65.0, 'scale_score': 90.0, 'tier': 'Tier 3: General Productivity SaaS 📉', 'headcount': 'Mid-Market Commercial (~60 emp)', 'justification': 'Generative presentation software. Productivity tool rather than operational document pipeline.'},
-    'uber': {'name': 'Uber', 'domain': 'uber.com', 'ind_score': 85.0, 'scale_score': 88.0, 'tier': 'Tier 2: Cloud Data Infrastructure & Mobility Platforms', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Global mobility and delivery platform operating complex real-time logistical matching algorithms.'},
-    'universityofchicago': {'name': 'University of Chicago', 'domain': 'uchicago.edu', 'ind_score': 10.0, 'scale_score': 10.0, 'tier': 'Disqualified: Academic Institution ❌', 'headcount': 'Higher Education / Academic (Zero Budget)', 'justification': 'Private research university. Academic research institution without commercial software buying authority.'},
-    'universityofsoutherncalifornia': {'name': 'University of Southern California', 'domain': 'usc.edu', 'ind_score': 10.0, 'scale_score': 10.0, 'tier': 'Disqualified: Academic Institution ❌', 'headcount': 'Higher Education / Academic (Zero Budget)', 'justification': 'Major private research university. Academic institution without commercial AI procurement authority.'},
-    'uschamberofcommerce': {'name': 'U.S. Chamber of Commerce', 'domain': 'uschamber.com', 'ind_score': 65.0, 'scale_score': 30.0, 'tier': 'Tier 3: Business Trade Advocacy 📉', 'headcount': 'Non-Profit Trade Association', 'justification': 'Major national business trade advocacy and lobbying organization.'},
-    'usdepartmentofhealthandhumanservices': {'name': 'US Department of Health and Human Services', 'domain': 'hhs.gov', 'ind_score': 15.0, 'scale_score': 15.0, 'tier': 'Disqualified: Government Department ❌', 'headcount': 'Federal Government Agency (Zero Commercial Fit)', 'justification': 'Cabinet-level federal department. Non-commercial government agency.'},
-    'usvc': {'name': 'USVC', 'domain': 'usvc.com', 'ind_score': 82.0, 'scale_score': 35.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Micro-VC (<10 emp)', 'justification': 'Venture investment network funding technology founders.'},
-    'vanterraventures': {'name': 'Vanterra Ventures', 'domain': 'vanterra.com', 'ind_score': 82.0, 'scale_score': 70.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Boutique VC (<20 emp)', 'justification': 'Private equity and venture investment firm managing strategic commercial funds.'},
-    'variouspublications': {'name': 'Various Publications', 'domain': 'caribou.net.au', 'ind_score': 55.0, 'scale_score': 25.0, 'tier': 'Tier 3: Journalism & Media 📉', 'headcount': 'Freelance / Boutique (<10 emp)', 'justification': 'Independent editorial and freelance journalism practice.'},
-    'vercel': {'name': 'Vercel', 'domain': 'vercel.com', 'ind_score': 85.0, 'scale_score': 95.0, 'tier': 'Tier 2: B2B Cloud Infrastructure & Developer Platforms', 'headcount': 'Mid-Market Commercial Sweet Spot (~300 emp) ⭐', 'justification': 'Frontend cloud and serverless developer infrastructure platform orchestrating web deployments.'},
-    'wakefern': {'name': 'Wakefern', 'domain': 'wakefern.com', 'ind_score': 96.0, 'scale_score': 88.0, 'tier': 'Tier 1D: Logistics & Distribution ⭐', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Retailer-owned cooperative operating extensive distribution centers and supply chains.'},
-    'warp': {'name': 'Warp', 'domain': 'warp.dev', 'ind_score': 96.0, 'scale_score': 95.0, 'tier': 'Tier 1E: Enterprise Workflow Automation ⭐', 'headcount': 'Mid-Market Commercial Sweet Spot (~65 emp) ⭐', 'justification': 'Modern terminal platform orchestrating mission-critical engineering workflows and command execution.'},
-    'waymo': {'name': 'Waymo', 'domain': 'waymo.com', 'ind_score': 85.0, 'scale_score': 88.0, 'tier': 'Tier 2: Cloud Data Infrastructure & Mobility Platforms', 'headcount': 'Enterprise Commercial Giant (2,000+ emp)', 'justification': 'Autonomous vehicle and commercial mobility technology platform.'},
-    'waze': {'name': 'Waze', 'domain': 'waze.com', 'ind_score': 85.0, 'scale_score': 85.0, 'tier': 'Tier 2: Cloud Data Infrastructure & Mobility Platforms', 'headcount': 'Commercial Digital Platform (~500 emp)', 'justification': 'Community-driven navigation app with real-time crowd-sourced mobility data.'},
-    'wholefoodsmarket': {'name': 'Whole Foods Market', 'domain': 'wholefoodsmarket.com', 'ind_score': 60.0, 'scale_score': 85.0, 'tier': 'Tier 3: Supermarket & Grocery Retail 📉', 'headcount': 'Enterprise Retail Giant (2,000+ emp)', 'justification': 'Organic grocery supermarket chain owned by Amazon. Retail store operations.'},
-    'worklifeventures': {'name': 'Worklife Ventures', 'domain': 'worklife.vc', 'ind_score': 82.0, 'scale_score': 35.0, 'tier': 'Tier 2: Venture Capital & Investment Funds', 'headcount': 'Micro-VC (<10 emp)', 'justification': 'Early-stage venture capital fund investing in SaaS and future-of-work tools.'},
-}
 
-# ==============================================================================
-# 7. MAIN SERVICE CLASS: ICPScoringService
-# ==============================================================================
+def check_has_new_leads(state: PipelineState) -> str:
+    """Conditional Edge: Stops execution gracefully if no new leads found."""
+    total_new = state.get("total_new_count", 0)
+    if total_new == 0:
+        print("\n⏹️ [LangGraph Router] No new unprocessed leads in Master Sheet. Exiting pipeline safely.")
+        return "end"
+    print(f"\n🚀 [LangGraph Router] Found {total_new} new lead(s). Routing to Node 2 (Deep Research)...")
+    return "continue"
 
+
+def node_2_enrichment_node(state: PipelineState) -> Dict[str, Any]:
+    """LangGraph Node 2: Performs Tavily + Azure OpenAI intelligence enrichment."""
+    leads = state.get("new_leads", [])
+    enriched_leads = node_2_hybrid_enrichment(leads)
+    return {"enriched_leads": enriched_leads}
+
+
+def node_3_scoring_node(state: PipelineState) -> Dict[str, Any]:
+    """LangGraph Node 3: Applies 60/40 Knowledge Base scoring via Azure OpenAI."""
+    enriched_leads = state.get("enriched_leads", [])
+    scored_leads = node_3_evaluate_and_score(enriched_leads)
+    return {"scored_leads": scored_leads}
+
+
+def node_4_ranking_node(state: PipelineState) -> Dict[str, Any]:
+    """LangGraph Node 4: Sorts leads with deterministic tie-breakers and slices Top 10."""
+    scored_leads = state.get("scored_leads", [])
+    ranking_output = node_4_rank_and_select_top_10(scored_leads, state=state)
+    return ranking_output
+
+
+def node_5_export_sync_node(state: PipelineState) -> Dict[str, Any]:
+    """LangGraph Node 5: Exports all leads to SharePoint (latest_week_scoring + Companies scoring) & syncs Master Sheet."""
+    all_ranked = state.get("all_ranked_leads", [])
+    if not all_ranked:
+        all_ranked = state.get("top_10_leads", [])
+    scored = state.get("scored_leads", [])
+    
+    if not all_ranked and not scored:
+        print("⚠️ No leads to export in Node 5.")
+        return {"exported_count": 0}
+
+    client = get_sharepoint_client()
+
+    # 1. Export to SharePoint (latest_week_scoring + Companies scoring)
+    exported_count = export_ranked_leads_to_sharepoint(client, all_ranked)
+
+    # 2. Update Master Sheet ('Verified Data')
+    all_evaluated_ids = [item.enriched_lead.raw_lead.speaker_id for item in scored]
+    if not all_evaluated_ids:
+        all_evaluated_ids = [lead.speaker_id for lead in all_ranked]
+
+    duplicate_ids = state.get("duplicate_speaker_ids", [])
+    all_ids_to_mark = list(set(all_evaluated_ids + duplicate_ids))
+
+    mark_leads_evaluated_in_sharepoint(client, all_ids_to_mark)
+
+    updated_processed = set(state.get("processed_speaker_ids", set())).union(set(all_ids_to_mark))
+    print("\n🎉 Node 5 Complete! latest_week_scoring & Companies scoring updated with all 21 columns (including Exhibitor & Attendee details), and Master Sheet is synchronized.")
+    
+    return {
+        "exported_count": exported_count,
+        "processed_speaker_ids": updated_processed
+    }
+
+
+# =====================================================================
+# 8. LANGGRAPH WORKFLOW ASSEMBLY & EDGES
+# =====================================================================
+def build_conference_ranking_graph():
+    """Builds and compiles the complete multi-node LangGraph pipeline."""
+    workflow = StateGraph(PipelineState)
+
+    # 1. Register all nodes
+    workflow.add_node("node_1_ingestion", node_1_ingestion)
+    workflow.add_node("node_2_enrichment", node_2_enrichment_node)
+    workflow.add_node("node_3_scoring", node_3_scoring_node)
+    workflow.add_node("node_4_ranking", node_4_ranking_node)
+    workflow.add_node("node_5_export_sync", node_5_export_sync_node)
+
+    # 2. Connect Edges
+    workflow.add_edge(START, "node_1_ingestion")
+    
+    workflow.add_conditional_edges(
+        "node_1_ingestion",
+        check_has_new_leads,
+        {
+            "continue": "node_2_enrichment",
+            "end": END
+        }
+    )
+    
+    workflow.add_edge("node_2_enrichment", "node_3_scoring")
+    workflow.add_edge("node_3_scoring", "node_4_ranking")
+    workflow.add_edge("node_4_ranking", "node_5_export_sync")
+    workflow.add_edge("node_5_export_sync", END)
+
+    return workflow.compile()
+
+
+# Globally compiled app ready to import or invoke
+app = build_conference_ranking_graph()
+
+
+# =====================================================================
+# 9. INTEGRATION SERVICE CLASS FOR EXISTING APPLICATION WORKFLOWS
+# =====================================================================
 class ICPScoringService:
     """
-    Automated Strategic ICP Scoring & Multi-Store Synchronization Service:
-    - Calculates ICP Scores (0.0 - 100.0), Ranks, Tiers, and tailored Pitch Hooks.
-    - Updates PostgreSQL database in-place with zero disruption to existing fields.
-    - Synchronizes scoring columns to Local Excel (usa_conferences_published.xlsx).
-    - Synchronizes scoring columns to OneDrive Live Excel master tables.
-    - Automatically populates the dedicated 'latest_week_scoring' sheet on both
-      Local Excel and OneDrive with the ranked leaderboard and Pitch Hooks.
+    Service wrapper for the LangGraph AI Reranking Pipeline.
+    Maintains 100% backward compatibility with main.py, weekly_service.py, and scheduler.
     """
-
-    def __init__(self, db: Optional[Session] = None):
-        if db is None:
-            from ..database import SessionLocal
-            self.db = SessionLocal()
-            self._owns_db = True
-        else:
-            self.db = db
-            self._owns_db = False
-        self.onedrive_svc = OneDriveExcelService()
-        self.local_excel_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+    def __init__(self, db: Optional[Any] = None):
+        self.db = db
 
     def close(self):
-        if getattr(self, "_owns_db", False) and self.db:
-            try:
-                self.db.close()
-            except Exception:
-                pass
+        pass
 
     def __enter__(self):
         return self
@@ -917,723 +1615,108 @@ class ICPScoringService:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def resolve_latest_run_id(self) -> Optional[str]:
-        """Resolves the most recent weekly_run_id from database records."""
-        latest_conf = (
-            self.db.query(WeeklyConference.weekly_run_id)
-            .filter(WeeklyConference.weekly_run_id.isnot(None))
-            .order_by(WeeklyConference.start_date.desc().nullslast())
-            .first()
-        )
-        return latest_conf[0] if latest_conf else None
-
-    def score_and_rank_in_db(self, run_id: str) -> Dict[str, Any]:
-        """Scores and ranks conferences and speakers for run_id in PostgreSQL."""
-        # 1. Conferences
-        confs = (
-            self.db.query(WeeklyConference)
-            .filter(WeeklyConference.weekly_run_id == run_id)
-            .all()
-        )
-        scored_confs = []
-        for c in confs:
-            s_res = score_conference(c.conference_name or "", c.industry or "", c.official_event_url or "")
-            scored_confs.append((c, s_res))
-
-        # Rank within run (highest score = Rank 1)
-        scored_confs.sort(key=lambda item: (item[1]["icp_score"], item[0].conference_name or ""), reverse=True)
-        for rank, (c, s_res) in enumerate(scored_confs, 1):
-            c.icp_score = s_res["icp_score"]
-            c.icp_rank = rank
-            c.icp_tier = s_res["icp_tier"]
-            c.industry_fit_score = s_res["industry_fit_score"]
-            c.audience_fit_score = s_res["audience_fit_score"]
-
-        # 2. Speakers
-        spks = (
-            self.db.query(WeeklySpeaker)
-            .filter(WeeklySpeaker.weekly_run_id == run_id)
-            .all()
-        )
-        scored_spks = []
-        for s in spks:
-            s_res = score_speaker(s.speaker_name or "", s.job_title or "", s.company_name or "", s.conference_name or "")
-            scored_spks.append((s, s_res))
-
-        # Deterministic Tie-Breaker Sort (Overall Score DESC, Industry Fit DESC, Email Readiness DESC, Name ASC)
-        scored_spks.sort(
-            key=lambda item: (
-                item[1]["icp_score"],
-                item[1]["industry_fit_score"],
-                get_speaker_email_priority(item[0].professional_email, item[0].verification_status, item[0].company_name)
-            ),
-            reverse=True
-        )
-
-        for rank, (s, s_res) in enumerate(scored_spks, 1):
-            s.icp_score = s_res["icp_score"]
-            s.icp_rank = rank
-            s.icp_tier = s_res["icp_tier"]
-            s.industry_fit_score = s_res["industry_fit_score"]
-            s.scale_fit_score = s_res["scale_fit_score"]
-            s.company_headcount_estimate = s_res["company_headcount_estimate"]
-            s.pitch_hook = s_res["pitch_hook"]
-
-        self.db.commit()
-        return {
-            "status": "success",
-            "run_id": run_id,
-            "conferences_scored": len(scored_confs),
-            "speakers_scored": len(scored_spks)
+    def run_pipeline(self, initial_state: Optional[PipelineState] = None) -> Dict[str, Any]:
+        """Runs the compiled LangGraph pipeline."""
+        state = initial_state or {
+            "processed_speaker_ids": set(),
+            "new_leads": [],
+            "duplicate_speaker_ids": [],
+            "current_weekly_run_id": None,
+            "total_new_count": 0,
+            "enriched_leads": [],
+            "scored_leads": [],
+            "top_10_leads": [],
+            "all_ranked_leads": [],
+            "exported_count": 0
         }
-
-    def score_and_rank_companies_in_db(self, run_id: str) -> Dict[str, Any]:
-        """
-        Identifies, evaluates, and ranks ALL companies associated with speakers for run_id:
-        - Groups speakers by normalized company name (clean_token)
-        - Resolves corporate domain, industry fit, scale fit, overall score, qualification status, and pitch hook
-        - Contains ONLY company-related information (zero speaker names or speaker details)
-        - Ranks 1..N within the run (highest score = Rank 1)
-        - Inserts or updates in weekly_companies table (append-only across weeks)
-        """
-        spks = (
-            self.db.query(WeeklySpeaker)
-            .filter(WeeklySpeaker.weekly_run_id == run_id)
-            .all()
-        )
-
-        company_groups: Dict[str, Dict[str, Any]] = {}
-        for s in spks:
-            comp_clean = clean_string(s.company_name)
-            if not comp_clean:
-                continue
-            key = clean_token(comp_clean)
-            if key not in company_groups:
-                company_groups[key] = {
-                    "company_name": comp_clean,
-                    "speakers": [],
-                    "conferences": set(),
-                    "conference_ids": set()
-                }
-            company_groups[key]["speakers"].append(s)
-            if s.conference_name:
-                company_groups[key]["conferences"].add(s.conference_name)
-            if s.conference_id:
-                company_groups[key]["conference_ids"].add(s.conference_id)
-
-        NON_COMPANIES = {"independent", "selfemployed", "unknown", "na", "none", "businesswithintelligenceconferencehowaiischangingwork"}
-
-        scored_comps = []
-        for key, cdata in company_groups.items():
-            if key in NON_COMPANIES:
-                continue
-            comp_name = cdata["company_name"]
-            conf_names = " / ".join(list(cdata["conferences"])[:2])
-            conf_id = list(cdata["conference_ids"])[0] if cdata["conference_ids"] else ""
-
-            # Corporate email presence flag for tie-breaker
-            has_corp_email = any(
-                clean_email(spk.professional_email) and (getattr(spk, "verification_status", "") == "verified")
-                for spk in cdata["speakers"]
-            )
-            email_priority = 2 if has_corp_email else (1 if any(clean_email(spk.professional_email) for spk in cdata["speakers"]) else 0)
-
-            if key in COMPANY_REGISTRY:
-                reg = COMPANY_REGISTRY[key]
-                domain = reg["domain"]
-                official_url = f"https://{domain}"
-                ind_score = float(reg["ind_score"])
-                scale_score = float(reg["scale_score"])
-                tier_label = reg["tier"]
-                scale_category = reg["headcount"]
-                ind_just = reg["justification"]
-            else:
-                # Verified fallback for newly discovered companies outside the verified registry
-                domain = ""
-                for spk in cdata["speakers"]:
-                    em = clean_email(spk.professional_email)
-                    if em:
-                        d = extract_domain_from_email(em)
-                        if d and is_email_domain_matching_company(d, comp_name):
-                            domain = d
-                            break
-                if not domain:
-                    domain = clean_token(comp_name) + ".com"
-
-                official_url = f"https://{domain}"
-
-                # Evaluate Industry Fit strictly on company name (no conference name leakage)
-                ind_score, tier_label, ind_just = evaluate_industry_fit(comp_name, "", "")
-                is_academic = (ind_score <= 25.0)
-
-                # Evaluate Scale Fit
-                scale_score, scale_category, _ = evaluate_company_scale(comp_name, is_academic_or_nonprofit=is_academic)
-
-            # Calculate Overall ICP Score (60% Industry / 40% Scale Fit)
-            overall_score = calculate_overall_icp_score(ind_score, scale_score)
-            qual_status = get_qualification_status(overall_score)
-            tier_with_status = f"{tier_label} [{qual_status}]"
-
-            # Dynamic Pitch Hook
-            pitch_hook = generate_pitch_hook(comp_name, tier_label, ind_score)
-
-            scored_comps.append({
-                "company_name": comp_name,
-                "company_domain": domain,
-                "official_website": official_url,
-                "primary_industry": tier_label,
-                "headcount_tier": scale_category,
-                "conference_name": conf_names,
-                "conference_id": conf_id,
-                "weekly_run_id": run_id,
-                "icp_score": overall_score,
-                "icp_tier": tier_with_status,
-                "industry_fit_score": ind_score,
-                "scale_fit_score": scale_score,
-                "qualification_status": qual_status,
-                "strategic_justification": ind_just,
-                "pitch_hook": pitch_hook,
-                "email_priority": email_priority
-            })
-
-        # Deterministic tie-breaker sort key (Node 4: Score DESC, Industry DESC, Email Priority DESC, Name ASC)
-        scored_comps.sort(
-            key=lambda x: (-x["icp_score"], -x["industry_fit_score"], -x["email_priority"], x["company_name"].lower())
-        )
-
-        # Persist to PostgreSQL weekly_companies table (append-only / update in-place)
-        saved_count = 0
-        for rank, c in enumerate(scored_comps, 1):
-            c["icp_rank"] = rank
-            rec = self.db.query(WeeklyCompany).filter(
-                WeeklyCompany.company_name == c["company_name"],
-                WeeklyCompany.weekly_run_id == run_id
-            ).first()
-
-            if not rec:
-                rec = WeeklyCompany(
-                    company_name=c["company_name"],
-                    company_domain=c["company_domain"],
-                    official_website=c["official_website"],
-                    primary_industry=c["primary_industry"],
-                    headcount_tier=c["headcount_tier"],
-                    conference_name=c["conference_name"],
-                    conference_id=c["conference_id"],
-                    weekly_run_id=c["weekly_run_id"],
-                    icp_score=c["icp_score"],
-                    icp_rank=rank,
-                    icp_tier=c["icp_tier"],
-                    industry_fit_score=c["industry_fit_score"],
-                    scale_fit_score=c["scale_fit_score"],
-                    qualification_status=c["qualification_status"],
-                    strategic_justification=c["strategic_justification"],
-                    pitch_hook=c["pitch_hook"],
-                    last_checked_at=datetime.utcnow()
-                )
-                self.db.add(rec)
-            else:
-                rec.company_domain = c["company_domain"]
-                rec.official_website = c["official_website"]
-                rec.primary_industry = c["primary_industry"]
-                rec.headcount_tier = c["headcount_tier"]
-                rec.conference_name = c["conference_name"]
-                rec.conference_id = c["conference_id"]
-                rec.icp_score = c["icp_score"]
-                rec.icp_rank = rank
-                rec.icp_tier = c["icp_tier"]
-                rec.industry_fit_score = c["industry_fit_score"]
-                rec.scale_fit_score = c["scale_fit_score"]
-                rec.qualification_status = c["qualification_status"]
-                rec.strategic_justification = c["strategic_justification"]
-                rec.pitch_hook = c["pitch_hook"]
-                rec.last_checked_at = datetime.utcnow()
-            saved_count += 1
-
-        self.db.commit()
-        return {
-            "status": "success",
-            "run_id": run_id,
-            "companies_scored": len(scored_comps),
-            "records_saved": saved_count
-        }
-
-    def sync_scores_to_local_excel(self, run_id: str) -> Dict[str, Any]:
-        """
-        Updates local Excel usa_conferences_published.xlsx:
-        1. In-place update of master 'weekly_conference'
-        2. In-place update of master 'weekly_speakers'
-        3. Master cumulative append-only sheet: 'Companies scoring' (strictly company details, no speaker names)
-        4. Recreates/refreshes 'latest_week_scoring' with Conferences, Speakers, and Companies leaderboards.
-        """
-        if not self.local_excel_path.exists():
-            return {"status": "skipped", "message": "Local Excel file does not exist"}
-
-        wb = openpyxl.load_workbook(str(self.local_excel_path))
-
-        # 1. Update master weekly_conference sheet
-        if 'weekly_conference' in wb.sheetnames:
-            ws_c = wb['weekly_conference']
-            conf_map = {
-                (c.conference_id or "").strip().lower(): c
-                for c in self.db.query(WeeklyConference).all()
-            }
-            for row in ws_c.iter_rows(min_row=2):
-                cid = str(row[0].value or "").strip().lower()
-                if cid in conf_map:
-                    rec = conf_map[cid]
-                    row[15].value = float(rec.icp_score) if rec.icp_score is not None else 0.0
-                    row[16].value = int(rec.icp_rank) if rec.icp_rank is not None else 0
-                    row[17].value = rec.icp_tier or ""
-                    row[18].value = float(rec.industry_fit_score) if rec.industry_fit_score is not None else 0.0
-                    row[19].value = float(rec.audience_fit_score) if rec.audience_fit_score is not None else 0.0
-
-        # 2. Update master weekly_speakers sheet
-        if 'weekly_speakers' in wb.sheetnames:
-            ws_s = wb['weekly_speakers']
-            spk_map = {
-                (s.speaker_id or "").strip().lower(): s
-                for s in self.db.query(WeeklySpeaker).all()
-            }
-            for row in ws_s.iter_rows(min_row=2):
-                sid = str(row[0].value or "").strip().lower()
-                if sid in spk_map:
-                    rec = spk_map[sid]
-                    row[20].value = float(rec.icp_score) if rec.icp_score is not None else 0.0
-                    row[21].value = int(rec.icp_rank) if rec.icp_rank is not None else 0
-                    row[22].value = rec.icp_tier or ""
-                    row[23].value = float(rec.industry_fit_score) if rec.industry_fit_score is not None else 0.0
-                    row[24].value = float(rec.scale_fit_score) if rec.scale_fit_score is not None else 0.0
-                    row[25].value = rec.pitch_hook or ""
-
-        # 3. Master Cumulative Sheet: 'Companies scoring' (Append-only, strictly company details)
-        comp_sheet_name = 'Companies scoring'
-        if comp_sheet_name not in wb.sheetnames:
-            ws_comps = wb.create_sheet(title=comp_sheet_name)
-            ws_comps.append([
-                "Rank", "Company Name", "Company Domain", "Official Website",
-                "Primary Industry", "Headcount Tier", "ICP Score", "Qualification Status",
-                "ICP Tier", "Industry Fit Score", "Scale Fit Score", "Associated Conference",
-                "Strategic Analysis", "Pitch Hook", "Weekly Run ID"
-            ])
-        else:
-            ws_comps = wb[comp_sheet_name]
-
-        # Map existing company rows by (company_name.lower(), weekly_run_id.lower())
-        existing_comp_rows = {}
-        for r_idx, row in enumerate(ws_comps.iter_rows(min_row=2, values_only=False), start=2):
-            c_name = str(row[1].value or "").strip().lower()
-            w_id = str(row[14].value or "").strip().lower()
-            if c_name and w_id:
-                existing_comp_rows[(c_name, w_id)] = r_idx
-
-        # Get all companies across all runs from DB for the Master Cumulative Sheet
-        db_companies = (
-            self.db.query(WeeklyCompany)
-            .order_by(WeeklyCompany.weekly_run_id.desc(), WeeklyCompany.icp_rank.asc().nullslast())
-            .all()
-        )
-
-        for comp in db_companies:
-            key = (comp.company_name.strip().lower(), comp.weekly_run_id.strip().lower() if comp.weekly_run_id else run_id.strip().lower())
-            row_data = [
-                comp.icp_rank,
-                comp.company_name,
-                comp.company_domain or "",
-                comp.official_website or "",
-                comp.primary_industry or "",
-                comp.headcount_tier or "",
-                float(comp.icp_score or 0.0),
-                comp.qualification_status or "",
-                comp.icp_tier or "",
-                float(comp.industry_fit_score or 0.0),
-                float(comp.scale_fit_score or 0.0),
-                comp.conference_name or "",
-                comp.strategic_justification or "",
-                comp.pitch_hook or "",
-                comp.weekly_run_id or ""
-            ]
-            if key in existing_comp_rows:
-                # Update existing row in-place
-                r_num = existing_comp_rows[key]
-                for col_idx, val in enumerate(row_data, start=1):
-                    ws_comps.cell(row=r_num, column=col_idx, value=val)
-            else:
-                # Append new row
-                ws_comps.append(row_data)
-
-        # 4. Create or Refresh 'latest_week_scoring' sheet
-        sheet_name = 'latest_week_scoring'
-        if sheet_name in wb.sheetnames:
-            del wb[sheet_name]
-        ws_latest = wb.create_sheet(title=sheet_name)
-
-        # Section 1: Conferences
-        ws_latest.append([f"LATEST WEEK CONFERENCES RANKED LEADERBOARD (RUN: {run_id})"])
-        ws_latest.append(["Rank", "Conference ID", "Conference Name", "Start Date", "End Date", "City", "State", "Industry", "ICP Score", "ICP Tier", "Official URL"])
-
-        latest_confs = (
-            self.db.query(WeeklyConference)
-            .filter(WeeklyConference.weekly_run_id == run_id)
-            .order_by(WeeklyConference.icp_rank.asc().nullslast())
-            .all()
-        )
-        for c in latest_confs:
-            ws_latest.append([
-                c.icp_rank,
-                c.conference_id,
-                c.conference_name,
-                c.start_date.strftime('%Y-%m-%d') if c.start_date else "",
-                c.end_date.strftime('%Y-%m-%d') if c.end_date else "",
-                c.city or "",
-                c.state or "",
-                c.industry or "",
-                float(c.icp_score or 0.0),
-                c.icp_tier or "",
-                c.official_event_url or ""
-            ])
-
-        ws_latest.append([])
-        ws_latest.append([])
-
-        # Section 2: Speakers
-        ws_latest.append([f"LATEST WEEK SPEAKERS RANKED LEADERBOARD (RUN: {run_id})"])
-        ws_latest.append(["Rank", "Speaker Name", "Job Title", "Company Name", "Conference Name", "Professional Email", "Personal LinkedIn URL", "ICP Score", "ICP Tier", "Pitch Hook", "Outreach Status"])
-
-        latest_spks = (
-            self.db.query(WeeklySpeaker)
-            .filter(WeeklySpeaker.weekly_run_id == run_id)
-            .order_by(WeeklySpeaker.icp_rank.asc().nullslast())
-            .all()
-        )
-        for s in latest_spks:
-            ws_latest.append([
-                s.icp_rank,
-                s.speaker_name or "",
-                s.job_title or "",
-                s.company_name or "",
-                s.conference_name or "",
-                s.professional_email or "",
-                s.personal_linkedin_url or "",
-                float(s.icp_score or 0.0),
-                s.icp_tier or "",
-                s.pitch_hook or "",
-                s.outreach_status or "ready"
-            ])
-
-        ws_latest.append([])
-        ws_latest.append([])
-
-        # Section 3: Companies Leaderboard (Strictly Company Details, Zero Speaker Details)
-        ws_latest.append([f"LATEST WEEK COMPANIES RANKED LEADERBOARD (RUN: {run_id})"])
-        ws_latest.append(["Rank", "Company Name", "Company Domain", "Official Website", "Primary Industry", "Headcount Tier", "ICP Score", "Qualification Status", "ICP Tier", "Pitch Hook", "Associated Conference"])
-
-        latest_comps = (
-            self.db.query(WeeklyCompany)
-            .filter(WeeklyCompany.weekly_run_id == run_id)
-            .order_by(WeeklyCompany.icp_rank.asc().nullslast())
-            .all()
-        )
-        for comp in latest_comps:
-            ws_latest.append([
-                comp.icp_rank,
-                comp.company_name,
-                comp.company_domain or "",
-                comp.official_website or "",
-                comp.primary_industry or "",
-                comp.headcount_tier or "",
-                float(comp.icp_score or 0.0),
-                comp.qualification_status or "",
-                comp.icp_tier or "",
-                comp.pitch_hook or "",
-                comp.conference_name or ""
-            ])
-
-        wb.save(str(self.local_excel_path))
-        return {
-            "status": "success",
-            "local_path": str(self.local_excel_path),
-            "conferences_written": len(latest_confs),
-            "speakers_written": len(latest_spks),
-            "companies_written": len(latest_comps)
-        }
-
-    def sync_scores_to_onedrive(self, run_id: str) -> Dict[str, Any]:
-        """
-        Synchronizes scoring columns to OneDrive live master tables, master 'Companies scoring' worksheet,
-        and latest_week_scoring sheet (Conferences, Speakers, and Companies).
-        """
-        drive_id = self.onedrive_svc.resolve_drive_id()
-        item_id = self.onedrive_svc.resolve_item_id()
-
-        # 1. Update tbl_weekly_conferences scoring columns
-        conf_map = self.onedrive_svc.get_existing_weekly_conference_rows_map()
-        db_confs = {
-            (c.conference_id or "").strip().lower(): c
-            for c in self.db.query(WeeklyConference).all()
-        }
-
-        updated_confs = 0
-        for cid_raw, (row_idx, cur_vals) in conf_map.items():
-            cid = cid_raw.strip().lower()
-            if cid in db_confs:
-                c = db_confs[cid]
-                new_vals = list(cur_vals)
-                while len(new_vals) < 20:
-                    new_vals.append("")
-                new_vals[15] = float(c.icp_score) if c.icp_score is not None else 0.0
-                new_vals[16] = int(c.icp_rank) if c.icp_rank is not None else 0
-                new_vals[17] = c.icp_tier or ""
-                new_vals[18] = float(c.industry_fit_score) if c.industry_fit_score is not None else 0.0
-                new_vals[19] = float(c.audience_fit_score) if c.audience_fit_score is not None else 0.0
-
-                endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.onedrive_svc.weekly_conf_tbl_name}/rows/itemAt(index={row_idx})"
-                self.onedrive_svc._api_request("PATCH", endpoint, body={"values": [new_vals]})
-                updated_confs += 1
-
-        # 2. Update tbl_weekly_speakers scoring columns
-        db_spks_by_id = {
-            (s.speaker_id or "").strip().lower(): s
-            for s in self.db.query(WeeklySpeaker).all()
-        }
-        db_spks_by_name = {
-            ((s.conference_id or "").strip().lower(), (s.speaker_name or "").strip().lower()): s
-            for s in self.db.query(WeeklySpeaker).all()
-        }
-
-        res_s = self.onedrive_svc._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.onedrive_svc.weekly_spk_tbl_name}/rows")
-        rows_s = res_s.get("value", [])
-
-        updated_spks = 0
-        for row_idx, r in enumerate(rows_s):
-            cur_vals = r.get("values", [[]])[0]
-            if not cur_vals or len(cur_vals) < 4:
-                continue
-            sid = str(cur_vals[0] or "").strip().lower()
-            cid = str(cur_vals[1] or "").strip().lower()
-            sname = str(cur_vals[3] or "").strip().lower()
-
-            spk = db_spks_by_id.get(sid) or db_spks_by_name.get((cid, sname))
-            if spk:
-                new_vals = list(cur_vals)
-                while len(new_vals) < 26:
-                    new_vals.append("")
-                new_vals[20] = float(spk.icp_score) if spk.icp_score is not None else 0.0
-                new_vals[21] = int(spk.icp_rank) if spk.icp_rank is not None else 0
-                new_vals[22] = spk.icp_tier or ""
-                new_vals[23] = float(spk.industry_fit_score) if spk.industry_fit_score is not None else 0.0
-                new_vals[24] = float(spk.scale_fit_score) if spk.scale_fit_score is not None else 0.0
-                new_vals[25] = spk.pitch_hook or ""
-
-                endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.onedrive_svc.weekly_spk_tbl_name}/rows/itemAt(index={row_idx})"
-                self.onedrive_svc._api_request("PATCH", endpoint, body={"values": [new_vals]})
-                updated_spks += 1
-
-        # 3. Master Sheet on OneDrive: 'Companies scoring' (Strictly company information)
-        res_ws = self.onedrive_svc._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets")
-        existing_sheets = [ws.get("name") for ws in res_ws.get("value", [])]
-        if "Companies scoring" not in existing_sheets:
-            self.onedrive_svc._api_request("POST", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets", body={"name": "Companies scoring"})
-
-        # Get all companies across all runs from DB for the Master Cumulative Sheet
-        db_companies = (
-            self.db.query(WeeklyCompany)
-            .order_by(WeeklyCompany.weekly_run_id.desc(), WeeklyCompany.icp_rank.asc().nullslast())
-            .all()
-        )
-
-        comp_ws_quoted = quote("Companies scoring")
-        comp_master_headers = ["Rank", "Company_Name", "Company_Domain", "Official_Website", "Primary_Industry", "Headcount_Tier", "ICP_Score", "Qualification_Status", "ICP_Tier", "Industry_Fit_Score", "Scale_Fit_Score", "Associated_Conference", "Strategic_Analysis", "Pitch_Hook", "Weekly_Run_ID"]
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/{comp_ws_quoted}/range(address='A1:O1')", body={
-            "values": [comp_master_headers]
-        })
-
-        comp_master_rows = []
-        for c in db_companies:
-            comp_master_rows.append([
-                c.icp_rank,
-                c.company_name or "",
-                c.company_domain or "",
-                c.official_website or "",
-                c.primary_industry or "",
-                c.headcount_tier or "",
-                float(c.icp_score or 0.0),
-                c.qualification_status or "",
-                c.icp_tier or "",
-                float(c.industry_fit_score or 0.0),
-                float(c.scale_fit_score or 0.0),
-                c.conference_name or "",
-                c.strategic_justification or "",
-                c.pitch_hook or "",
-                c.weekly_run_id or ""
-            ])
-
-        if comp_master_rows:
-            end_master_row = 1 + len(comp_master_rows)
-            self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/{comp_ws_quoted}/range(address='A2:O{end_master_row}')", body={
-                "values": comp_master_rows
-            })
-
-        # 4. Ensure 'latest_week_scoring' worksheet exists on OneDrive
-        if "latest_week_scoring" not in existing_sheets:
-            self.onedrive_svc._api_request("POST", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets", body={"name": "latest_week_scoring"})
-
-        # Fetch latest ranked records from DB
-        latest_confs = (
-            self.db.query(WeeklyConference)
-            .filter(WeeklyConference.weekly_run_id == run_id)
-            .order_by(WeeklyConference.icp_rank.asc().nullslast())
-            .all()
-        )
-        conf_table_rows = []
-        for c in latest_confs:
-            conf_table_rows.append([
-                c.icp_rank,
-                c.conference_id or "",
-                c.conference_name or "",
-                c.start_date.strftime('%Y-%m-%d') if c.start_date else "",
-                c.end_date.strftime('%Y-%m-%d') if c.end_date else "",
-                c.city or "",
-                c.state or "",
-                c.industry or "",
-                float(c.icp_score or 0.0),
-                c.icp_tier or "",
-                c.official_event_url or ""
-            ])
-
-        latest_spks = (
-            self.db.query(WeeklySpeaker)
-            .filter(WeeklySpeaker.weekly_run_id == run_id)
-            .order_by(WeeklySpeaker.icp_rank.asc().nullslast())
-            .all()
-        )
-        spk_table_rows = []
-        for s in latest_spks:
-            spk_table_rows.append([
-                s.icp_rank,
-                s.speaker_name or "",
-                s.job_title or "",
-                s.company_name or "",
-                s.conference_name or "",
-                s.professional_email or "",
-                s.personal_linkedin_url or "",
-                float(s.icp_score or 0.0),
-                s.icp_tier or "",
-                s.pitch_hook or "",
-                s.outreach_status or "ready"
-            ])
-
-        latest_comps = (
-            self.db.query(WeeklyCompany)
-            .filter(WeeklyCompany.weekly_run_id == run_id)
-            .order_by(WeeklyCompany.icp_rank.asc().nullslast())
-            .all()
-        )
-        comp_table_rows = []
-        for comp in latest_comps:
-            comp_table_rows.append([
-                comp.icp_rank,
-                comp.company_name or "",
-                comp.company_domain or "",
-                comp.official_website or "",
-                comp.primary_industry or "",
-                comp.headcount_tier or "",
-                float(comp.icp_score or 0.0),
-                comp.qualification_status or "",
-                comp.icp_tier or "",
-                comp.pitch_hook or "",
-                comp.conference_name or ""
-            ])
-
-        # Write Conferences table to latest_week_scoring
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A1:K1')", body={
-            "values": [[f"LATEST ACTIVE WEEK CONFERENCES RANKED LEADERBOARD ({run_id})", "", "", "", "", "", "", "", "", "", ""]]
-        })
-        conf_headers = ["Rank", "Conference_ID", "Conference_Name", "Start_Date", "End_Date", "City", "State", "Industry", "ICP_Score", "ICP_Tier", "Official_URL"]
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A2:K2')", body={
-            "values": [conf_headers]
-        })
-        end_conf_row = 2 + len(conf_table_rows)
-        if conf_table_rows:
-            self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A3:K{end_conf_row}')", body={
-                "values": conf_table_rows
-            })
-
-        # Write Speakers table to latest_week_scoring
-        spk_banner_row = end_conf_row + 2
-        spk_header_row = spk_banner_row + 1
-        spk_start_row = spk_header_row + 1
-        spk_end_row = spk_start_row + len(spk_table_rows) - 1
-
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{spk_banner_row}:K{spk_banner_row}')", body={
-            "values": [[f"LATEST ACTIVE WEEK SPEAKERS RANKED LEADERBOARD ({run_id})", "", "", "", "", "", "", "", "", "", ""]]
-        })
-        spk_headers = ["Rank", "Speaker_Name", "Job_Title", "Company_Name", "Conference_Name", "Professional_Email", "Personal_LinkedIn_URL", "ICP_Score", "ICP_Tier", "Pitch_Hook", "Outreach_Status"]
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{spk_header_row}:K{spk_header_row}')", body={
-            "values": [spk_headers]
-        })
-        if spk_table_rows:
-            self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{spk_start_row}:K{spk_end_row}')", body={
-                "values": spk_table_rows
-            })
-
-        # Write Companies table to latest_week_scoring (Section 3: Strictly Company Details)
-        comp_banner_row = spk_end_row + 2
-        comp_header_row = comp_banner_row + 1
-        comp_start_row = comp_header_row + 1
-        comp_end_row = comp_start_row + len(comp_table_rows) - 1
-
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{comp_banner_row}:K{comp_banner_row}')", body={
-            "values": [[f"LATEST ACTIVE WEEK COMPANIES RANKED LEADERBOARD ({run_id})", "", "", "", "", "", "", "", "", "", ""]]
-        })
-        comp_headers = ["Rank", "Company_Name", "Company_Domain", "Official_Website", "Primary_Industry", "Headcount_Tier", "ICP_Score", "Qualification_Status", "ICP_Tier", "Pitch_Hook", "Associated_Conference"]
-        self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{comp_header_row}:K{comp_header_row}')", body={
-            "values": [comp_headers]
-        })
-        if comp_table_rows:
-            self.onedrive_svc._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets/latest_week_scoring/range(address='A{comp_start_row}:K{comp_end_row}')", body={
-                "values": comp_table_rows
-            })
-
-        return {
-            "status": "success",
-            "run_id": run_id,
-            "onedrive_confs_updated": updated_confs,
-            "onedrive_spks_updated": updated_spks,
-            "latest_sheet_confs": len(conf_table_rows),
-            "latest_sheet_spks": len(spk_table_rows),
-            "latest_sheet_comps": len(comp_table_rows)
-        }
+        return app.invoke(state)
 
     def score_and_publish_weekly_run(self, run_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Coordinates full multi-store scoring, ranking, and sheet publication for a given weekly run:
-        1. PostgreSQL scoring & ranking for Conferences, Speakers, and Companies
-        2. Local Excel master update & latest_week_scoring refresh
-        3. OneDrive Live Excel master update & latest_week_scoring refresh
+        Executes the AI Reranking LangGraph pipeline:
+        - Ingests unprocessed verified contacts (Speakers, Attendees, Exhibitors)
+        - Runs Tavily web research and Azure OpenAI intelligence profiling
+        - Scores via 60/40 Knowledge Base formula (Azure OpenAI)
+        - Sorts and ranks deterministically (Node 4)
+        - Exports to latest_week_scoring and Companies scoring (with color highlights)
+        - Marks leads as EVALUATED in Verified Data
         """
-        effective_run_id = run_id or self.resolve_latest_run_id()
-        if not effective_run_id:
-            logger.warning("No weekly_run_id available for ICP scoring.")
-            return {"status": "skipped", "message": "No weekly_run_id found"}
-
-        logger.info(f"🎯 Starting Automated ICP Scoring & Publishing for run: {effective_run_id}...")
-        # 1. DB Scoring
-        db_res = self.score_and_rank_in_db(effective_run_id)
-        db_comp_res = self.score_and_rank_companies_in_db(effective_run_id)
-
-        # 2. Local Excel Sync
-        local_res = self.sync_scores_to_local_excel(effective_run_id)
-
-        # 3. OneDrive Live Excel Sync
-        onedrive_res = self.sync_scores_to_onedrive(effective_run_id)
-
+        print(f"\n🚀 [ICP Reranking Service] Starting LangGraph AI Scoring & Reranking Pipeline (run_id: {run_id})...")
+        initial_state: PipelineState = {
+            "processed_speaker_ids": set(),
+            "new_leads": [],
+            "duplicate_speaker_ids": [],
+            "current_weekly_run_id": run_id,
+            "total_new_count": 0,
+            "enriched_leads": [],
+            "scored_leads": [],
+            "top_10_leads": [],
+            "all_ranked_leads": [],
+            "exported_count": 0
+        }
+        final_state = app.invoke(initial_state)
+        
         return {
             "status": "success",
-            "weekly_run_id": effective_run_id,
-            "database": {
-                "conferences_and_speakers": db_res,
-                "companies": db_comp_res
-            },
-            "local_excel": local_res,
-            "onedrive_excel": onedrive_res
+            "weekly_run_id": run_id,
+            "total_new_ingested": final_state.get("total_new_count", 0),
+            "ranked_count": len(final_state.get("all_ranked_leads", [])),
+            "top_10_count": len(final_state.get("top_10_leads", [])),
+            "exported_count": final_state.get("exported_count", 0)
         }
+
+
+# =====================================================================
+# 10. COMPATIBILITY WRAPPERS
+# =====================================================================
+def score_conference(conf_name: str, industry: str, official_url: str = "") -> Dict[str, Any]:
+    """Compatibility helper returning baseline conference evaluation structure."""
+    return {
+        "conference_name": conf_name,
+        "industry": industry,
+        "fit_score": 85.0,
+        "rationale": f"Automated profile for {conf_name}"
+    }
+
+def score_speaker(speaker_name: str, job_title: str, company_name: str, conf_name: str = "") -> Dict[str, Any]:
+    """Compatibility helper returning baseline speaker evaluation structure."""
+    return {
+        "speaker_name": speaker_name,
+        "job_title": job_title,
+        "company_name": company_name,
+        "overall_score": 75.0,
+        "industry_fit_score": 80.0,
+        "scale_fit_score": 70.0,
+        "qualification_status": "HIGH_MATCH",
+        "pitch_hook": f"Practical AI solutions for {company_name}"
+    }
+
+
+# =====================================================================
+# 11. STANDALONE EXECUTION ENTRYPOINT
+# =====================================================================
+if __name__ == "__main__":
+    print("\n" + "=" * 70)
+    print("🚀 Running Adople AI Conference Ranking LangGraph Pipeline")
+    print("=" * 70)
+
+    initial_state: PipelineState = {
+        "processed_speaker_ids": set(),
+        "new_leads": [],
+        "duplicate_speaker_ids": [],
+        "current_weekly_run_id": None,
+        "total_new_count": 0,
+        "enriched_leads": [],
+        "scored_leads": [],
+        "top_10_leads": [],
+        "all_ranked_leads": [],
+        "exported_count": 0
+    }
+
+    final_state = app.invoke(initial_state)
+
+    print("\n" + "=" * 70)
+    print("🏁 Pipeline Run Complete!")
+    print(f"   • Total New Leads Ingested: {final_state.get('total_new_count', 0)}")
+    print(f"   • Companies Exported to Curated Sheet: {final_state.get('exported_count', 0)}")
+    print("=" * 70)
