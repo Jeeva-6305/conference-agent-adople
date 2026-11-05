@@ -740,6 +740,83 @@ class ExcelManager:
         finally:
             db.close()
 
+    def update_verified_data_row_in_excel(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None,
+        category: Optional[str] = None
+    ) -> bool:
+        """
+        Updates an existing contact row in Local Excel 'Verified Data' worksheet by email or thread_id
+        across Speaker, Attendee, and Exhibitor column sets.
+        """
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+        if "Verified Data" not in wb.sheetnames:
+            return False
+        ws = wb["Verified Data"]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows or len(rows) < 2:
+            return False
+        headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in rows[0]]
+        header_map = {name: idx + 1 for idx, name in enumerate(headers)}
+
+        clean_email = (email or "").strip().lower()
+        clean_thread = (thread_id or "").strip()
+
+        target_row_idx = None
+        detected_category = category
+
+        cat_checks = [
+            ("Speaker", header_map.get("speakerprofessionalemail"), header_map.get("speakerthreadid")),
+            ("Attendee", header_map.get("attendeeprofessionalemail"), header_map.get("attendeethreadid")),
+            ("Exhibitor", header_map.get("exhibitorprofessionalemail"), header_map.get("exhibitorthreadid")),
+            ("Speaker", header_map.get("professionalemail"), header_map.get("threadid"))
+        ]
+
+        for r_idx in range(2, ws.max_row + 1):
+            for cat, em_col, th_col in cat_checks:
+                if em_col:
+                    cell_em = str(ws.cell(row=r_idx, column=em_col).value or "").strip().lower()
+                    if clean_email and cell_em == clean_email:
+                        target_row_idx = r_idx
+                        detected_category = detected_category or cat
+                        break
+                if th_col:
+                    cell_th = str(ws.cell(row=r_idx, column=th_col).value or "").strip()
+                    if clean_thread and cell_th == clean_thread:
+                        target_row_idx = r_idx
+                        detected_category = detected_category or cat
+                        break
+            if target_row_idx:
+                break
+
+        if not target_row_idx:
+            return False
+
+        detected_category = detected_category or "Speaker"
+
+        for field, val in updates.items():
+            f_clean = field.strip()
+            f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+            col_num = header_map.get(f_key)
+
+            if col_num is None:
+                cat_field = f"{detected_category} {f_clean}"
+                f_key_cat = cat_field.lower().replace(" ", "").replace("_", "").replace("/", "")
+                col_num = header_map.get(f_key_cat)
+
+            if col_num is None and "replay" in f_key:
+                f_key_alt = f_key.replace("replay", "reply")
+                col_num = header_map.get(f_key_alt) or header_map.get(f"{detected_category.lower()}{f_key_alt}")
+
+            if col_num is not None:
+                ws.cell(row=target_row_idx, column=col_num).value = val
+
+        self._safe_save(wb)
+        return True
+
     def append_speaker_reply_to_excel(self, row_values: List[Any]) -> Dict[str, Any]:
         """
         Appends a separate speaker reply record to the 'Speakers Replies' worksheet in local Excel.

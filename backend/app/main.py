@@ -734,6 +734,16 @@ def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_
     return svc.run_outreach_send_pass(force=force, dry_run_override=True)
 
 
+@app.post("/api/outreach/send")
+def trigger_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Executes the email outreach campaign exclusively targeting verified leads from the Verified Data sheet.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_outreach_send_pass(force=force)
+
+
 @app.post("/api/outreach/send-test")
 def send_test_email_endpoint(
     test_email: str = Query(..., description="Your personal email address to receive the test email"),

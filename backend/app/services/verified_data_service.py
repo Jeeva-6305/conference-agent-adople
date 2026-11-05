@@ -6,29 +6,61 @@ import urllib.request
 import json
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional, Set, Tuple
+from collections import defaultdict
 from sqlalchemy.orm import Session
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from ..config import settings
-from ..models import WeeklySpeaker, WeeklyAttendee, WeeklyExhibitor
+from ..models import WeeklySpeaker, WeeklyAttendee, WeeklyExhibitor, WeeklyCompany
 from ..services.onedrive_excel_service import OneDriveExcelService
 
 logger = logging.getLogger(__name__)
 
+# Exact 37-column specification required by user
 VERIFIED_DATA_HEADERS = [
-    "Contact Type",
-    "Conference Name",
-    "Name",
-    "Job Title / Designation",
+    # Company and Conference Information (Cols 1-4)
     "Company Name",
-    "Professional Email",
-    "Email Status",
-    "Personal LinkedIn URL",
-    "Outreach Status",
-    "Source / Profile URL",
-    "Collection Date"
+    "Company Domain",
+    "Conference Name",
+    "Conference ID",
+    # Speaker Information (Cols 5-15)
+    "Speaker Name",
+    "Speaker Job Title",
+    "Speaker LinkedIn",
+    "Speaker Professional Email",
+    "Speaker Email Status",
+    "Speaker Outreach Status",
+    "Speaker Reply Status",
+    "Speaker Received Reply",
+    "Speaker Sentiment",
+    "Speaker Sent Message",
+    "Speaker Thread ID",
+    # Attendee Information (Cols 16-26)
+    "Attendee Name",
+    "Attendee Job Title",
+    "Attendee LinkedIn",
+    "Attendee Professional Email",
+    "Attendee Email Status",
+    "Attendee Outreach Status",
+    "Attendee Reply Status",
+    "Attendee Received Reply",
+    "Attendee Sentiment",
+    "Attendee Sent Message",
+    "Attendee Thread ID",
+    # Exhibitor Information (Cols 27-37)
+    "Exhibitor Name",
+    "Exhibitor Job Title",
+    "Exhibitor LinkedIn",
+    "Exhibitor Professional Email",
+    "Exhibitor Email Status",
+    "Exhibitor Outreach Status",
+    "Exhibitor Reply Status",
+    "Exhibitor Received Reply",
+    "Exhibitor Sentiment",
+    "Exhibitor Sent Message",
+    "Exhibitor Thread ID"
 ]
 
 
@@ -63,18 +95,59 @@ def is_generic_name(name: str) -> bool:
     return norm in ["not publicly available", "n/a", "none", "unknown", "tbd", ""] or len(norm) < 2
 
 
+def resolve_company_domain(
+    conf_id: Optional[str],
+    company_name: Optional[str],
+    email: Optional[str] = None,
+    website: Optional[str] = None,
+    domain_lookup: Optional[Dict[Any, str]] = None
+) -> str:
+    """
+    Resolves official company domain using:
+    1. WeeklyCompany metadata table match by (conf_id, company_name) or company_name.
+    2. Exhibitor company website URL parse.
+    3. Corporate email domain (ignoring generic email providers like gmail, yahoo, etc.).
+    """
+    cid = (conf_id or "").strip().lower()
+    cname = (company_name or "").strip().lower()
+
+    if domain_lookup:
+        if cid and cname and (cid, cname) in domain_lookup:
+            return domain_lookup[(cid, cname)]
+        if cname and cname in domain_lookup:
+            return domain_lookup[cname]
+
+    if website:
+        w = website.strip().lower()
+        if not w.startswith(("http://", "https://")):
+            w = "https://" + w
+        try:
+            netloc = urllib.parse.urlparse(w).netloc
+            if netloc.startswith("www."):
+                netloc = netloc[4:]
+            if netloc:
+                return netloc
+        except Exception:
+            pass
+
+    if email and "@" in email:
+        dom = email.split("@")[1].strip().lower()
+        if dom not in [
+            "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
+            "icloud.com", "aol.com", "protonmail.com", "zoho.com"
+        ]:
+            return dom
+
+    return ""
+
+
 class VerifiedDataService:
     """
-    Dedicated Service for Automated Verified Contact Aggregation:
-    - Scans Weekly Speakers, Weekly Attendees, and Weekly Exhibitors.
-    - Selects only records having valid, verified professional emails.
-    - Strictly prevents duplicates by unique professional email and unique contact name.
-    - Prioritizes original primary source data (Speakers > Attendees > Exhibitors).
-    - Synchronizes full contact details to:
-      1. Local Excel workbook ('Verified Data' sheet).
-      2. OneDrive Live Excel ('tbl_verified_data' table on 'Verified Data' sheet).
-    - Preserves existing records without data loss.
-    - Does not alter or disrupt any external sources or existing pipelines.
+    Service for Company-Wise Multi-Row Grouped Verified Contacts:
+    - Grouping Key: Conference ID + Conference Name + Company Name + Company Domain.
+    - Rows per company = max(len(Speakers), len(Attendees), len(Exhibitors)).
+    - 37 dedicated columns with strict row-wise category alignment.
+    - Preserves all original data, historical Weekly Speakers outreach, and reply tracking.
     """
 
     def __init__(self, db: Session):
@@ -82,167 +155,274 @@ class VerifiedDataService:
         self.onedrive_svc = OneDriveExcelService()
         self.excel_path = settings.EXCEL_OUTPUT_PATH
 
-    def get_all_verified_contacts(self) -> List[Dict[str, Any]]:
-        """
-        Gathers all genuine contacts with verified emails from:
-        - Weekly Speakers (verification_status == 'verified', outreach_status != 'sent')
-        - Weekly Attendees (email_status == 'Verified')
-        - Weekly Exhibitors (email_status == 'Verified')
-        Enforces strict uniqueness by email and contact name so each individual
-        appears exactly once with their primary original authentic data.
-        """
-        contacts: List[Dict[str, Any]] = []
-        seen_emails: Set[str] = set()
-        seen_names: Set[str] = set()
+    def _build_domain_lookup(self) -> Dict[Any, str]:
+        """Builds fast lookup map for company domains from WeeklyCompany records."""
+        domain_lookup: Dict[Any, str] = {}
+        try:
+            companies = self.db.query(WeeklyCompany).all()
+            for c in companies:
+                c_name = (c.company_name or "").strip().lower()
+                c_conf = (c.conference_id or "").strip().lower()
+                if c.company_domain:
+                    dom = c.company_domain.strip().lower()
+                    if dom:
+                        if c_conf and c_name:
+                            domain_lookup[(c_conf, c_name)] = dom
+                        if c_name and c_name not in domain_lookup:
+                            domain_lookup[c_name] = dom
+        except Exception as e:
+            logger.warning(f"[VerifiedDataService] Notice reading WeeklyCompany domains: {e}")
+        return domain_lookup
 
-        # 1. Weekly Speakers (Primary priority role)
+    def get_company_grouped_rows(self) -> Tuple[List[List[Any]], Dict[str, Any]]:
+        """
+        Extracts verified contacts across Speakers, Attendees, and Exhibitors,
+        groups them by (Conference ID + Conference Name + Company Name + Company Domain),
+        and formats them into the exact 37-column multi-row aligned structure.
+        """
+        domain_lookup = self._build_domain_lookup()
+
+        # 1. Weekly Speakers (verified email, verification_status == 'verified', outreach_status != 'sent')
         speakers = self.db.query(WeeklySpeaker).all()
-        spk_count = 0
+        grouped_speakers = defaultdict(list)
+        seen_spk_emails: Set[str] = set()
+        seen_spk_names: Set[str] = set()
+        spk_total = 0
+
         for s in speakers:
             email = (s.professional_email or "").strip()
             v_status = (s.verification_status or "").strip().lower()
             outreach = (s.outreach_status or "").strip().lower()
 
             if is_valid_verified_email(email) and v_status == "verified" and outreach != "sent":
-                c_name = html.unescape((s.conference_name or "").strip())
+                email_norm = email.lower()
                 name = (s.speaker_name or "").strip()
                 name_norm = normalize_name(name)
-                email_norm = email.lower()
 
-                if email_norm in seen_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_names):
-                    logger.debug(f"[VerifiedDataService] Skipping duplicate speaker: {name} ({email})")
+                if email_norm in seen_spk_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_spk_names):
                     continue
-
-                seen_emails.add(email_norm)
+                seen_spk_emails.add(email_norm)
                 if name_norm and not is_generic_name(name_norm):
-                    seen_names.add(name_norm)
+                    seen_spk_names.add(name_norm)
 
-                spk_count += 1
-                c_date = ""
-                if s.last_checked_at:
-                    c_date = s.last_checked_at.strftime("%Y-%m-%d") if hasattr(s.last_checked_at, "strftime") else str(s.last_checked_at)[:10]
-                else:
-                    c_date = date.today().isoformat()
+                cid = (s.conference_id or "").strip()
+                cname = html.unescape((s.conference_name or "").strip())
+                comp = (s.company_name or "").strip()
+                dom = resolve_company_domain(cid, comp, email=email, domain_lookup=domain_lookup)
 
-                contacts.append({
-                    "contact_type": "Speaker",
-                    "conference_name": c_name,
-                    "name": name,
-                    "job_title": (s.job_title or "").strip(),
-                    "company_name": (s.company_name or "").strip(),
-                    "professional_email": email,
-                    "email_status": "Verified",
-                    "personal_linkedin_url": (s.personal_linkedin_url or "").strip(),
-                    "outreach_status": (s.outreach_status or "").strip() or "Pending",
-                    "source_url": (s.speaker_source_url or "").strip(),
-                    "collection_date": c_date
-                })
+                key = (cid, cname, comp, dom)
+                grouped_speakers[key].append(s)
+                spk_total += 1
 
-        # 2. Weekly Attendees
+        # 2. Weekly Attendees (verified email, email_status == 'Verified')
         attendees = self.db.query(WeeklyAttendee).all()
-        att_count = 0
+        grouped_attendees = defaultdict(list)
+        seen_att_emails: Set[str] = set()
+        seen_att_names: Set[str] = set()
+        att_total = 0
+
         for a in attendees:
             email = (a.professional_email or "").strip()
-            em_status = (a.email_status or "").strip().lower()
+            e_status = (a.email_status or "").strip().lower()
 
-            if is_valid_verified_email(email) and em_status == "verified":
-                c_name = html.unescape((a.conference_name or "").strip())
+            if is_valid_verified_email(email) and e_status == "verified":
+                email_norm = email.lower()
                 name = (a.attendee_name or "").strip()
                 name_norm = normalize_name(name)
-                email_norm = email.lower()
 
-                if email_norm in seen_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_names):
-                    logger.debug(f"[VerifiedDataService] Skipping duplicate attendee: {name} ({email})")
+                if email_norm in seen_att_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_att_names):
                     continue
-
-                seen_emails.add(email_norm)
+                seen_att_emails.add(email_norm)
                 if name_norm and not is_generic_name(name_norm):
-                    seen_names.add(name_norm)
+                    seen_att_names.add(name_norm)
 
-                att_count += 1
-                c_date = ""
-                if a.collection_date:
-                    c_date = a.collection_date.isoformat() if hasattr(a.collection_date, "isoformat") else str(a.collection_date)[:10]
-                else:
-                    c_date = date.today().isoformat()
+                cid = (a.conference_id or "").strip()
+                cname = html.unescape((a.conference_name or "").strip())
+                comp = (a.company_name or "").strip()
+                dom = resolve_company_domain(cid, comp, email=email, domain_lookup=domain_lookup)
 
-                contacts.append({
-                    "contact_type": "Attendee",
-                    "conference_name": c_name,
-                    "name": name,
-                    "job_title": (a.job_title or "").strip(),
-                    "company_name": (a.company_name or "").strip(),
-                    "professional_email": email,
-                    "email_status": "Verified",
-                    "personal_linkedin_url": (a.personal_linkedin_url or "").strip(),
-                    "outreach_status": "Pending",
-                    "source_url": (a.source_url or "").strip(),
-                    "collection_date": c_date
-                })
+                key = (cid, cname, comp, dom)
+                grouped_attendees[key].append(a)
+                att_total += 1
 
-        # 3. Weekly Exhibitors
+        # 3. Weekly Exhibitors (verified email, email_status == 'Verified')
         exhibitors = self.db.query(WeeklyExhibitor).all()
-        exh_count = 0
+        grouped_exhibitors = defaultdict(list)
+        seen_exh_emails: Set[str] = set()
+        seen_exh_names: Set[str] = set()
+        exh_total = 0
+
         for e in exhibitors:
             email = (e.professional_email or "").strip()
-            em_status = (e.email_status or "").strip().lower()
+            e_status = (e.email_status or "").strip().lower()
 
-            if is_valid_verified_email(email) and em_status == "verified":
-                c_name = html.unescape((e.conference_name or "").strip())
+            if is_valid_verified_email(email) and e_status == "verified":
+                email_norm = email.lower()
                 contact_person = (e.contact_person or "").strip() or (e.company_name or "").strip()
                 name_norm = normalize_name(contact_person)
-                email_norm = email.lower()
 
-                if email_norm in seen_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_names):
-                    logger.debug(f"[VerifiedDataService] Skipping duplicate exhibitor: {contact_person} ({email})")
+                if email_norm in seen_exh_emails or (name_norm and not is_generic_name(name_norm) and name_norm in seen_exh_names):
                     continue
-
-                seen_emails.add(email_norm)
+                seen_exh_emails.add(email_norm)
                 if name_norm and not is_generic_name(name_norm):
-                    seen_names.add(name_norm)
+                    seen_exh_names.add(name_norm)
 
-                exh_count += 1
-                c_date = ""
-                if e.collection_date:
-                    c_date = e.collection_date.isoformat() if hasattr(e.collection_date, "isoformat") else str(e.collection_date)[:10]
-                else:
-                    c_date = date.today().isoformat()
+                cid = (e.conference_id or "").strip()
+                cname = html.unescape((e.conference_name or "").strip())
+                comp = (e.company_name or "").strip()
+                dom = resolve_company_domain(cid, comp, email=email, website=e.company_website, domain_lookup=domain_lookup)
 
-                li_url = (e.contact_person_linkedin_url or "").strip() or (e.company_linkedin_url or "").strip()
+                key = (cid, cname, comp, dom)
+                grouped_exhibitors[key].append(e)
+                exh_total += 1
 
-                contacts.append({
-                    "contact_type": "Exhibitor",
-                    "conference_name": c_name,
-                    "name": contact_person,
-                    "job_title": (e.contact_designation or "").strip(),
-                    "company_name": (e.company_name or "").strip(),
-                    "professional_email": email,
-                    "email_status": "Verified",
-                    "personal_linkedin_url": li_url,
-                    "outreach_status": "Pending",
-                    "source_url": (e.source_url or "").strip() or (e.company_website or "").strip(),
-                    "collection_date": c_date
-                })
+        # Collect all unique company group keys
+        all_group_keys = set(grouped_speakers.keys()) | set(grouped_attendees.keys()) | set(grouped_exhibitors.keys())
+        # Sort by Conference Name, Company Name for clean readability
+        sorted_keys = sorted(all_group_keys, key=lambda k: (k[1].lower(), k[2].lower(), k[0]))
 
+        matrix_rows: List[List[Any]] = []
+        for key in sorted_keys:
+            cid, cname, comp, dom = key
+            spk_list = grouped_speakers.get(key, [])
+            att_list = grouped_attendees.get(key, [])
+            exh_list = grouped_exhibitors.get(key, [])
+
+            # Number of rows = highest count among categories
+            row_count = max(len(spk_list), len(att_list), len(exh_list))
+
+            for i in range(row_count):
+                spk = spk_list[i] if i < len(spk_list) else None
+                att = att_list[i] if i < len(att_list) else None
+                exh = exh_list[i] if i < len(exh_list) else None
+
+                # Build 37-column row
+                row_vals = [
+                    # 1-4: Company & Conference Information
+                    comp,
+                    dom,
+                    cname,
+                    cid,
+                    # 5-15: Speaker Information
+                    spk.speaker_name if spk else "",
+                    spk.job_title if spk else "",
+                    spk.personal_linkedin_url if spk else "",
+                    spk.professional_email if spk else "",
+                    "Verified" if spk else "",
+                    (spk.outreach_status or "Pending") if spk else "",
+                    spk.reply_status if spk and spk.reply_status else "",
+                    spk.received_reply if spk and spk.received_reply else "",
+                    spk.reply_sentiment if spk and spk.reply_sentiment else "",
+                    spk.sent_message if spk and spk.sent_message else "",
+                    spk.email_thread_id if spk and spk.email_thread_id else "",
+                    # 16-26: Attendee Information
+                    att.attendee_name if att else "",
+                    att.job_title if att else "",
+                    att.personal_linkedin_url if att else "",
+                    att.professional_email if att else "",
+                    "Verified" if att else "",
+                    "Pending" if att else "",
+                    "",  # Attendee Reply Status
+                    "",  # Attendee Received Reply
+                    "",  # Attendee Sentiment
+                    "",  # Attendee Sent Message
+                    "",  # Attendee Thread ID
+                    # 27-37: Exhibitor Information
+                    (exh.contact_person or exh.company_name) if exh else "",
+                    exh.contact_designation if exh else "",
+                    (exh.contact_person_linkedin_url or exh.company_linkedin_url) if exh else "",
+                    exh.professional_email if exh else "",
+                    "Verified" if exh else "",
+                    "Pending" if exh else "",
+                    "",  # Exhibitor Reply Status
+                    "",  # Exhibitor Received Reply
+                    "",  # Exhibitor Sentiment
+                    "",  # Exhibitor Sent Message
+                    ""   # Exhibitor Thread ID
+                ]
+                matrix_rows.append(row_vals)
+
+        meta = {
+            "total_groups": len(sorted_keys),
+            "total_rows": len(matrix_rows),
+            "speakers_count": spk_total,
+            "attendees_count": att_total,
+            "exhibitors_count": exh_total
+        }
         logger.info(
-            f"🔍 [VerifiedDataService] Identified {len(contacts)} unique verified contacts "
-            f"(Speakers: {spk_count}, Attendees: {att_count}, Exhibitors: {exh_count})."
+            f"🔍 [VerifiedDataService] Grouped {len(matrix_rows)} rows across {len(sorted_keys)} company groups "
+            f"(Speakers: {spk_total}, Attendees: {att_total}, Exhibitors: {exh_total})."
         )
-        return contacts
+        return matrix_rows, meta
 
-    def sync_to_local_excel(self, contacts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def sync_to_local_excel(self, matrix_rows: Optional[List[List[Any]]] = None) -> Dict[str, Any]:
         """
-        Updates the 'Verified Data' worksheet in the local published Excel file.
-        Applies professional corporate styling and auto-adjusts column widths.
+        Writes the 37-column company-grouped records to 'Verified Data' worksheet in local Excel.
+        Preserves existing outreach tracking and reply history in-place.
         """
-        if not contacts:
+        if matrix_rows is None:
+            matrix_rows, _ = self.get_company_grouped_rows()
+
+        if not matrix_rows:
             return {"status": "skipped", "message": "No verified contacts to write."}
 
         try:
             wb = openpyxl.load_workbook(self.excel_path)
             sheet_name = "Verified Data"
 
+            # 1. Cache existing outreach data if local sheet exists
+            existing_outreach: Dict[str, Dict[str, Any]] = {}
             if sheet_name in wb.sheetnames:
+                ex_ws = wb[sheet_name]
+                ex_rows = list(ex_ws.iter_rows(values_only=True))
+                if ex_rows and len(ex_rows) > 1:
+                    raw_headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in ex_rows[0]]
+                    col_map = {name: idx for idx, name in enumerate(raw_headers)}
+
+                    # Support caching from both old 17-col and 37-col schemas
+                    for r in ex_rows[1:]:
+                        # Check speaker email
+                        spk_em_idx = col_map.get("speakerprofessionalemail", col_map.get("professionalemail"))
+                        if spk_em_idx is not None and len(r) > spk_em_idx:
+                            em = str(r[spk_em_idx] or "").strip().lower()
+                            if em:
+                                existing_outreach[em] = {
+                                    "outreach_status": r[col_map.get("speakeroutreachstatus", col_map.get("outreachstatus", -1))] if col_map.get("speakeroutreachstatus", col_map.get("outreachstatus", -1)) != -1 and len(r) > col_map.get("speakeroutreachstatus", col_map.get("outreachstatus", -1)) else "",
+                                    "reply_status": r[col_map.get("speakerreplystatus", col_map.get("replaystatus", -1))] if col_map.get("speakerreplystatus", col_map.get("replaystatus", -1)) != -1 and len(r) > col_map.get("speakerreplystatus", col_map.get("replaystatus", -1)) else "",
+                                    "received_reply": r[col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1))] if col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1)) != -1 and len(r) > col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1)) else "",
+                                    "reply_sentiment": r[col_map.get("speakersentiment", col_map.get("replaysentiment", -1))] if col_map.get("speakersentiment", col_map.get("replaysentiment", -1)) != -1 and len(r) > col_map.get("speakersentiment", col_map.get("replaysentiment", -1)) else "",
+                                    "sent_message": r[col_map.get("speakersentmessage", col_map.get("sendmessage", -1))] if col_map.get("speakersentmessage", col_map.get("sendmessage", -1)) != -1 and len(r) > col_map.get("speakersentmessage", col_map.get("sendmessage", -1)) else "",
+                                    "thread_id": r[col_map.get("speakerthreadid", col_map.get("threadid", -1))] if col_map.get("speakerthreadid", col_map.get("threadid", -1)) != -1 and len(r) > col_map.get("speakerthreadid", col_map.get("threadid", -1)) else ""
+                                }
+
+                        # Check attendee email
+                        att_em_idx = col_map.get("attendeeprofessionalemail")
+                        if att_em_idx is not None and len(r) > att_em_idx:
+                            em = str(r[att_em_idx] or "").strip().lower()
+                            if em:
+                                existing_outreach[em] = {
+                                    "outreach_status": r[col_map.get("attendeeoutreachstatus", -1)] if col_map.get("attendeeoutreachstatus", -1) != -1 and len(r) > col_map.get("attendeeoutreachstatus", -1) else "",
+                                    "reply_status": r[col_map.get("attendeereplystatus", -1)] if col_map.get("attendeereplystatus", -1) != -1 and len(r) > col_map.get("attendeereplystatus", -1) else "",
+                                    "received_reply": r[col_map.get("attendeereceivedreply", -1)] if col_map.get("attendeereceivedreply", -1) != -1 and len(r) > col_map.get("attendeereceivedreply", -1) else "",
+                                    "reply_sentiment": r[col_map.get("attendeesentiment", -1)] if col_map.get("attendeesentiment", -1) != -1 and len(r) > col_map.get("attendeesentiment", -1) else "",
+                                    "sent_message": r[col_map.get("attendeesentmessage", -1)] if col_map.get("attendeesentmessage", -1) != -1 and len(r) > col_map.get("attendeesentmessage", -1) else "",
+                                    "thread_id": r[col_map.get("attendeethreadid", -1)] if col_map.get("attendeethreadid", -1) != -1 and len(r) > col_map.get("attendeethreadid", -1) else ""
+                                }
+
+                        # Check exhibitor email
+                        exh_em_idx = col_map.get("exhibitorprofessionalemail")
+                        if exh_em_idx is not None and len(r) > exh_em_idx:
+                            em = str(r[exh_em_idx] or "").strip().lower()
+                            if em:
+                                existing_outreach[em] = {
+                                    "outreach_status": r[col_map.get("exhibitoroutreachstatus", -1)] if col_map.get("exhibitoroutreachstatus", -1) != -1 and len(r) > col_map.get("exhibitoroutreachstatus", -1) else "",
+                                    "reply_status": r[col_map.get("exhibitorreplystatus", -1)] if col_map.get("exhibitorreplystatus", -1) != -1 and len(r) > col_map.get("exhibitorreplystatus", -1) else "",
+                                    "received_reply": r[col_map.get("exhibitorreceivedreply", -1)] if col_map.get("exhibitorreceivedreply", -1) != -1 and len(r) > col_map.get("exhibitorreceivedreply", -1) else "",
+                                    "reply_sentiment": r[col_map.get("exhibitorsentiment", -1)] if col_map.get("exhibitorsentiment", -1) != -1 and len(r) > col_map.get("exhibitorsentiment", -1) else "",
+                                    "sent_message": r[col_map.get("exhibitorsentmessage", -1)] if col_map.get("exhibitorsentmessage", -1) != -1 and len(r) > col_map.get("exhibitorsentmessage", -1) else "",
+                                    "thread_id": r[col_map.get("exhibitorthreadid", -1)] if col_map.get("exhibitorthreadid", -1) != -1 and len(r) > col_map.get("exhibitorthreadid", -1) else ""
+                                }
+
                 del wb[sheet_name]
 
             ws = wb.create_sheet(sheet_name)
@@ -265,7 +445,7 @@ class VerifiedDataService:
             )
 
             # Write header
-            ws.row_dimensions[1].height = 26
+            ws.row_dimensions[1].height = 28
             ws.append(VERIFIED_DATA_HEADERS)
             for col_idx in range(1, len(VERIFIED_DATA_HEADERS) + 1):
                 cell = ws.cell(row=1, column=col_idx)
@@ -275,29 +455,52 @@ class VerifiedDataService:
                 cell.border = thin_border
 
             # Write data rows
-            for r_idx, c in enumerate(contacts, start=2):
+            for r_idx, row_vals in enumerate(matrix_rows, start=2):
                 ws.row_dimensions[r_idx].height = 20
-                row_vals = [
-                    c["contact_type"],
-                    c["conference_name"],
-                    c["name"],
-                    c["job_title"],
-                    c["company_name"],
-                    c["professional_email"],
-                    c["email_status"],
-                    c["personal_linkedin_url"],
-                    c["outreach_status"],
-                    c["source_url"],
-                    c["collection_date"]
-                ]
-                ws.append(row_vals)
-                for col_idx, val in enumerate(row_vals, start=1):
+                row_copy = list(row_vals)
+
+                # Merge cached outreach values for Speaker (email at idx 7)
+                spk_em = str(row_copy[7] or "").strip().lower()
+                if spk_em and spk_em in existing_outreach:
+                    cache = existing_outreach[spk_em]
+                    if cache.get("outreach_status"): row_copy[9] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[10] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[11] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[12] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[13] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[14] = cache["thread_id"]
+
+                # Merge cached outreach values for Attendee (email at idx 18)
+                att_em = str(row_copy[18] or "").strip().lower()
+                if att_em and att_em in existing_outreach:
+                    cache = existing_outreach[att_em]
+                    if cache.get("outreach_status"): row_copy[20] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[21] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[22] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[23] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[24] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[25] = cache["thread_id"]
+
+                # Merge cached outreach values for Exhibitor (email at idx 29)
+                exh_em = str(row_copy[29] or "").strip().lower()
+                if exh_em and exh_em in existing_outreach:
+                    cache = existing_outreach[exh_em]
+                    if cache.get("outreach_status"): row_copy[31] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[32] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[33] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[34] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[35] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[36] = cache["thread_id"]
+
+                ws.append(row_copy)
+                for col_idx, val in enumerate(row_copy, start=1):
                     cell = ws.cell(row=r_idx, column=col_idx)
                     cell.font = data_font
                     cell.border = thin_border
-                    if col_idx in [1, 7, 9, 11]:  # Contact Type, Email Status, Outreach, Date
+                    # Align status badges
+                    if col_idx in [4, 9, 10, 11, 13, 20, 21, 22, 24, 31, 32, 33, 35]:
                         cell.alignment = center_align
-                        if col_idx == 7:
+                        if col_idx in [9, 20, 31] and val == "Verified":
                             cell.font = badge_font
                     else:
                         cell.alignment = left_align
@@ -310,22 +513,26 @@ class VerifiedDataService:
                     val_str = str(cell.value or "")
                     if len(val_str) > max_len:
                         max_len = len(val_str)
-                ws.column_dimensions[col_letter].width = max(max_len + 3, 14)
+                ws.column_dimensions[col_letter].width = min(max(max_len + 3, 14), 45)
 
             wb.save(self.excel_path)
-            logger.info(f"✅ [VerifiedDataService] Local Excel 'Verified Data' sheet saved with {len(contacts)} rows.")
-            return {"status": "success", "count": len(contacts)}
+            logger.info(f"✅ [VerifiedDataService] Local Excel 'Verified Data' saved with {len(matrix_rows)} 37-column rows.")
+            return {"status": "success", "count": len(matrix_rows)}
         except Exception as e:
             logger.error(f"❌ [VerifiedDataService] Error saving to Local Excel: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
 
-    def sync_to_onedrive(self, contacts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def sync_to_onedrive(self, matrix_rows: Optional[List[List[Any]]] = None) -> Dict[str, Any]:
         """
-        Synchronizes contacts to OneDrive Live Excel:
-        - Writes to 'Verified Data' worksheet range A1:K{N}.
+        Synchronizes 37-column company-grouped records to OneDrive Live Excel:
+        - Writes to 'Verified Data' worksheet range A1:AK{N}.
         - Re-creates table 'tbl_verified_data' with TableStyleMedium9.
+        - Preserves existing outreach and reply tracking data.
         """
-        if not contacts:
+        if matrix_rows is None:
+            matrix_rows, _ = self.get_company_grouped_rows()
+
+        if not matrix_rows:
             return {"status": "skipped", "message": "No verified contacts to sync to OneDrive."}
 
         try:
@@ -350,6 +557,38 @@ class VerifiedDataService:
                         return {}
                     return json.loads(resp.read().decode("utf-8"))
 
+            # Preserve existing outreach tracking from OneDrive table if present
+            existing_od_outreach: Dict[str, Dict[str, Any]] = {}
+            try:
+                rows_res = graph_request("GET", f"/workbook/tables/tbl_verified_data/rows")
+                cols_res = graph_request("GET", f"/workbook/tables/tbl_verified_data/columns")
+                c_names = [col["name"] for col in cols_res.get("value", [])]
+                c_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(c_names)}
+
+                for r in rows_res.get("value", []):
+                    vals = r.get("values", [[]])[0]
+                    # Check across speaker, attendee, exhibitor email columns
+                    for em_key, st_key, rep_key, rec_key, sent_key, snd_key, th_key in [
+                        ("speakerprofessionalemail", "speakeroutreachstatus", "speakerreplystatus", "speakerreceivedreply", "speakersentiment", "speakersentmessage", "speakerthreadid"),
+                        ("attendeeprofessionalemail", "attendeeoutreachstatus", "attendeereplystatus", "attendeereceivedreply", "attendeesentiment", "attendeesentmessage", "attendeethreadid"),
+                        ("exhibitorprofessionalemail", "exhibitoroutreachstatus", "exhibitorreplystatus", "exhibitorreceivedreply", "exhibitorsentiment", "exhibitorsentmessage", "exhibitorthreadid"),
+                        ("professionalemail", "outreachstatus", "replaystatus", "receivedreplay", "replaysentiment", "sendmessage", "threadid")
+                    ]:
+                        em_idx = c_map.get(em_key)
+                        if em_idx is not None and len(vals) > em_idx:
+                            em = str(vals[em_idx] or "").strip().lower()
+                            if em:
+                                existing_od_outreach[em] = {
+                                    "outreach_status": vals[c_map[st_key]] if c_map.get(st_key) is not None and len(vals) > c_map[st_key] else "",
+                                    "reply_status": vals[c_map[rep_key]] if c_map.get(rep_key) is not None and len(vals) > c_map[rep_key] else "",
+                                    "received_reply": vals[c_map[rec_key]] if c_map.get(rec_key) is not None and len(vals) > c_map[rec_key] else "",
+                                    "reply_sentiment": vals[c_map[sent_key]] if c_map.get(sent_key) is not None and len(vals) > c_map[sent_key] else "",
+                                    "sent_message": vals[c_map[snd_key]] if c_map.get(snd_key) is not None and len(vals) > c_map[snd_key] else "",
+                                    "thread_id": vals[c_map[th_key]] if c_map.get(th_key) is not None and len(vals) > c_map[th_key] else ""
+                                }
+            except Exception as pe:
+                logger.debug(f"Notice loading existing OneDrive outreach data: {pe}")
+
             # 1. Delete old table if exists
             try:
                 tables_res = graph_request("GET", f"/workbook/worksheets/{sheet_name_encoded}/tables")
@@ -360,31 +599,53 @@ class VerifiedDataService:
             except Exception as te:
                 logger.debug(f"Table deletion notice: {te}")
 
-            # 2. Clear range
+            # 2. Clear range A1:AK300
             try:
-                graph_request("POST", f"/workbook/worksheets/{sheet_name_encoded}/range(address='A1:Z200')/clear", {"applyTo": "All"})
+                graph_request("POST", f"/workbook/worksheets/{sheet_name_encoded}/range(address='A1:AK300')/clear", {"applyTo": "All"})
             except Exception as ce:
                 logger.debug(f"Range clear notice: {ce}")
 
             # 3. Prepare rows matrix (header + data)
             all_matrix = [VERIFIED_DATA_HEADERS]
-            for c in contacts:
-                all_matrix.append([
-                    c["contact_type"],
-                    c["conference_name"],
-                    c["name"],
-                    c["job_title"],
-                    c["company_name"],
-                    c["professional_email"],
-                    c["email_status"],
-                    c["personal_linkedin_url"],
-                    c["outreach_status"],
-                    c["source_url"],
-                    c["collection_date"]
-                ])
+            for r in matrix_rows:
+                row_copy = list(r)
+                # Speaker cache (idx 7)
+                spk_em = str(row_copy[7] or "").strip().lower()
+                if spk_em and spk_em in existing_od_outreach:
+                    cache = existing_od_outreach[spk_em]
+                    if cache.get("outreach_status"): row_copy[9] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[10] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[11] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[12] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[13] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[14] = cache["thread_id"]
+
+                # Attendee cache (idx 18)
+                att_em = str(row_copy[18] or "").strip().lower()
+                if att_em and att_em in existing_od_outreach:
+                    cache = existing_od_outreach[att_em]
+                    if cache.get("outreach_status"): row_copy[20] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[21] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[22] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[23] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[24] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[25] = cache["thread_id"]
+
+                # Exhibitor cache (idx 29)
+                exh_em = str(row_copy[29] or "").strip().lower()
+                if exh_em and exh_em in existing_od_outreach:
+                    cache = existing_od_outreach[exh_em]
+                    if cache.get("outreach_status"): row_copy[31] = cache["outreach_status"]
+                    if cache.get("reply_status"): row_copy[32] = cache["reply_status"]
+                    if cache.get("received_reply"): row_copy[33] = cache["received_reply"]
+                    if cache.get("reply_sentiment"): row_copy[34] = cache["reply_sentiment"]
+                    if cache.get("sent_message"): row_copy[35] = cache["sent_message"]
+                    if cache.get("thread_id"): row_copy[36] = cache["thread_id"]
+
+                all_matrix.append(row_copy)
 
             end_row = len(all_matrix)
-            range_addr = f"A1:K{end_row}"
+            range_addr = f"A1:AK{end_row}"
 
             # 4. Write values to range
             graph_request("PATCH", f"/workbook/worksheets/{sheet_name_encoded}/range(address='{range_addr}')", {"values": all_matrix})
@@ -404,24 +665,23 @@ class VerifiedDataService:
                     "style": "TableStyleMedium9"
                 })
 
-            logger.info(f"✅ [VerifiedDataService] Successfully synced {len(contacts)} contacts to OneDrive 'tbl_verified_data'.")
-            return {"status": "success", "count": len(contacts)}
+            logger.info(f"✅ [VerifiedDataService] Successfully synced {len(matrix_rows)} 37-column rows to OneDrive 'tbl_verified_data'.")
+            return {"status": "success", "count": len(matrix_rows)}
         except Exception as e:
             logger.error(f"❌ [VerifiedDataService] Error syncing to OneDrive: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
 
     def sync_all_verified_data(self) -> Dict[str, Any]:
         """
-        Executes end-to-end sync of all verified contacts to both Local Excel and OneDrive.
+        Executes end-to-end sync of company-grouped verified records to both Local Excel and OneDrive.
         """
-        contacts = self.get_all_verified_contacts()
-        local_res = self.sync_to_local_excel(contacts)
-        onedrive_res = self.sync_to_onedrive(contacts)
+        matrix_rows, meta = self.get_company_grouped_rows()
+        local_res = self.sync_to_local_excel(matrix_rows)
+        onedrive_res = self.sync_to_onedrive(matrix_rows)
 
         return {
             "status": "success" if local_res.get("status") == "success" else "partial",
-            "total_verified_contacts": len(contacts),
+            "meta": meta,
             "local_excel": local_res,
             "onedrive": onedrive_res
         }
-

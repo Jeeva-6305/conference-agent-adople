@@ -1296,3 +1296,115 @@ class OneDriveExcelService:
 
         logger.info(f"✅ OneDrive Excel: Successfully appended new reply row to '{self.speakers_replies_tbl_name}'.")
         return {"status": "success", "inserted": 1}
+
+    def get_verified_data_table_info(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
+        """
+        Retrieves column names, column index map, and all row entries from 'tbl_verified_data' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/tbl_verified_data/columns")
+        col_names = [c["name"] for c in cols_res.get("value", [])]
+        col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+
+        rows_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/tbl_verified_data/rows")
+        raw_rows = rows_res.get("value", [])
+
+        parsed_rows = []
+        for idx, r in enumerate(raw_rows):
+            vals = r.get("values", [[]])[0]
+            while len(vals) < len(col_names):
+                vals.append("")
+            parsed_rows.append({
+                "row_index": idx,
+                "values": vals
+            })
+
+        return col_names, col_map, parsed_rows
+
+    def update_verified_data_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates a row in 'tbl_verified_data' on OneDrive in-place.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/tbl_verified_data/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
+    def update_verified_data_contact(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None,
+        category: Optional[str] = None
+    ) -> bool:
+        """
+        Finds row in 'tbl_verified_data' matching email or thread_id across Speaker, Attendee,
+        or Exhibitor columns, applies updates to that category's columns, and patches OneDrive in-place.
+        """
+        try:
+            col_names, col_map, rows = self.get_verified_data_table_info()
+
+            clean_email = (email or "").strip().lower()
+            clean_thread = (thread_id or "").strip()
+
+            target_row = None
+            detected_category = category
+
+            # Category-specific email and thread column mappings
+            cat_checks = [
+                ("Speaker", col_map.get("speakerprofessionalemail"), col_map.get("speakerthreadid")),
+                ("Attendee", col_map.get("attendeeprofessionalemail"), col_map.get("attendeethreadid")),
+                ("Exhibitor", col_map.get("exhibitorprofessionalemail"), col_map.get("exhibitorthreadid")),
+                ("Speaker", col_map.get("professionalemail"), col_map.get("threadid"))  # fallback
+            ]
+
+            for r in rows:
+                vals = r["values"]
+                for cat, em_idx, th_idx in cat_checks:
+                    if em_idx is not None and len(vals) > em_idx:
+                        r_em = str(vals[em_idx] or "").strip().lower()
+                        if clean_email and r_em == clean_email:
+                            target_row = r
+                            detected_category = detected_category or cat
+                            break
+                    if th_idx is not None and len(vals) > th_idx:
+                        r_th = str(vals[th_idx] or "").strip()
+                        if clean_thread and r_th == clean_thread:
+                            target_row = r
+                            detected_category = detected_category or cat
+                            break
+                if target_row:
+                    break
+
+            if not target_row:
+                return False
+
+            detected_category = detected_category or "Speaker"
+            updated_vals = list(target_row["values"])
+
+            for field, val in updates.items():
+                f_clean = field.strip()
+                # Try exact match first
+                f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+                f_idx = col_map.get(f_key)
+
+                # If not found, try prefixing with detected category
+                if f_idx is None:
+                    cat_field = f"{detected_category} {f_clean}"
+                    f_key_cat = cat_field.lower().replace(" ", "").replace("_", "").replace("/", "")
+                    f_idx = col_map.get(f_key_cat)
+
+                # Handle variations like replay_status -> reply_status
+                if f_idx is None and "replay" in f_key:
+                    f_key_alt = f_key.replace("replay", "reply")
+                    f_idx = col_map.get(f_key_alt) or col_map.get(f"{detected_category.lower()}{f_key_alt}")
+
+                if f_idx is not None and f_idx < len(updated_vals):
+                    updated_vals[f_idx] = val
+
+            res = self.update_verified_data_row(target_row["row_index"], updated_vals)
+            return "error" not in res
+        except Exception as e:
+            logger.error(f"Error updating verified data contact in OneDrive: {e}")
+            return False

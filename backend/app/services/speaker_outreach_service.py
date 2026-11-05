@@ -472,7 +472,7 @@ def build_conversation_transcript_ms(messages: List[Dict[str, Any]], my_email: s
 # ==============================================================================
 # Microsoft Teams Notification Dispatcher
 # ==============================================================================
-def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str, intent: str, sentiment: str, reply_text: str):
+def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str, intent: str, sentiment: str, reply_text: str, contact_type: str = "Weekly Speaker"):
     """Sends an inbound Teams card when EMAIL_TEAMS_CARD_ENABLED is true."""
     enabled = getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True)
     if not enabled:
@@ -497,7 +497,7 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": f"📬 Weekly Speaker Email Reply: {intent.title()}",
+                        "text": f"📬 {contact_type} Email Reply: {intent.title()}",
                         "weight": "Bolder",
                         "size": "Large",
                         "color": badge_color
@@ -517,7 +517,7 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
                     {
                         "type": "FactSet",
                         "facts": [
-                            {"title": "Speaker:", "value": speaker_name or "-"},
+                            {"title": f"{contact_type}:", "value": speaker_name or "-"},
                             {"title": "Email:", "value": email or "-"},
                             {"title": "Conference:", "value": conf_name or "-"},
                             {"title": "Sentiment:", "value": sentiment or "Neutral"},
@@ -739,23 +739,15 @@ class SpeakerOutreachService:
         """Returns live telemetry of the outreach engine, safety status, and database counts."""
         state = load_state()
         sent_today = get_sent_today(state)
-        
-        allowed_status = getattr(settings, "OUTREACH_ALLOWED_EMAIL_STATUS", "verified").lower()
-        if allowed_status in ("all", "*", "any"):
-            verified_speakers = self.db.query(WeeklySpeaker).filter(
-                WeeklySpeaker.professional_email != "",
-                WeeklySpeaker.professional_email.isnot(None),
-                WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-            ).count()
-        else:
-            allowed_list = [s.strip().lower() for s in allowed_status.split(",") if s.strip()]
-            verified_speakers = self.db.query(WeeklySpeaker).filter(
-                WeeklySpeaker.professional_email != "",
-                WeeklySpeaker.professional_email.isnot(None),
-                func.lower(WeeklySpeaker.verification_status).in_(allowed_list),
-                WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-            ).count()
 
+        # Verified Data leads telemetry
+        verified_leads = self._load_verified_data_leads()
+        verified_total = len(verified_leads)
+        verified_pending = sum(1 for l in verified_leads if str(l.get("outreach_status") or "").strip().lower() in ["pending", ""])
+        verified_sent = sum(1 for l in verified_leads if str(l.get("outreach_status") or "").strip().lower() in ["sent", "sending"])
+        verified_replied = sum(1 for l in verified_leads if str(l.get("outreach_status") or "").strip().lower() == "replied")
+
+        # Historical Weekly Speakers metrics
         sent_speakers = self.db.query(WeeklySpeaker).filter(
             WeeklySpeaker.outreach_status == "sent"
         ).count()
@@ -765,6 +757,7 @@ class SpeakerOutreachService:
         ).count()
 
         return {
+            "outreach_source": "Verified Data sheet (tbl_verified_data)",
             "mailbox": getattr(settings, "OUTREACH_MS_MAILBOX", "akash@adople.ai"),
             "campaign_active": getattr(settings, "OUTREACH_ACTIVE", False),
             "dry_run": getattr(settings, "OUTREACH_DRY_RUN", True),
@@ -773,23 +766,209 @@ class SpeakerOutreachService:
             "scheduled_send_time": getattr(settings, "OUTREACH_SEND_TIME", "19:00"),
             "timezone": getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata"),
             "reply_watch_interval_minutes": getattr(settings, "OUTREACH_WATCH_INTERVAL_MINUTES", 1),
-            "verified_speakers_eligible": verified_speakers,
-            "emails_sent_count": sent_speakers,
-            "replies_captured_count": replied_speakers,
+            "verified_contacts_total": verified_total,
+            "verified_contacts_pending": verified_pending,
+            "verified_contacts_sent": verified_sent,
+            "verified_contacts_replied": verified_replied,
             "emails_sent_today": sent_today,
             "daily_cap": getattr(settings, "OUTREACH_DAILY_CAP", 0),
-            "active_monitored_threads": len(state.get("threads", {}))
+            "active_monitored_threads": len(state.get("threads", {})),
+            "historical_weekly_speakers_sent": sent_speakers,
+            "historical_weekly_speakers_replied": replied_speakers
         }
+
+    def _load_verified_data_leads(self) -> List[Dict[str, Any]]:
+        """
+        Loads all verified contacts exclusively from the 'Verified Data' sheet / table.
+        Supports both the 37-column company-grouped layout (Speakers, Attendees, Exhibitors)
+        and fallback 17-column layout.
+        Primary source: OneDrive 'tbl_verified_data'.
+        Fallback: Local Excel 'Verified Data' sheet.
+        """
+        leads: List[Dict[str, Any]] = []
+
+        def parse_matrix(col_map: Dict[str, int], raw_rows: List[Any], is_onedrive: bool = False) -> List[Dict[str, Any]]:
+            parsed = []
+            is_grouped_37 = any(k in col_map for k in ["speakerprofessionalemail", "attendeeprofessionalemail", "exhibitorprofessionalemail"])
+
+            for idx, r in enumerate(raw_rows):
+                vals = r.get("values", [[]])[0] if is_onedrive else list(r)
+                row_idx = r.get("row_index", idx) if is_onedrive else idx
+
+                if is_grouped_37:
+                    comp = str(vals[col_map.get("companyname", 0)] or "").strip() if len(vals) > col_map.get("companyname", 0) else ""
+                    dom = str(vals[col_map.get("companydomain", 1)] or "").strip() if len(vals) > col_map.get("companydomain", 1) else ""
+                    conf = str(vals[col_map.get("conferencename", 2)] or "").strip() if len(vals) > col_map.get("conferencename", 2) else ""
+                    cid = str(vals[col_map.get("conferenceid", 3)] or "").strip() if len(vals) > col_map.get("conferenceid", 3) else ""
+
+                    categories = [
+                        ("Speaker", "speakername", "speakerjobtitle", "speakerlinkedin", "speakerprofessionalemail", "speakeremailstatus", "speakeroutreachstatus", "speakerreplystatus", "speakerreceivedreply", "speakersentiment", "speakersentmessage", "speakerthreadid"),
+                        ("Attendee", "attendeename", "attendeejobtitle", "attendeelinkedin", "attendeeprofessionalemail", "attendeeemailstatus", "attendeeoutreachstatus", "attendeereplystatus", "attendeereceivedreply", "attendeesentiment", "attendeesentmessage", "attendeethreadid"),
+                        ("Exhibitor", "exhibitorname", "exhibitorjobtitle", "exhibitorlinkedin", "exhibitorprofessionalemail", "exhibitoremailstatus", "exhibitoroutreachstatus", "exhibitorreplystatus", "exhibitorreceivedreply", "exhibitorsentiment", "exhibitorsentmessage", "exhibitorthreadid")
+                    ]
+
+                    for cat_name, n_k, t_k, li_k, em_k, st_k, ost_k, rep_k, rec_k, sent_k, snd_k, th_k in categories:
+                        em_col = col_map.get(em_k)
+                        if em_col is not None and len(vals) > em_col:
+                            email = str(vals[em_col] or "").strip()
+                            st_col = col_map.get(st_k)
+                            status = str(vals[st_col] or "").strip().lower() if st_col is not None and len(vals) > st_col else ""
+
+                            if email and "@" in email and (status == "verified" or not status):
+                                ost_col = col_map.get(ost_k)
+                                rep_col = col_map.get(rep_k)
+                                rec_col = col_map.get(rec_k)
+                                sent_col = col_map.get(sent_k)
+                                snd_col = col_map.get(snd_k)
+                                th_col = col_map.get(th_k)
+                                n_col = col_map.get(n_k)
+                                t_col = col_map.get(t_k)
+                                li_col = col_map.get(li_k)
+
+                                parsed.append({
+                                    "row_index": row_idx,
+                                    "category": cat_name,
+                                    "contact_type": f"Verified {cat_name}",
+                                    "company_name": comp,
+                                    "company_domain": dom,
+                                    "conference_name": conf,
+                                    "conference_id": cid,
+                                    "name": str(vals[n_col] or "").strip() if n_col is not None and len(vals) > n_col else "",
+                                    "job_title": str(vals[t_col] or "").strip() if t_col is not None and len(vals) > t_col else "",
+                                    "personal_linkedin_url": str(vals[li_col] or "").strip() if li_col is not None and len(vals) > li_col else "",
+                                    "professional_email": email,
+                                    "email_status": "Verified",
+                                    "outreach_status": str(vals[ost_col] or "").strip() if ost_col is not None and len(vals) > ost_col else "Pending",
+                                    "reply_status": str(vals[rep_col] or "").strip() if rep_col is not None and len(vals) > rep_col else "",
+                                    "received_reply": str(vals[rec_col] or "").strip() if rec_col is not None and len(vals) > rec_col else "",
+                                    "reply_sentiment": str(vals[sent_col] or "").strip() if sent_col is not None and len(vals) > sent_col else "",
+                                    "send_message": str(vals[snd_col] or "").strip() if snd_col is not None and len(vals) > snd_col else "",
+                                    "thread_id": str(vals[th_col] or "").strip() if th_col is not None and len(vals) > th_col else "",
+                                    "raw_values": vals
+                                })
+                else:
+                    # Legacy 17-column format
+                    em_idx = col_map.get("professionalemail")
+                    if em_idx is not None and len(vals) > em_idx:
+                        email = str(vals[em_idx] or "").strip()
+                        if email and "@" in email:
+                            c_type_idx = col_map.get("contacttype", 0)
+                            conf_idx = col_map.get("conferencename", 1)
+                            name_idx = col_map.get("name", 2)
+                            title_idx = col_map.get("jobtitledesignation", 3)
+                            comp_idx = col_map.get("companyname", 4)
+                            estat_idx = col_map.get("emailstatus", 6)
+                            ost_idx = col_map.get("outreachstatus", 10)
+                            rep_idx = col_map.get("replaystatus", 11)
+                            sent_idx = col_map.get("replaysentiment", 12)
+                            rec_idx = col_map.get("receivedreplay", 13)
+                            snd_idx = col_map.get("sendmessage", 14)
+                            th_idx = col_map.get("threadid", 15)
+
+                            parsed.append({
+                                "row_index": row_idx,
+                                "category": "Speaker",
+                                "contact_type": str(vals[c_type_idx] or "").strip() if len(vals) > c_type_idx else "Speaker",
+                                "company_name": str(vals[comp_idx] or "").strip() if len(vals) > comp_idx else "",
+                                "company_domain": "",
+                                "conference_name": str(vals[conf_idx] or "").strip() if len(vals) > conf_idx else "",
+                                "conference_id": "",
+                                "name": str(vals[name_idx] or "").strip() if len(vals) > name_idx else "",
+                                "job_title": str(vals[title_idx] or "").strip() if len(vals) > title_idx else "",
+                                "professional_email": email,
+                                "email_status": str(vals[estat_idx] or "").strip() if len(vals) > estat_idx else "Verified",
+                                "outreach_status": str(vals[ost_idx] or "").strip() if len(vals) > ost_idx else "Pending",
+                                "reply_status": str(vals[rep_idx] or "").strip() if len(vals) > rep_idx else "",
+                                "received_reply": str(vals[rec_idx] or "").strip() if len(vals) > rec_idx else "",
+                                "reply_sentiment": str(vals[sent_idx] or "").strip() if len(vals) > sent_idx else "",
+                                "send_message": str(vals[snd_idx] or "").strip() if len(vals) > snd_idx else "",
+                                "thread_id": str(vals[th_idx] or "").strip() if len(vals) > th_idx else "",
+                                "raw_values": vals
+                            })
+
+            return parsed
+
+        # Primary: OneDrive tbl_verified_data
+        try:
+            col_names, col_map, rows = self.onedrive.get_verified_data_table_info()
+            if rows:
+                leads = parse_matrix(col_map, rows, is_onedrive=True)
+                if leads:
+                    return leads
+        except Exception as e:
+            logger.warning(f"Notice reading OneDrive tbl_verified_data: {e}. Reading Local Excel...")
+
+        # Fallback: Local Excel 'Verified Data' sheet
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(self.local_excel_path, data_only=True)
+            if "Verified Data" in wb.sheetnames:
+                ws = wb["Verified Data"]
+                raw_rows = list(ws.iter_rows(values_only=True))
+                if len(raw_rows) > 1:
+                    headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in raw_rows[0]]
+                    col_map = {name: idx for idx, name in enumerate(headers)}
+                    leads = parse_matrix(col_map, raw_rows[1:], is_onedrive=False)
+        except Exception as e:
+            logger.error(f"Error reading Local Excel Verified Data: {e}")
+
+        return leads
+
+    def _update_verified_data_outreach(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None,
+        category: Optional[str] = None
+    ):
+        """
+        Updates outreach columns for a contact in both OneDrive 'tbl_verified_data' and Local Excel 'Verified Data'.
+        """
+        # 1. Update OneDrive
+        try:
+            self.onedrive.update_verified_data_contact(email=email, updates=updates, thread_id=thread_id, category=category)
+        except Exception as e:
+            logger.warning(f"Error updating OneDrive tbl_verified_data for {email}: {e}")
+
+        # 2. Update Local Excel
+        try:
+            self.excel_mgr.update_verified_data_row_in_excel(email=email, updates=updates, thread_id=thread_id, category=category)
+        except Exception as e:
+            logger.warning(f"Error updating Local Excel Verified Data for {email}: {e}")
+
+    def _sync_db_outreach_status(self, email: str, status: str, thread_id: str = "", full_message: str = ""):
+        """Synchronizes outreach status to underlying DB models if the contact originated there."""
+        try:
+            clean_email = (email or "").strip().lower()
+            spk = self.db.query(WeeklySpeaker).filter(func.lower(WeeklySpeaker.professional_email) == clean_email).first()
+            if spk:
+                spk.outreach_status = status
+                if thread_id:
+                    spk.email_thread_id = thread_id
+                if full_message:
+                    spk.sent_message = full_message
+                spk.email_sent_at = datetime.utcnow()
+                self.db.commit()
+
+            att = self.db.query(WeeklyAttendee).filter(func.lower(WeeklyAttendee.professional_email) == clean_email).first()
+            if att and hasattr(att, "outreach_status"):
+                att.outreach_status = status
+                self.db.commit()
+
+            exh = self.db.query(WeeklyExhibitor).filter(func.lower(WeeklyExhibitor.professional_email) == clean_email).first()
+            if exh and hasattr(exh, "outreach_status"):
+                exh.outreach_status = status
+                self.db.commit()
+        except Exception as e:
+            logger.debug(f"DB entity sync notice for {email}: {e}")
 
     def run_outreach_send_pass(self, force: bool = False, dry_run_override: Optional[bool] = None) -> Dict[str, Any]:
         """
-        Executes the scheduled email outreach pass:
-        - Filters speakers with valid, verified email addresses.
-        - Skips already sent, unverified, or duplicate speakers.
-        - Pre-marks 'sending' before dispatch.
+        Executes outreach email campaign exclusively using records from the Verified Data sheet.
+        - NEVER selects new leads from Weekly Speakers.
+        - Enforces deliverability (email_status == Verified).
         - Dispatches email via Microsoft Graph (akash@adople.ai).
-        - Enforces DRY_RUN safety check (no real emails sent if DRY_RUN=True).
-        - Syncs status to OneDrive Excel and PostgreSQL.
+        - Tracks Send Message, Outreach Status, and thread id against the person row in Verified Data.
         """
         with outreach_lock:
             if dry_run_override is not None:
@@ -799,49 +978,40 @@ class SpeakerOutreachService:
             active = getattr(settings, "OUTREACH_ACTIVE", False)
             if not force and not active and not dry_run:
                 logger.info("Outreach is not active (OUTREACH_ACTIVE=false). Pass skipped.")
-                return {"status": "inactive", "message": "Outreach inactive awaiting template approval."}
+                return {"status": "inactive", "message": "Outreach inactive awaiting configuration/trigger."}
 
-            logger.info(f"🚀 Starting Outreach Send Pass (DRY_RUN={dry_run})...")
+            logger.info(f"🚀 Starting Outreach Send Pass from 'Verified Data' (DRY_RUN={dry_run})...")
             state = load_state()
             sent_today = get_sent_today(state)
             daily_cap = getattr(settings, "OUTREACH_DAILY_CAP", 0)
 
-            # Query eligible speakers ordered by ICP score descending (highest priority first)
-            allowed_status = getattr(settings, "OUTREACH_ALLOWED_EMAIL_STATUS", "verified").lower()
-            if allowed_status in ("all", "*", "any"):
-                speakers = self.db.query(WeeklySpeaker).filter(
-                    WeeklySpeaker.professional_email != "",
-                    WeeklySpeaker.professional_email.isnot(None),
-                    WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-                ).order_by(WeeklySpeaker.icp_score.desc()).all()
-            else:
-                allowed_list = [s.strip().lower() for s in allowed_status.split(",") if s.strip()]
-                speakers = self.db.query(WeeklySpeaker).filter(
-                    WeeklySpeaker.professional_email != "",
-                    WeeklySpeaker.professional_email.isnot(None),
-                    func.lower(WeeklySpeaker.verification_status).in_(allowed_list),
-                    WeeklySpeaker.speaker_id != "SPK-TEST-MANUAL-001"
-                ).order_by(WeeklySpeaker.icp_score.desc()).all()
+            # 1. Load leads exclusively from Verified Data sheet
+            leads = self._load_verified_data_leads()
+            logger.info(f"Loaded {len(leads)} contacts from Verified Data sheet.")
 
             sent_count = 0
             skipped_count = 0
             preview_list = []
 
-            for spk in speakers:
-                email = (spk.professional_email or "").strip().lower()
+            for lead in leads:
+                email = (lead.get("professional_email") or "").strip().lower()
                 if "@" not in email or "." not in email:
                     skipped_count += 1
                     continue
 
-                # Auto-suppress disqualified non-commercial / academic leads
-                if (spk.icp_score or 0.0) < 40.0:
-                    logger.info(f"Skipping lead {spk.speaker_name} ({spk.company_name}): ICP Score {spk.icp_score} < 40 (Disqualified/Academic).")
+                em_status = (lead.get("email_status") or "").strip().lower()
+                if em_status != "verified":
                     skipped_count += 1
                     continue
 
-                # Check if already sent or processing
-                current_st = (spk.outreach_status or "").lower()
-                if current_st in ("sent", "sending", "do_not_contact", "failed"):
+                outreach_st = (lead.get("outreach_status") or "").strip().lower()
+                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed"):
+                    skipped_count += 1
+                    continue
+
+                # Check state sent_log to avoid duplicates
+                already_sent = any(s.get("email") == email and s.get("status") == "sent" for s in state.get("sent_log", []))
+                if already_sent:
                     skipped_count += 1
                     continue
 
@@ -849,78 +1019,95 @@ class SpeakerOutreachService:
                     logger.info(f"Daily cap ({daily_cap}) reached.")
                     break
 
+                name = lead.get("name") or "there"
+                job_title = lead.get("job_title") or "Professional"
+                company = lead.get("company_name") or "your organization"
+                conf_name = lead.get("conference_name") or "the upcoming conference"
+                c_type = lead.get("contact_type") or "Contact"
+
                 subject, body = build_email_content(
-                    speaker_name=spk.speaker_name,
-                    job_title=spk.job_title,
-                    company=spk.company_name,
-                    conf_name=spk.conference_name,
-                    pitch_hook=spk.pitch_hook or ""
+                    speaker_name=name,
+                    job_title=job_title,
+                    company=company,
+                    conf_name=conf_name
                 )
                 full_message = f"Subject: {subject}\n\n{body}"
 
                 if dry_run:
-                    # Safe Dry-Run preview only
                     preview_list.append({
-                        "speaker": spk.speaker_name,
+                        "contact_type": c_type,
+                        "name": name,
                         "email": email,
-                        "conference": spk.conference_name,
+                        "company": company,
+                        "conference": conf_name,
                         "subject": subject,
                         "body_preview": body[:120]
                     })
                     sent_count += 1
                     sent_today += 1
-                    logger.info(f"[DRY RUN PREVIEW] Would send to: {spk.speaker_name} <{email}>")
+                    logger.info(f"[DRY RUN PREVIEW] Would send to [{c_type}]: {name} <{email}> ({company})")
                     continue
 
                 # Live Sending Logic
                 try:
-                    # Pre-send lock in DB
-                    spk.outreach_status = "sending"
-                    spk.sent_message = full_message
-                    self.db.commit()
+                    cat_lead = lead.get("category", "Speaker")
+                    logger.info(f"📤 Dispatching outreach email to [{c_type}] {name} <{email}>...")
+                    # Update status to sending in Verified Data
+                    self._update_verified_data_outreach(email=email, updates={"Outreach Status": "sending", "send message": full_message}, category=cat_lead)
 
                     msg_id, conversation_id = self.graph.send_mail(email, subject, body)
 
-                    spk.outreach_status = "sent"
-                    spk.email_thread_id = conversation_id
-                    spk.email_sent_at = datetime.utcnow()
-                    self.db.commit()
+                    # Update status to sent, record thread id and message in Verified Data
+                    sent_updates = {
+                        "Outreach Status": "sent",
+                        "send message": full_message,
+                        "thread id": conversation_id
+                    }
+                    self._update_verified_data_outreach(email=email, updates=sent_updates, thread_id=conversation_id, category=cat_lead)
 
                     # Record in state
-                    dedupe_key = f"{email}|{spk.conference_id.lower()}"
+                    dedupe_key = f"{email}|{conf_name.lower()}"
                     fresh_state = load_state()
                     fresh_state.setdefault("sent_log", []).append({
                         "email": email,
-                        "conference_id": spk.conference_id,
+                        "conference_name": conf_name,
+                        "name": name,
+                        "contact_type": c_type,
+                        "category": cat_lead,
                         "sent_at": now_iso(),
                         "status": "sent"
                     })
                     fresh_state.setdefault("threads", {})[dedupe_key] = {
                         "thread_id": conversation_id,
                         "message_id": msg_id,
-                        "speaker_id": spk.speaker_id,
+                        "name": name,
+                        "email": email,
+                        "company": company,
+                        "conference": conf_name,
+                        "contact_type": c_type,
+                        "category": cat_lead,
+                        "source": "verified_data",
                         "sent_at": now_iso()
                     }
                     save_state(fresh_state)
 
-                    # Sync to OneDrive Excel in-place
-                    self._update_onedrive_speaker_row(spk)
+                    # Sync DB entity if present
+                    self._sync_db_outreach_status(email=email, status="sent", thread_id=conversation_id, full_message=full_message)
 
                     sent_count += 1
                     sent_today += 1
-                    logger.info(f"✅ Dispatched email to: {spk.speaker_name} <{email}>")
+                    logger.info(f"✅ Dispatched email to [{c_type}]: {name} <{email}>")
 
-                    # Jitter delay
                     delay = random.randint(getattr(settings, "OUTREACH_DELAY_MIN", 60), getattr(settings, "OUTREACH_DELAY_MAX", 120))
                     time.sleep(delay)
 
                 except Exception as e:
                     logger.error(f"❌ Failed to send to {email}: {e}")
-                    spk.outreach_status = "failed"
-                    self.db.commit()
+                    self._update_verified_data_outreach(email=email, updates={"Outreach Status": "failed"}, category=cat_lead)
 
             return {
                 "status": "completed",
+                "outreach_source": "Verified Data sheet",
                 "dry_run": dry_run,
                 "sent_count": sent_count,
                 "skipped_count": skipped_count,
@@ -931,11 +1118,14 @@ class SpeakerOutreachService:
         """
         Polls mailbox akash@adople.ai for new incoming replies:
         - Runs 24/7 every 60s without interrupting existing workflows.
-        - Identifies whether incoming messages belong to our reached-out speakers.
-        - Captures full back-and-forth transcript into 'Received Reply'.
+        - Identifies whether incoming messages belong to:
+          1. Previously contacted Weekly Speakers (routes to Weekly Speakers & Speakers Replies).
+          2. Contacts reached out via the Verified Data sheet (routes to Verified Data).
+        - Captures full back-and-forth transcript into 'Received Reply' / 'received replay'.
         - Performs Gemini sentiment & intent analysis.
-        - Updates OneDrive Excel, Local Excel, and PostgreSQL database.
-        - Sends Microsoft Teams Adaptive Card if EMAIL_TEAMS_CARD_ENABLED=true.
+        - Sends exactly ONE Microsoft Teams Adaptive Card per new reply.
+        - Prevents duplicate Teams cards using message ID tracking.
+        - Captures multiple replies from the same person in chronological order.
         """
         state = load_state()
         threads = state.get("threads", {})
@@ -943,13 +1133,39 @@ class SpeakerOutreachService:
         new_replies_count = 0
         bounces_count = 0
 
-        # Query all speakers who were emailed (supports initial and all subsequent replies)
+        # 1. Previously contacted Weekly Speakers
         sent_speakers = self.db.query(WeeklySpeaker).filter(
             (WeeklySpeaker.outreach_status.in_(["sent", "replied"])) | (WeeklySpeaker.email_thread_id.isnot(None))
         ).all()
-
         speaker_by_thread = {s.email_thread_id: s for s in sent_speakers if s.email_thread_id}
         speaker_by_email = {(s.professional_email or "").strip().lower(): s for s in sent_speakers if s.professional_email}
+
+        # 2. Verified Data contacts
+        verified_leads = self._load_verified_data_leads()
+        verified_by_thread = {l["thread_id"]: l for l in verified_leads if l.get("thread_id")}
+        verified_by_email = {l["professional_email"].lower(): l for l in verified_leads if l.get("professional_email")}
+
+        for k, th in threads.items():
+            t_id = th.get("thread_id")
+            em = th.get("email") or k.split("|")[0]
+            if t_id and t_id not in verified_by_thread:
+                verified_by_thread[t_id] = {
+                    "professional_email": em,
+                    "name": th.get("name", ""),
+                    "company_name": th.get("company", ""),
+                    "conference_name": th.get("conference", ""),
+                    "contact_type": th.get("contact_type", "Contact"),
+                    "thread_id": t_id
+                }
+            if em and em.lower() not in verified_by_email:
+                verified_by_email[em.lower()] = {
+                    "professional_email": em,
+                    "name": th.get("name", ""),
+                    "company_name": th.get("company", ""),
+                    "conference_name": th.get("conference", ""),
+                    "contact_type": th.get("contact_type", "Contact"),
+                    "thread_id": t_id or ""
+                }
 
         # Query recent inbox messages
         try:
@@ -966,8 +1182,13 @@ class SpeakerOutreachService:
             conv_id = msg.get("conversationId", "")
             from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
 
+            # Identify target: check Weekly Speakers first, then Verified Data
             target_speaker = speaker_by_thread.get(conv_id) or speaker_by_email.get(from_addr)
+            verified_target = None
             if not target_speaker:
+                verified_target = verified_by_thread.get(conv_id) or verified_by_email.get(from_addr)
+
+            if not target_speaker and not verified_target:
                 # Unrelated email - ignore safely
                 continue
 
@@ -975,16 +1196,20 @@ class SpeakerOutreachService:
             processed_ids.add(msg_id)
             mark_reply_processed(msg_id)
 
-            # This is a verified reply from a target speaker
-            logger.info(f"📬 Incoming reply detected from {target_speaker.speaker_name} <{from_addr}>!")
+            contact_name = target_speaker.speaker_name if target_speaker else (verified_target.get("name") or "Contact")
+            company_name = target_speaker.company_name if target_speaker else (verified_target.get("company_name") or "")
+            conf_name = target_speaker.conference_name if target_speaker else (verified_target.get("conference_name") or "")
+            contact_type = "Weekly Speaker" if target_speaker else (verified_target.get("contact_type") or "Verified Contact")
+
+            logger.info(f"📬 Incoming reply detected from [{contact_type}] {contact_name} <{from_addr}>!")
             body_text = extract_body_text_ms(msg)
 
             # Check bounce
             is_bounce = any(b in from_addr for b in ["mailer-daemon", "postmaster"]) or "delivery status" in msg.get("subject", "").lower()
 
-            # Fetch full conversation thread to build transcript
+            # Fetch full conversation thread to build chronological transcript
             thread_msgs = self.graph.get_conversation_messages(conv_id) if conv_id else [msg]
-            transcript = build_conversation_transcript_ms(thread_msgs, self.graph.mailbox, target_speaker.speaker_name)
+            transcript = build_conversation_transcript_ms(thread_msgs, self.graph.mailbox, contact_name)
 
             sentiment = "Negative" if is_bounce else "Neutral"
             intent = "BOUNCE" if is_bounce else "OTHER"
@@ -994,114 +1219,143 @@ class SpeakerOutreachService:
             else:
                 analysis = self.gemini.analyze_reply(
                     body_text,
-                    name=target_speaker.speaker_name,
-                    company=target_speaker.company_name,
-                    conf=target_speaker.conference_name
+                    name=contact_name,
+                    company=company_name,
+                    conf=conf_name
                 )
                 intent = analysis.get("intent", "OTHER")
                 sentiment = analysis.get("sentiment", "Neutral")
                 new_replies_count += 1
 
-                # Teams notification
+                # Send exactly ONE Teams notification card per new reply
                 send_teams_reply_notification(
-                    speaker_name=target_speaker.speaker_name,
+                    speaker_name=contact_name,
                     email=from_addr,
-                    conf_name=target_speaker.conference_name,
+                    conf_name=conf_name,
                     intent=intent,
                     sentiment=sentiment,
-                    reply_text=body_text
+                    reply_text=body_text,
+                    contact_type=contact_type
                 )
 
-            # 1. Existing Weekly Speakers workflow: continues working exactly as before
-            target_speaker.reply_status = "bounced" if is_bounce else "replied"
-            target_speaker.reply_sentiment = sentiment
-            target_speaker.received_reply = transcript
-            self.db.commit()
-            self._update_onedrive_speaker_row(target_speaker)
+            received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
 
-            # 2. In addition, store a copy of the speaker's complete row only when they reply in 'Speakers Replies'
-            if getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
-                received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
-                last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
+            if target_speaker:
+                # -----------------------------------------------------------------
+                # 1. Existing Weekly Speakers workflow: preserved and untouched
+                # -----------------------------------------------------------------
+                target_speaker.reply_status = "bounced" if is_bounce else "replied"
+                target_speaker.reply_sentiment = sentiment
+                target_speaker.received_reply = transcript
+                self.db.commit()
+                self._update_onedrive_speaker_row(target_speaker)
 
-                reply_row = [
-                    target_speaker.speaker_id or "",             # 1. spekers_id (Reference to original speaker)
-                    target_speaker.conference_id or "",          # 2. Conference_ID
-                    target_speaker.conference_name or "",        # 3. Conference_Name
-                    target_speaker.speaker_name or "",           # 4. Speaker_Name
-                    target_speaker.job_title or "",              # 5. Job_Title
-                    target_speaker.company_name or "",           # 6. Company_Name
-                    target_speaker.personal_linkedin_url or "",  # 7. Personal_LinkedIn_URL
-                    target_speaker.linkedin_status or "",        # 8. LinkedIn_Status
-                    target_speaker.professional_email or from_addr, # 9. Professional_Email
-                    target_speaker.email_source_url or "",       # 10. Email_Source_URL
-                    target_speaker.speaker_source_url or "",     # 11. Speaker_Source_URL
-                    target_speaker.verification_status or "",    # 12. Verification_Status
-                    last_checked_str,                            # 13. Last_Checked_At
-                    target_speaker.weekly_run_id or "",          # 14. Weekly_Run_ID
-                    target_speaker.outreach_status or "sent",    # 15. outreach status 
-                    "bounced" if is_bounce else "replied",       # 16. reply status
-                    sentiment,                                   # 17. reply sentiment 
-                    body_text if not is_bounce else "BOUNCE",    # 18. received reply
-                    target_speaker.sent_message or "",           # 19. send message
-                    conv_id or "",                               # 20. thread id (Outlook Conversation ID)
-                    received_at_str,                             # 21. Reply_Received_At
-                    msg_id                                       # 22. Message_ID
-                ]
+                if getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
+                    last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
+                    reply_row = [
+                        target_speaker.speaker_id or "",
+                        target_speaker.conference_id or "",
+                        target_speaker.conference_name or "",
+                        target_speaker.speaker_name or "",
+                        target_speaker.job_title or "",
+                        target_speaker.company_name or "",
+                        target_speaker.personal_linkedin_url or "",
+                        target_speaker.linkedin_status or "",
+                        target_speaker.professional_email or from_addr,
+                        target_speaker.email_source_url or "",
+                        target_speaker.speaker_source_url or "",
+                        target_speaker.verification_status or "",
+                        last_checked_str,
+                        target_speaker.weekly_run_id or "",
+                        target_speaker.outreach_status or "sent",
+                        "bounced" if is_bounce else "replied",
+                        sentiment,
+                        body_text if not is_bounce else "BOUNCE",
+                        target_speaker.sent_message or "",
+                        conv_id or "",
+                        received_at_str,
+                        msg_id
+                    ]
 
-                # 1. Append to OneDrive 'tbl_speakers_replies'
-                try:
-                    self.onedrive.append_speaker_reply(reply_row)
-                except Exception as e:
-                    logger.error(f"Error appending reply to OneDrive tbl_speakers_replies: {e}", exc_info=True)
-
-                # 2. Append to Local Excel 'Speakers Replies'
-                try:
-                    self.excel_mgr.append_speaker_reply_to_excel(reply_row)
-                except Exception as e:
-                    logger.error(f"Error appending reply to Local Excel 'Speakers Replies': {e}", exc_info=True)
-
-                # 3. Store in PostgreSQL speaker_replies table
-                try:
-                    from ..models import SpeakerReply
-                    parsed_dt = None
                     try:
-                        parsed_dt = datetime.fromisoformat(received_at_str.replace("Z", "+00:00"))
-                    except Exception:
-                        parsed_dt = datetime.utcnow()
+                        self.onedrive.append_speaker_reply(reply_row)
+                    except Exception as e:
+                        logger.error(f"Error appending reply to OneDrive tbl_speakers_replies: {e}", exc_info=True)
 
-                    reply_rec = SpeakerReply(
-                        speaker_id=target_speaker.speaker_id or "",
-                        conference_id=target_speaker.conference_id or "",
-                        conference_name=target_speaker.conference_name or "",
-                        speaker_name=target_speaker.speaker_name or "",
-                        job_title=target_speaker.job_title or "",
-                        company_name=target_speaker.company_name or "",
-                        personal_linkedin_url=target_speaker.personal_linkedin_url or "",
-                        linkedin_status=target_speaker.linkedin_status or "",
-                        professional_email=target_speaker.professional_email or from_addr,
-                        email_source_url=target_speaker.email_source_url or "",
-                        speaker_source_url=target_speaker.speaker_source_url or "",
-                        verification_status=target_speaker.verification_status or "",
-                        last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
-                        weekly_run_id=target_speaker.weekly_run_id or "",
-                        outreach_status=target_speaker.outreach_status or "sent",
-                        reply_status="bounced" if is_bounce else "replied",
-                        reply_sentiment=sentiment,
-                        received_reply=body_text if not is_bounce else "BOUNCE",
-                        sent_message=target_speaker.sent_message or "",
-                        thread_id=conv_id or "",
-                        reply_received_at=parsed_dt,
-                        message_id=msg_id,
-                        original_speaker_id=target_speaker.speaker_id or ""
-                    )
-                    self.db.add(reply_rec)
-                    self.db.commit()
-                except Exception as e:
-                    self.db.rollback()
-                    logger.warning(f"Notice: PostgreSQL speaker_replies record commit: {e}")
+                    try:
+                        self.excel_mgr.append_speaker_reply_to_excel(reply_row)
+                    except Exception as e:
+                        logger.error(f"Error appending reply to Local Excel 'Speakers Replies': {e}", exc_info=True)
 
-                logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
+                    try:
+                        from ..models import SpeakerReply
+                        parsed_dt = None
+                        try:
+                            parsed_dt = datetime.fromisoformat(received_at_str.replace("Z", "+00:00"))
+                        except Exception:
+                            parsed_dt = datetime.utcnow()
+
+                        reply_rec = SpeakerReply(
+                            speaker_id=target_speaker.speaker_id or "",
+                            conference_id=target_speaker.conference_id or "",
+                            conference_name=target_speaker.conference_name or "",
+                            speaker_name=target_speaker.speaker_name or "",
+                            job_title=target_speaker.job_title or "",
+                            company_name=target_speaker.company_name or "",
+                            personal_linkedin_url=target_speaker.personal_linkedin_url or "",
+                            linkedin_status=target_speaker.linkedin_status or "",
+                            professional_email=target_speaker.professional_email or from_addr,
+                            email_source_url=target_speaker.email_source_url or "",
+                            speaker_source_url=target_speaker.speaker_source_url or "",
+                            verification_status=target_speaker.verification_status or "",
+                            last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
+                            weekly_run_id=target_speaker.weekly_run_id or "",
+                            outreach_status=target_speaker.outreach_status or "sent",
+                            reply_status="bounced" if is_bounce else "replied",
+                            reply_sentiment=sentiment,
+                            received_reply=body_text if not is_bounce else "BOUNCE",
+                            sent_message=target_speaker.sent_message or "",
+                            thread_id=conv_id or "",
+                            reply_received_at=parsed_dt,
+                            message_id=msg_id,
+                            original_speaker_id=target_speaker.speaker_id or ""
+                        )
+                        self.db.add(reply_rec)
+                        self.db.commit()
+                    except Exception as e:
+                        self.db.rollback()
+                        logger.warning(f"Notice: PostgreSQL speaker_replies record commit: {e}")
+
+                    logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
+
+            elif verified_target:
+                # -----------------------------------------------------------------
+                # 2. Verified Data workflow: updates Verified Data sheet & table
+                # -----------------------------------------------------------------
+                rep_status = "bounced" if is_bounce else "replied"
+                cat_target = verified_target.get("category", "Speaker")
+                verified_updates = {
+                    "Outreach Status": rep_status,
+                    "Reply Status": rep_status,
+                    "Sentiment": sentiment,
+                    "Received Reply": transcript
+                }
+                self._update_verified_data_outreach(email=from_addr, updates=verified_updates, thread_id=conv_id, category=cat_target)
+                self._sync_db_outreach_status(email=from_addr, status=rep_status, thread_id=conv_id)
+
+                fresh_state = load_state()
+                fresh_state.setdefault("replies", []).append({
+                    "email": from_addr,
+                    "name": contact_name,
+                    "conference_name": conf_name,
+                    "source": "verified_data",
+                    "sentiment": sentiment,
+                    "intent": intent,
+                    "received_at": received_at_str,
+                    "message_id": msg_id
+                })
+                save_state(fresh_state)
+                logger.info(f"✅ Stored reply for Verified Data contact '{contact_name}' into 'Verified Data' sheet & OneDrive table.")
 
             # Ensure persisted in state & deduplication set
             mark_reply_processed(msg_id)

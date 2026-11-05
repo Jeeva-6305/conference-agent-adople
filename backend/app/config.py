@@ -139,6 +139,9 @@ class Settings:
     OUTREACH_STATE_FILE: str = os.getenv("STATE_FILE", "outreach_state.json")
     OUTREACH_ACTIVE: bool = os.getenv("OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
     OUTREACH_TIMEZONE: str = os.getenv("OUTREACH_TIMEZONE", "Asia/Kolkata")
+    OUTREACH_SOURCE: str = os.getenv("OUTREACH_SOURCE", "verified_data")
+    VERIFIED_DATA_EXCEL_TABLE_NAME: str = os.getenv("VERIFIED_DATA_EXCEL_TABLE_NAME", "tbl_verified_data")
+    VERIFIED_DATA_EXCEL_WORKSHEET_NAME: str = os.getenv("VERIFIED_DATA_EXCEL_WORKSHEET_NAME", "Verified Data")
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
 
     # Speaker Replies Configuration (Dedicated Sheet & Table)
