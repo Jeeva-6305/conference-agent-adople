@@ -870,3 +870,162 @@ class ExcelManager:
         for s in xls.sheet_names:
             result[s] = pd.read_excel(xls, sheet_name=s).fillna("").to_dict(orient="records")
         return result
+
+    def sync_qualified_leads_to_excel(self, qualified_rows: List[List[Any]], headers: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Synchronizes qualified leads (score > 50) with 6 outreach tracking columns to 'Qualified Leads' worksheet in Local Excel.
+        Preserves existing outreach tracking states across syncs.
+        """
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+        sheet_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
+
+        from openpyxl.styles import PatternFill, Font, Alignment
+
+        if headers is None:
+            headers = [
+                "Rank", "Overall_Score", "Qualification_Status", "Company_Name",
+                "Company_Domain", "Conference_Name", "Conference_ID", "Contact_Type",
+                "Contact_Name", "Job_Title", "Professional_Email", "Email_Status",
+                "Personal_LinkedIn_URL", "Primary_Industry", "Headcount_Tier",
+                "Evaluated_At", "Outreach Status", "Reply Status", "Received Reply",
+                "Reply Sentiment", "Thread ID", "Send Message"
+            ]
+
+        # Read existing outreach history if sheet exists to avoid overwriting sent/replied statuses
+        existing_history: Dict[str, Dict[str, Any]] = {}
+        if sheet_name in wb.sheetnames:
+            ws_exist = wb[sheet_name]
+            h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "") for cell in ws_exist[1]]
+            h_map = {name: idx for idx, name in enumerate(h_row)}
+            em_idx = h_map.get("professionalemail") or h_map.get("email")
+            ost_idx = h_map.get("outreachstatus")
+            rep_idx = h_map.get("replystatus") or h_map.get("replaystatus")
+            rec_idx = h_map.get("receivedreply") or h_map.get("receivedreplay")
+            sent_idx = h_map.get("replysentiment") or h_map.get("sentiment")
+            th_idx = h_map.get("threadid")
+            snd_idx = h_map.get("sendmessage")
+
+            if em_idx is not None:
+                for r in range(2, ws_exist.max_row + 1):
+                    em_val = str(ws_exist.cell(row=r, column=em_idx + 1).value or "").strip().lower()
+                    if em_val and "@" in em_val:
+                        existing_history[em_val] = {
+                            "outreach_status": ws_exist.cell(row=r, column=ost_idx + 1).value if ost_idx is not None else "",
+                            "reply_status": ws_exist.cell(row=r, column=rep_idx + 1).value if rep_idx is not None else "",
+                            "received_reply": ws_exist.cell(row=r, column=rec_idx + 1).value if rec_idx is not None else "",
+                            "reply_sentiment": ws_exist.cell(row=r, column=sent_idx + 1).value if sent_idx is not None else "",
+                            "thread_id": ws_exist.cell(row=r, column=th_idx + 1).value if th_idx is not None else "",
+                            "send_message": ws_exist.cell(row=r, column=snd_idx + 1).value if snd_idx is not None else ""
+                        }
+            del wb[sheet_name]
+
+        ws = wb.create_sheet(title=sheet_name)
+        # Write Header
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = Font(name="Calibri", size=11, bold=True, color="1B365D")
+            cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Map header indices
+        cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
+        em_col_idx = cur_h_map.get("professionalemail", 10)
+        ost_col_idx = cur_h_map.get("outreachstatus", 16)
+        rep_col_idx = cur_h_map.get("replystatus", 17)
+        rec_col_idx = cur_h_map.get("receivedreply", 18)
+        sent_col_idx = cur_h_map.get("replysentiment", 19)
+        th_col_idx = cur_h_map.get("threadid", 20)
+        snd_col_idx = cur_h_map.get("sendmessage", 21)
+
+        for row_idx, row_data in enumerate(qualified_rows, 2):
+            padded = list(row_data)
+            while len(padded) < len(headers):
+                padded.append("")
+
+            # Restore existing outreach data if previously tracked
+            email_val = str(padded[em_col_idx] or "").strip().lower()
+            if email_val in existing_history:
+                hist = existing_history[email_val]
+                if hist.get("outreach_status"):
+                    padded[ost_col_idx] = hist["outreach_status"]
+                if hist.get("reply_status"):
+                    padded[rep_col_idx] = hist["reply_status"]
+                if hist.get("received_reply"):
+                    padded[rec_col_idx] = hist["received_reply"]
+                if hist.get("reply_sentiment"):
+                    padded[sent_col_idx] = hist["reply_sentiment"]
+                if hist.get("thread_id"):
+                    padded[th_col_idx] = hist["thread_id"]
+                if hist.get("send_message"):
+                    padded[snd_col_idx] = hist["send_message"]
+
+            qual_val = str(padded[2] or "").upper()
+            score_val = float(padded[1] or 0)
+            fill_color = "D9EAD3" if (qual_val == "HIGH_MATCH" or score_val >= 75.0) else "FFF2CC"
+            row_fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+            for col_idx, val in enumerate(padded[:len(headers)], 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.fill = row_fill
+                cell.font = Font(name="Calibri", size=10)
+
+        self._safe_save(wb)
+        logger.info(f"✅ Local Excel: Successfully synced {len(qualified_rows)} leads to '{sheet_name}'.")
+        return {"status": "success", "count": len(qualified_rows)}
+
+    def update_qualified_leads_row_in_excel(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None
+    ) -> bool:
+        """
+        Updates an existing contact row in Local Excel 'Qualified Leads' worksheet.
+        """
+        self._ensure_file_exists()
+        wb = load_workbook(self.file_path)
+        sheet_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
+        if sheet_name not in wb.sheetnames:
+            return False
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows or len(rows) < 2:
+            return False
+
+        headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in rows[0]]
+        header_map = {name: idx + 1 for idx, name in enumerate(headers)}
+
+        clean_email = (email or "").strip().lower()
+        clean_thread = (thread_id or "").strip()
+
+        target_row_idx = None
+        em_col = header_map.get("professionalemail") or header_map.get("email")
+        th_col = header_map.get("threadid")
+
+        for r_idx in range(2, ws.max_row + 1):
+            if em_col:
+                c_em = str(ws.cell(row=r_idx, column=em_col).value or "").strip().lower()
+                if clean_email and c_em == clean_email:
+                    target_row_idx = r_idx
+                    break
+            if th_col:
+                c_th = str(ws.cell(row=r_idx, column=th_col).value or "").strip()
+                if clean_thread and c_th == clean_thread:
+                    target_row_idx = r_idx
+                    break
+
+        if not target_row_idx:
+            return False
+
+        for field, val in updates.items():
+            f_clean = field.strip()
+            f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+            col_idx = header_map.get(f_key)
+            if col_idx is None and "replay" in f_key:
+                col_idx = header_map.get(f_key.replace("replay", "reply"))
+            if col_idx:
+                ws.cell(row=target_row_idx, column=col_idx, value=val)
+
+        self._safe_save(wb)
+        return True

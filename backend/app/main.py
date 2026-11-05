@@ -721,6 +721,17 @@ def get_outreach_telemetry(db: Session = Depends(get_db)):
     return svc.get_status()
 
 
+@app.post("/api/outreach/sync-qualified-leads")
+def sync_qualified_leads_endpoint():
+    """
+    Refreshes the 'Qualified Leads' worksheet in both Local Excel and SharePoint/OneDrive.
+    Extracts all leads from latest weekly scoring results with ICP score > 50,
+    deduplicates them, and attaches the 6 outreach tracking columns.
+    """
+    from .services.icp_scoring_service import build_and_sync_qualified_leads
+    return build_and_sync_qualified_leads()
+
+
 @app.post("/api/outreach/preview-send")
 def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
     """
