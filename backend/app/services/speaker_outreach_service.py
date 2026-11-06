@@ -959,6 +959,36 @@ class SpeakerOutreachService:
             "historical_weekly_speakers_replied": replied_speakers
         }
 
+    def get_non_qualified_status(self) -> Dict[str, Any]:
+        """Returns live telemetry of the Non-Qualified Leads outreach engine, safety status, and counts."""
+        state = load_state()
+        sent_today = get_sent_today(state)
+
+        non_qualified_leads = self._load_non_qualified_leads()
+        contacts_total = len(non_qualified_leads)
+        contacts_pending = sum(1 for l in non_qualified_leads if str(l.get("outreach_status") or "").strip().lower() in ["disqualified", "pending", ""])
+        contacts_sent = sum(1 for l in non_qualified_leads if str(l.get("outreach_status") or "").strip().lower() in ["sent", "sending"])
+        contacts_replied = sum(1 for l in non_qualified_leads if str(l.get("outreach_status") or "").strip().lower() == "replied")
+
+        return {
+            "outreach_source": "Non -Qualified Leads sheet (score < 50)",
+            "mailbox": getattr(settings, "OUTREACH_MS_MAILBOX", "akash@adople.ai"),
+            "campaign_active": getattr(settings, "NON_QUALIFIED_OUTREACH_ACTIVE", False),
+            "dry_run": getattr(settings, "NON_QUALIFIED_DRY_RUN", False),
+            "teams_card_notifications": getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
+            "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-3.8-flash"),
+            "scheduled_send_time": getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_TIME", "20:00"),
+            "scheduled_send_day": getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "thu"),
+            "timezone": getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata"),
+            "non_qualified_contacts_total": contacts_total,
+            "non_qualified_contacts_pending": contacts_pending,
+            "non_qualified_contacts_sent": contacts_sent,
+            "non_qualified_contacts_replied": contacts_replied,
+            "emails_sent_today": sent_today,
+            "daily_cap": getattr(settings, "NON_QUALIFIED_OUTREACH_DAILY_CAP", 0),
+            "active_monitored_threads": len(state.get("threads", {}))
+        }
+
     def _load_qualified_leads(self) -> List[Dict[str, Any]]:
         """
         Loads all qualified leads (ICP score > 50) exclusively from 'Qualified Leads' worksheet / table.
@@ -1770,6 +1800,169 @@ class SpeakerOutreachService:
 
                 except Exception as e:
                     logger.error(f"❌ Failed to send to {email}: {e}")
+                    self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "failed"}, category=cat_lead)
+
+            return {
+                "status": "completed",
+                "outreach_source": source_display,
+                "dry_run": dry_run,
+                "sent_count": sent_count,
+                "skipped_count": skipped_count,
+                "previews": preview_list
+            }
+
+    def run_non_qualified_outreach_send_pass(
+        self,
+        force: bool = False,
+        dry_run_override: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        Executes weekly outreach exclusively targeting Non-Qualified Leads from the 'Non -Qualified Leads' sheet (ICP score < 50).
+        - Independent workflow controlled by NON_QUALIFIED_OUTREACH_ACTIVE and NON_QUALIFIED_DRY_RUN in .env.
+        - Uses role-specific templates from template.txt (Speaker, Attendee, Exhibitor).
+        - Dispatches emails via Microsoft Graph API.
+        - Updates outreach tracking columns across:
+          * 'Non -Qualified Leads' sheet / tbl_non_qualified_leads
+          * Corresponding original weekly sheet (Weekly Speakers, Weekly Attendees, or Weekly Exhibitors)
+          * Verified Data
+        - Records thread in state for 24/7 reply monitoring, sentiment analysis, and Teams notifications.
+        """
+        is_active = getattr(settings, "NON_QUALIFIED_OUTREACH_ACTIVE", False)
+        if not is_active and not force:
+            logger.info("ℹ️ Non-Qualified Outreach is paused (NON_QUALIFIED_OUTREACH_ACTIVE=false). Skipping non-qualified send pass.")
+            return {
+                "status": "paused",
+                "message": "Non-Qualified Outreach is currently disabled. Enable by setting NON_QUALIFIED_OUTREACH_ACTIVE=true in .env"
+            }
+
+        dry_run = getattr(settings, "NON_QUALIFIED_DRY_RUN", False) if dry_run_override is None else dry_run_override
+
+        with outreach_lock:
+            state = load_state()
+            sent_today = get_sent_today(state)
+            daily_cap = getattr(settings, "NON_QUALIFIED_OUTREACH_DAILY_CAP", 0)
+
+            leads = self._load_non_qualified_leads()
+            source_display = "Non -Qualified Leads sheet (score < 50)"
+
+            logger.info(f"🚀 Starting Non-Qualified Outreach Send Pass from '{source_display}' (DRY_RUN={dry_run}, Leads={len(leads)})...")
+
+            sent_count = 0
+            skipped_count = 0
+            preview_list = []
+
+            for lead in leads:
+                email = (lead.get("professional_email") or "").strip().lower()
+                if "@" not in email or "." not in email:
+                    skipped_count += 1
+                    continue
+
+                em_status = (lead.get("email_status") or "").strip().lower()
+                if em_status != "verified":
+                    skipped_count += 1
+                    continue
+
+                outreach_st = (lead.get("outreach_status") or "").strip().lower()
+                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed") and not force:
+                    skipped_count += 1
+                    continue
+
+                already_sent = any(s.get("email") == email and s.get("status") == "sent" for s in state.get("sent_log", []))
+                if already_sent and not force:
+                    skipped_count += 1
+                    continue
+
+                if daily_cap > 0 and sent_today >= daily_cap:
+                    logger.info(f"Daily cap ({daily_cap}) reached for Non-Qualified Outreach.")
+                    break
+
+                name = lead.get("name") or "there"
+                job_title = lead.get("job_title") or "Professional"
+                company = lead.get("company_name") or "your organization"
+                conf_name = lead.get("conference_name") or "the upcoming conference"
+                cat_lead = lead.get("category", "Speaker")
+                c_type = lead.get("contact_type") or f"Disqualified {cat_lead}"
+                score_val = float(lead.get("overall_score") or 0.0)
+
+                subject, body = build_email_content(
+                    speaker_name=name,
+                    job_title=job_title,
+                    company=company,
+                    conf_name=conf_name,
+                    category=cat_lead
+                )
+                full_message = f"Subject: {subject}\n\n{body}"
+
+                if dry_run:
+                    preview_list.append({
+                        "contact_type": c_type,
+                        "name": name,
+                        "email": email,
+                        "company": company,
+                        "conference": conf_name,
+                        "score": score_val,
+                        "subject": subject,
+                        "body_preview": body[:120]
+                    })
+                    sent_count += 1
+                    sent_today += 1
+                    logger.info(f"[DRY RUN PREVIEW] Non-Qualified Lead [{c_type}] (Score {score_val}): {name} <{email}> ({company})")
+                    continue
+
+                # Live Sending Logic
+                try:
+                    logger.info(f"📤 Dispatching outreach email to Non-Qualified Lead [{c_type}] {name} <{email}>...")
+                    self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "sending", "Send Message": full_message}, category=cat_lead)
+
+                    msg_id, conversation_id = self.graph.send_mail(email, subject, body)
+
+                    sent_updates = {
+                        "Outreach Status": "sent",
+                        "Send Message": full_message,
+                        "Thread ID": conversation_id
+                    }
+                    self._update_qualified_leads_outreach(email=email, updates=sent_updates, thread_id=conversation_id, category=cat_lead)
+
+                    # Record in state
+                    dedupe_key = f"{email}|{conf_name.lower()}"
+                    fresh_state = load_state()
+                    fresh_state.setdefault("sent_log", []).append({
+                        "email": email,
+                        "conference_name": conf_name,
+                        "name": name,
+                        "contact_type": c_type,
+                        "category": cat_lead,
+                        "score": score_val,
+                        "sent_at": now_iso(),
+                        "status": "sent",
+                        "source": "non_qualified_leads"
+                    })
+                    fresh_state.setdefault("threads", {})[dedupe_key] = {
+                        "thread_id": conversation_id,
+                        "message_id": msg_id,
+                        "name": name,
+                        "email": email,
+                        "company": company,
+                        "conference": conf_name,
+                        "contact_type": c_type,
+                        "category": cat_lead,
+                        "score": score_val,
+                        "source": "non_qualified_leads",
+                        "sent_at": now_iso()
+                    }
+                    save_state(fresh_state)
+
+                    self._sync_db_outreach_status(email=email, status="sent", thread_id=conversation_id, full_message=full_message)
+
+                    sent_count += 1
+                    sent_today += 1
+                    logger.info(f"✅ Dispatched email to Non-Qualified [{c_type}]: {name} <{email}>")
+
+                    delay = random.randint(getattr(settings, "OUTREACH_DELAY_MIN", 60), getattr(settings, "OUTREACH_DELAY_MAX", 120))
+                    time.sleep(delay)
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to send non-qualified outreach to {email}: {e}")
                     self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "failed"}, category=cat_lead)
 
             return {

@@ -154,6 +154,27 @@ def weekly_speaker_scheduled_send_job():
             svc.close()
 
 
+def weekly_non_qualified_scheduled_send_job():
+    """
+    Scheduled Outreach Job for Non-Qualified Leads (ICP score < 50):
+    Triggered every Thursday at NON_QUALIFIED_OUTREACH_SEND_TIME (20:00 IST / 8:00 PM).
+    Safely skips if NON_QUALIFIED_OUTREACH_ACTIVE is False or DRY_RUN is True.
+    """
+    if not getattr(settings, "NON_QUALIFIED_OUTREACH_ACTIVE", False):
+        logger.info("ℹ️ [Non-Qualified Outreach Sender] NON_QUALIFIED_OUTREACH_ACTIVE is False. Skipping live email send pass.")
+        return
+    svc = None
+    try:
+        from ..services.speaker_outreach_service import SpeakerOutreachService
+        svc = SpeakerOutreachService()
+        svc.run_non_qualified_outreach_send_pass()
+    except Exception as e:
+        logger.error(f"❌ [Non-Qualified Outreach Sender] Error in scheduled email send job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
 def start_scheduler():
     """Starts the 24/7 background scheduler to run scraping automatically every hour."""
     if not scheduler.running:
@@ -217,6 +238,23 @@ def start_scheduler():
             trigger=CronTrigger(day_of_week=outreach_day, hour=shour, minute=smin, timezone=outreach_tz),
             id="weekly_speaker_scheduled_send_job",
             name=f"Scheduled Weekly Speaker Outreach Sender ({outreach_day.upper()} {send_time_str})",
+            replace_existing=True
+        )
+
+        # 6. Scheduled Non-Qualified Outreach Sender (Every Thursday at NON_QUALIFIED_OUTREACH_SEND_TIME)
+        # Note: Will safely skip execution until NON_QUALIFIED_OUTREACH_ACTIVE=True is set in .env
+        nq_send_time_str = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_TIME", "20:00")
+        nq_outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
+        nq_outreach_day = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "thu")
+        try:
+            nq_hour, nq_min = [int(p) for p in nq_send_time_str.split(":", 1)]
+        except Exception:
+            nq_hour, nq_min = 20, 0
+        scheduler.add_job(
+            weekly_non_qualified_scheduled_send_job,
+            trigger=CronTrigger(day_of_week=nq_outreach_day, hour=nq_hour, minute=nq_min, timezone=nq_outreach_tz),
+            id="weekly_non_qualified_scheduled_send_job",
+            name=f"Scheduled Non-Qualified Outreach Sender ({nq_outreach_day.upper()} {nq_send_time_str})",
             replace_existing=True
         )
         

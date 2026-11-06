@@ -721,6 +721,43 @@ def get_outreach_telemetry(db: Session = Depends(get_db)):
     return svc.get_status()
 
 
+@app.get("/api/outreach/non-qualified/status")
+def get_non_qualified_outreach_telemetry(db: Session = Depends(get_db)):
+    """
+    Returns telemetry for the Non-Qualified Leads Outreach campaign (ICP score < 50):
+    - Independent campaign state from .env (NON_QUALIFIED_OUTREACH_ACTIVE)
+    - Dry Run safety status (NON_QUALIFIED_DRY_RUN)
+    - Total non-qualified leads, pending, sent, and replied counts
+    - Scheduled send time and day
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.get_non_qualified_status()
+
+
+@app.post("/api/outreach/non-qualified/preview-send")
+def preview_non_qualified_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Dry-run preview of the non-qualified outreach email campaign:
+    Personalizes emails from template.txt based on category (Speaker, Attendee, Exhibitor),
+    and returns sample renderings without sending live emails.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_non_qualified_outreach_send_pass(force=force, dry_run_override=True)
+
+
+@app.post("/api/outreach/non-qualified/send")
+def trigger_non_qualified_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Executes the email outreach campaign targeting Non-Qualified Leads (score < 50).
+    Independent workflow controlled by NON_QUALIFIED_OUTREACH_ACTIVE in .env.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_non_qualified_outreach_send_pass(force=force)
+
+
 @app.post("/api/outreach/sync-qualified-leads")
 def sync_qualified_leads_endpoint():
     """
