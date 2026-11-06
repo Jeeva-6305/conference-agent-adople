@@ -1081,6 +1081,127 @@ class SpeakerOutreachService:
 
         return leads
 
+    def _load_non_qualified_leads(self) -> List[Dict[str, Any]]:
+        """
+        Loads all non-qualified / disqualified leads (ICP score <= 50) exclusively from 'Non -Qualified Leads' worksheet / table.
+        Primary source: OneDrive 'tbl_non_qualified_leads' or 'Non -Qualified Leads'.
+        Fallback: Local Excel 'Non -Qualified Leads' sheet (or 'Disqualified Leads').
+        """
+        leads: List[Dict[str, Any]] = []
+
+        def parse_matrix(col_map: Dict[str, int], raw_rows: List[Any], is_onedrive: bool = False) -> List[Dict[str, Any]]:
+            parsed = []
+            for idx, r in enumerate(raw_rows):
+                if isinstance(r, dict):
+                    v_raw = r.get("values", [])
+                    vals = v_raw[0] if v_raw and isinstance(v_raw[0], list) else v_raw
+                    row_idx = r.get("row_index", idx)
+                else:
+                    vals = list(r)
+                    row_idx = idx
+
+                if not isinstance(vals, (list, tuple)):
+                    continue
+
+                em_idx = col_map.get("professionalemail") or col_map.get("email")
+                if em_idx is None or len(vals) <= em_idx:
+                    continue
+
+                email = str(vals[em_idx] or "").strip()
+                if not email or "@" not in email or "." not in email:
+                    continue
+
+                score_idx = col_map.get("overallscore") or col_map.get("score")
+                score_val = 0.0
+                if score_idx is not None and len(vals) > score_idx:
+                    try:
+                        score_val = float(vals[score_idx] or 0.0)
+                    except Exception:
+                        score_val = 0.0
+
+                c_type_idx = col_map.get("contacttype")
+                cat_raw = str(vals[c_type_idx] or "Speaker").strip() if c_type_idx is not None and len(vals) > c_type_idx else "Speaker"
+                cat_clean = normalize_category(cat_raw).capitalize()
+
+                rank_idx = col_map.get("rank")
+                qual_idx = col_map.get("qualificationstatus")
+                comp_idx = col_map.get("companyname")
+                dom_idx = col_map.get("companydomain")
+                conf_idx = col_map.get("conferencename")
+                cid_idx = col_map.get("conferenceid")
+                name_idx = col_map.get("contactname") or col_map.get("name")
+                title_idx = col_map.get("jobtitle")
+                estat_idx = col_map.get("emailstatus")
+                li_idx = col_map.get("personallinkedinurl")
+                ind_idx = col_map.get("primaryindustry")
+                tier_idx = col_map.get("headcounttier")
+
+                ost_idx = col_map.get("outreachstatus")
+                rep_idx = col_map.get("replystatus") or col_map.get("replaystatus")
+                rec_idx = col_map.get("receivedreply") or col_map.get("receivedreplay")
+                sent_idx = col_map.get("replysentiment") or col_map.get("sentiment")
+                th_idx = col_map.get("threadid")
+                snd_idx = col_map.get("sendmessage")
+
+                parsed.append({
+                    "row_index": row_idx,
+                    "category": cat_clean,
+                    "contact_type": f"Disqualified {cat_clean}",
+                    "rank": vals[rank_idx] if rank_idx is not None and len(vals) > rank_idx else 0,
+                    "overall_score": score_val,
+                    "qualification_status": str(vals[qual_idx] or "DISQUALIFIED").strip() if qual_idx is not None and len(vals) > qual_idx else "DISQUALIFIED",
+                    "company_name": str(vals[comp_idx] or "").strip() if comp_idx is not None and len(vals) > comp_idx else "",
+                    "company_domain": str(vals[dom_idx] or "").strip() if dom_idx is not None and len(vals) > dom_idx else "",
+                    "conference_name": str(vals[conf_idx] or "").strip() if conf_idx is not None and len(vals) > conf_idx else "",
+                    "conference_id": str(vals[cid_idx] or "").strip() if cid_idx is not None and len(vals) > cid_idx else "",
+                    "name": str(vals[name_idx] or "").strip() if name_idx is not None and len(vals) > name_idx else "",
+                    "job_title": str(vals[title_idx] or "").strip() if title_idx is not None and len(vals) > title_idx else "",
+                    "professional_email": email,
+                    "email_status": str(vals[estat_idx] or "Verified").strip() if estat_idx is not None and len(vals) > estat_idx else "Verified",
+                    "personal_linkedin_url": str(vals[li_idx] or "").strip() if li_idx is not None and len(vals) > li_idx else "",
+                    "primary_industry": str(vals[ind_idx] or "").strip() if ind_idx is not None and len(vals) > ind_idx else "",
+                    "headcount_tier": str(vals[tier_idx] or "").strip() if tier_idx is not None and len(vals) > tier_idx else "",
+                    "outreach_status": str(vals[ost_idx] or "Disqualified").strip() if ost_idx is not None and len(vals) > ost_idx else "Disqualified",
+                    "reply_status": str(vals[rep_idx] or "").strip() if rep_idx is not None and len(vals) > rep_idx else "",
+                    "received_reply": str(vals[rec_idx] or "").strip() if rec_idx is not None and len(vals) > rec_idx else "",
+                    "reply_sentiment": str(vals[sent_idx] or "").strip() if sent_idx is not None and len(vals) > sent_idx else "",
+                    "thread_id": str(vals[th_idx] or "").strip() if th_idx is not None and len(vals) > th_idx else "",
+                    "send_message": str(vals[snd_idx] or "").strip() if snd_idx is not None and len(vals) > snd_idx else "",
+                    "source": "non_qualified_leads",
+                    "raw_values": vals
+                })
+            return parsed
+
+        # Primary: OneDrive Non -Qualified Leads
+        try:
+            col_names, col_map, rows = self.onedrive.get_non_qualified_leads_table_info()
+            if rows:
+                leads = parse_matrix(col_map, rows, is_onedrive=True)
+                if leads:
+                    return leads
+        except Exception as e:
+            logger.debug(f"Notice reading OneDrive Non -Qualified Leads: {e}. Reading Local Excel...")
+
+        # Fallback: Local Excel 'Non -Qualified Leads' sheet
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(self.local_excel_path, data_only=True)
+            for sheet_candidate in [getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads"), "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:
+                if sheet_candidate in wb.sheetnames:
+                    ws = wb[sheet_candidate]
+                    raw_rows = list(ws.iter_rows(values_only=True))
+                    if len(raw_rows) > 1:
+                        headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in raw_rows[0]]
+                        col_map = {name: idx for idx, name in enumerate(headers)}
+                        leads = parse_matrix(col_map, raw_rows[1:], is_onedrive=False)
+                        if leads:
+                            break
+            wb.close()
+        except Exception as e:
+            logger.error(f"Error reading Local Excel Non -Qualified Leads: {e}")
+
+        return leads
+
     def _update_qualified_leads_outreach(
         self,
         email: str,
@@ -1089,28 +1210,41 @@ class SpeakerOutreachService:
         category: Optional[str] = None
     ):
         """
-        Updates outreach tracking columns for a lead in 'Qualified Leads' across both OneDrive and Local Excel,
-        and synchronizes with 'Verified Data' and DB models.
+        Updates outreach tracking columns for a lead in 'Qualified Leads' / 'Non -Qualified Leads'
+        across both OneDrive and Local Excel, and synchronizes with 'Verified Data' and the
+        corresponding original Weekly sheet (Weekly Speakers, Weekly Attendees, or Weekly Exhibitors).
         """
         # 1. Update Qualified Leads on OneDrive
         try:
             self.onedrive.update_qualified_leads_contact(email=email, updates=updates, thread_id=thread_id)
         except Exception as e:
-            logger.warning(f"Error updating OneDrive Qualified Leads for {email}: {e}")
+            logger.debug(f"Notice updating OneDrive Qualified Leads for {email}: {e}")
 
         # 2. Update Qualified Leads in Local Excel
         try:
             self.excel_mgr.update_qualified_leads_row_in_excel(email=email, updates=updates, thread_id=thread_id)
         except Exception as e:
-            logger.warning(f"Error updating Local Excel Qualified Leads for {email}: {e}")
+            logger.debug(f"Notice updating Local Excel Qualified Leads for {email}: {e}")
 
-        # 3. Keep Verified Data in sync
+        # 3. Update Non -Qualified Leads on OneDrive if present
+        try:
+            self.onedrive.update_non_qualified_leads_contact(email=email, updates=updates, thread_id=thread_id)
+        except Exception as e:
+            logger.debug(f"Notice updating OneDrive Non -Qualified Leads for {email}: {e}")
+
+        # 4. Update Non -Qualified Leads in Local Excel if present
+        try:
+            self.excel_mgr.update_non_qualified_leads_row_in_excel(email=email, updates=updates, thread_id=thread_id)
+        except Exception as e:
+            logger.debug(f"Notice updating Local Excel Non -Qualified Leads for {email}: {e}")
+
+        # 5. Keep Verified Data in sync
         try:
             self._update_verified_data_outreach(email=email, updates=updates, thread_id=thread_id, category=category)
         except Exception as e:
             logger.debug(f"Notice syncing Verified Data for {email}: {e}")
 
-        # 4. Synchronize with the corresponding original Weekly sheet (Weekly Speakers, Weekly Attendees, Weekly Exhibitors)
+        # 6. Synchronize with the corresponding original Weekly sheet (Weekly Speakers, Weekly Attendees, Weekly Exhibitors)
         try:
             self._update_weekly_sheet_outreach(email=email, updates=updates, thread_id=thread_id, category=category)
         except Exception as e:
@@ -1679,7 +1813,12 @@ class SpeakerOutreachService:
         qualified_by_thread = {l["thread_id"]: l for l in qualified_leads if l.get("thread_id")}
         qualified_by_email = {l["professional_email"].lower(): l for l in qualified_leads if l.get("professional_email")}
 
-        # 3. Verified Data contacts
+        # 3. Non -Qualified Leads contacts
+        non_qualified_leads = self._load_non_qualified_leads()
+        non_qualified_by_thread = {l["thread_id"]: l for l in non_qualified_leads if l.get("thread_id")}
+        non_qualified_by_email = {l["professional_email"].lower(): l for l in non_qualified_leads if l.get("professional_email")}
+
+        # 4. Verified Data contacts
         verified_leads = self._load_verified_data_leads()
         verified_by_thread = {l["thread_id"]: l for l in verified_leads if l.get("thread_id")}
         verified_by_email = {l["professional_email"].lower(): l for l in verified_leads if l.get("professional_email")}
@@ -1687,7 +1826,7 @@ class SpeakerOutreachService:
         for k, th in threads.items():
             t_id = th.get("thread_id")
             em = th.get("email") or k.split("|")[0]
-            if t_id and t_id not in qualified_by_thread and t_id not in verified_by_thread:
+            if t_id and t_id not in qualified_by_thread and t_id not in non_qualified_by_thread and t_id not in verified_by_thread:
                 qualified_by_thread[t_id] = {
                     "professional_email": em,
                     "name": th.get("name", ""),
@@ -1696,7 +1835,7 @@ class SpeakerOutreachService:
                     "contact_type": th.get("contact_type", "Contact"),
                     "thread_id": t_id
                 }
-            if em and em.lower() not in qualified_by_email and em.lower() not in verified_by_email:
+            if em and em.lower() not in qualified_by_email and em.lower() not in non_qualified_by_email and em.lower() not in verified_by_email:
                 qualified_by_email[em.lower()] = {
                     "professional_email": em,
                     "name": th.get("name", ""),
@@ -1726,7 +1865,7 @@ class SpeakerOutreachService:
             is_bounce = is_bounce_email(msg, body_text)
             bounced_recipient = extract_bounce_recipient(msg, body_text) if is_bounce else None
 
-            # Identify target: check Weekly Speakers first, then Qualified Leads, then Verified Data
+            # Identify target: check Weekly Speakers first, then Qualified Leads, Non -Qualified Leads, Verified Data
             target_speaker = (
                 speaker_by_thread.get(conv_id) 
                 or (speaker_by_email.get(bounced_recipient) if bounced_recipient else None)
@@ -1737,13 +1876,18 @@ class SpeakerOutreachService:
                 or (qualified_by_email.get(bounced_recipient) if bounced_recipient else None)
                 or qualified_by_email.get(from_addr)
             )
+            non_qualified_target = (
+                non_qualified_by_thread.get(conv_id)
+                or (non_qualified_by_email.get(bounced_recipient) if bounced_recipient else None)
+                or non_qualified_by_email.get(from_addr)
+            )
             verified_target = (
                 verified_by_thread.get(conv_id)
                 or (verified_by_email.get(bounced_recipient) if bounced_recipient else None)
                 or verified_by_email.get(from_addr)
             )
 
-            if not target_speaker and not qualified_target and not verified_target:
+            if not target_speaker and not qualified_target and not non_qualified_target and not verified_target:
                 # Unrelated email - ignore safely
                 continue
 
@@ -1754,33 +1898,40 @@ class SpeakerOutreachService:
             contact_name = (
                 target_speaker.speaker_name if target_speaker 
                 else (qualified_target.get("name") if qualified_target 
-                else (verified_target.get("name") if verified_target else "Contact"))
+                else (non_qualified_target.get("name") if non_qualified_target
+                else (verified_target.get("name") if verified_target else "Contact")))
             )
             company_name = (
                 target_speaker.company_name if target_speaker 
                 else (qualified_target.get("company_name") if qualified_target 
-                else (verified_target.get("company_name") if verified_target else ""))
+                else (non_qualified_target.get("company_name") if non_qualified_target
+                else (verified_target.get("company_name") if verified_target else "")))
             )
             conf_name = (
                 target_speaker.conference_name if target_speaker 
                 else (qualified_target.get("conference_name") if qualified_target 
-                else (verified_target.get("conference_name") if verified_target else ""))
+                else (non_qualified_target.get("conference_name") if non_qualified_target
+                else (verified_target.get("conference_name") if verified_target else "")))
             )
             contact_type = (
                 "Weekly Speaker" if target_speaker 
                 else (qualified_target.get("contact_type") if qualified_target 
-                else (verified_target.get("contact_type") if verified_target else "Verified Contact"))
+                else (non_qualified_target.get("contact_type") if non_qualified_target
+                else (verified_target.get("contact_type") if verified_target else "Verified Contact")))
             )
             contact_email = (
                 target_speaker.professional_email if (target_speaker and target_speaker.professional_email)
                 else (qualified_target.get("professional_email") if (qualified_target and qualified_target.get("professional_email"))
+                else (non_qualified_target.get("professional_email") if (non_qualified_target and non_qualified_target.get("professional_email"))
                 else (verified_target.get("professional_email") if (verified_target and verified_target.get("professional_email"))
-                else (bounced_recipient or from_addr)))
+                else (bounced_recipient or from_addr))))
             )
 
-            # Ensure both speaker and qualified leads targets are resolved if contact exists across lists
+            # Ensure both speaker and qualified/non-qualified leads targets are resolved if contact exists across lists
             if target_speaker and not qualified_target:
                 qualified_target = qualified_by_thread.get(conv_id) or (qualified_by_email.get(contact_email.lower()) if contact_email else None)
+            if target_speaker and not non_qualified_target:
+                non_qualified_target = non_qualified_by_thread.get(conv_id) or (non_qualified_by_email.get(contact_email.lower()) if contact_email else None)
             if target_speaker and not verified_target:
                 verified_target = verified_by_thread.get(conv_id) or (verified_by_email.get(contact_email.lower()) if contact_email else None)
 
@@ -1909,13 +2060,14 @@ class SpeakerOutreachService:
                     logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
 
             # -----------------------------------------------------------------
-            # 2. Update Qualified Leads and Verified Data
+            # 2. Update Qualified Leads, Non -Qualified Leads, and Verified Data
             # -----------------------------------------------------------------
-            if qualified_target or verified_target:
+            if qualified_target or non_qualified_target or verified_target:
                 rep_status = "bounced" if is_bounce else "replied"
                 cat_target = (
                     qualified_target.get("category") if qualified_target 
-                    else (verified_target.get("category") if verified_target else "Speaker")
+                    else (non_qualified_target.get("category") if non_qualified_target
+                    else (verified_target.get("category") if verified_target else "Speaker"))
                 )
                 reply_updates = {
                     "Outreach Status": rep_status,
@@ -1924,7 +2076,7 @@ class SpeakerOutreachService:
                     "Sentiment": sentiment,
                     "Received Reply": transcript if not is_bounce else "BOUNCE: Undeliverable address"
                 }
-                # Updates Qualified Leads in OneDrive & Local Excel, and syncs Verified Data
+                # Updates Qualified Leads, Non -Qualified Leads in OneDrive & Local Excel, and syncs Verified Data & original Weekly sheet
                 self._update_qualified_leads_outreach(email=contact_email, updates=reply_updates, thread_id=conv_id, category=cat_target)
                 self._sync_db_outreach_status(email=contact_email, status=rep_status, thread_id=conv_id)
 
@@ -1933,14 +2085,14 @@ class SpeakerOutreachService:
                     "email": contact_email,
                     "name": contact_name,
                     "conference_name": conf_name,
-                    "source": "qualified_leads" if qualified_target else "verified_data",
+                    "source": "non_qualified_leads" if non_qualified_target else ("qualified_leads" if qualified_target else "verified_data"),
                     "sentiment": sentiment,
                     "intent": intent,
                     "received_at": received_at_str,
                     "message_id": msg_id
                 })
                 save_state(fresh_state)
-                logger.info(f"✅ Stored {'bounce' if is_bounce else 'reply'} for '{contact_name}' into 'Qualified Leads' and 'Verified Data' sheets & tables.")
+                logger.info(f"✅ Stored {'bounce' if is_bounce else 'reply'} for '{contact_name}' into 'Qualified Leads'/'Non -Qualified Leads' and original Weekly sheets & tables.")
 
             # Ensure persisted in state & deduplication set
             mark_reply_processed(msg_id)
@@ -1951,6 +2103,155 @@ class SpeakerOutreachService:
             "bounces": bounces_count,
             "scanned_messages": len(inbox_messages)
         }
+
+    def send_manual_lead_outreach(
+        self,
+        email: str,
+        force: bool = True,
+        dry_run_override: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        Manually triggers outreach for any lead (including disqualified leads in 'Non -Qualified Leads'):
+        - Selects the appropriate category template from template.txt based on contact type:
+          * Speakers -> Speakers template
+          * Attendees -> Attendees template
+          * Exhibitors -> Exhibitors template
+        - Dispatches the email via Microsoft Graph API
+        - Updates outreach tracking columns across:
+          * Non -Qualified Leads / Qualified Leads
+          * Corresponding original weekly sheet (Weekly Speakers, Weekly Attendees, or Weekly Exhibitors)
+          * Verified Data
+        - Registers thread in outreach_state.json for reply monitoring
+        """
+        clean_email = (email or "").strip().lower()
+        if not clean_email or "@" not in clean_email or "." not in clean_email:
+            return {"status": "error", "error": f"Invalid email: {email}"}
+
+        target_lead = None
+
+        # 1. Search Non -Qualified Leads
+        for l in self._load_non_qualified_leads():
+            if (l.get("professional_email") or "").strip().lower() == clean_email:
+                target_lead = l
+                break
+
+        # 2. Search Qualified Leads
+        if not target_lead:
+            for l in self._load_qualified_leads():
+                if (l.get("professional_email") or "").strip().lower() == clean_email:
+                    target_lead = l
+                    break
+
+        # 3. Search Verified Data
+        if not target_lead:
+            for l in self._load_verified_data_leads():
+                if (l.get("professional_email") or "").strip().lower() == clean_email:
+                    target_lead = l
+                    break
+
+        if not target_lead:
+            return {"status": "error", "error": f"Lead with email '{email}' not found in any leads sheet"}
+
+        name = target_lead.get("name") or "there"
+        job_title = target_lead.get("job_title") or "Professional"
+        company = target_lead.get("company_name") or "your organization"
+        conf_name = target_lead.get("conference_name") or "the upcoming conference"
+        cat_lead = target_lead.get("category", "Speaker")
+        c_type = target_lead.get("contact_type") or cat_lead
+        score_val = float(target_lead.get("overall_score") or 0.0)
+
+        # Build email content using category template from template.txt
+        subject, body = build_email_content(
+            speaker_name=name,
+            job_title=job_title,
+            company=company,
+            conf_name=conf_name,
+            category=cat_lead
+        )
+        full_message = f"Subject: {subject}\n\n{body}"
+
+        dry_run = getattr(settings, "OUTREACH_DRY_RUN", True) if dry_run_override is None else dry_run_override
+        if dry_run:
+            return {
+                "status": "dry_run_preview",
+                "email": clean_email,
+                "name": name,
+                "category": cat_lead,
+                "score": score_val,
+                "subject": subject,
+                "message": full_message,
+                "note": "DRY_RUN mode active. No live email was dispatched."
+            }
+
+        # Live send
+        try:
+            self._update_qualified_leads_outreach(
+                email=clean_email,
+                updates={"Outreach Status": "sending", "Send Message": full_message},
+                category=cat_lead
+            )
+            msg_id, conversation_id = self.graph.send_mail(clean_email, subject, body)
+
+            sent_updates = {
+                "Outreach Status": "sent",
+                "Send Message": full_message,
+                "Thread ID": conversation_id
+            }
+            self._update_qualified_leads_outreach(
+                email=clean_email,
+                updates=sent_updates,
+                thread_id=conversation_id,
+                category=cat_lead
+            )
+
+            # Record in state
+            state = load_state()
+            dedupe_key = f"{clean_email}|{conf_name.lower()}"
+            state.setdefault("sent_log", []).append({
+                "email": clean_email,
+                "conference_name": conf_name,
+                "name": name,
+                "contact_type": c_type,
+                "category": cat_lead,
+                "score": score_val,
+                "sent_at": now_iso(),
+                "status": "sent",
+                "manual": True
+            })
+            state.setdefault("threads", {})[dedupe_key] = {
+                "thread_id": conversation_id,
+                "message_id": msg_id,
+                "name": name,
+                "email": clean_email,
+                "company": company,
+                "conference": conf_name,
+                "contact_type": c_type,
+                "category": cat_lead,
+                "score": score_val,
+                "source": target_lead.get("source", "manual"),
+                "sent_at": now_iso()
+            }
+            save_state(state)
+
+            self._sync_db_outreach_status(email=clean_email, status="sent", thread_id=conversation_id, full_message=full_message)
+
+            return {
+                "status": "success",
+                "email": clean_email,
+                "name": name,
+                "category": cat_lead,
+                "score": score_val,
+                "message_id": msg_id,
+                "conversation_id": conversation_id
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to send manual outreach to {clean_email}: {e}")
+            self._update_qualified_leads_outreach(
+                email=clean_email,
+                updates={"Outreach Status": "failed"},
+                category=cat_lead
+            )
+            return {"status": "error", "error": str(e)}
 
     def _update_onedrive_speaker_row(self, speaker: WeeklySpeaker):
         """Updates the speaker row in OneDrive Excel (tbl_weekly_speakers) and Local Excel."""

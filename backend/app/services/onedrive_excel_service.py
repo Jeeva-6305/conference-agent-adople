@@ -76,6 +76,8 @@ class OneDriveExcelService:
         self.speakers_replies_tbl_name = getattr(settings, "SPEAKER_REPLIES_TABLE_NAME", "tbl_speakers_replies")
         self.qualified_leads_ws_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
         self.qualified_leads_tbl_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
+        self.non_qualified_leads_ws_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
+        self.non_qualified_leads_tbl_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
 
         self.base_url = settings.MICROSOFT_GRAPH_BASE_URL.rstrip("/")
 
@@ -1538,4 +1540,114 @@ class OneDriveExcelService:
             return "error" not in res
         except Exception as e:
             logger.error(f"Error updating Qualified Leads contact in OneDrive: {e}")
+            return False
+
+    def get_non_qualified_leads_table_info(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
+        """
+        Retrieves column names, column index map, and all row entries from 'tbl_non_qualified_leads' or 'Non -Qualified Leads' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        try:
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/columns")
+            if "error" not in cols_res and "value" in cols_res:
+                col_names = [c["name"] for c in cols_res.get("value", [])]
+                col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                rows_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/rows")
+                raw_rows = rows_res.get("value", [])
+                parsed_rows = []
+                for idx, r in enumerate(raw_rows):
+                    vals = r.get("values", [[]])[0]
+                    while len(vals) < len(col_names):
+                        vals.append("")
+                    parsed_rows.append({"row_index": idx, "values": vals})
+                if parsed_rows:
+                    return col_names, col_map, parsed_rows
+        except Exception as e:
+            logger.debug(f"Note reading OneDrive table {self.non_qualified_leads_tbl_name}: {e}")
+
+        for ws_candidate in [self.non_qualified_leads_ws_name, "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:
+            try:
+                ws_encoded = urllib.parse.quote(ws_candidate)
+                used_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/usedRange")
+                vals_matrix = used_res.get("values", [])
+                if len(vals_matrix) > 1:
+                    col_names = [str(c) for c in vals_matrix[0]]
+                    col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                    parsed_rows = []
+                    for idx, row in enumerate(vals_matrix[1:]):
+                        while len(row) < len(col_names):
+                            row.append("")
+                        parsed_rows.append({"row_index": idx, "values": row})
+                    return col_names, col_map, parsed_rows
+            except Exception:
+                pass
+
+        return [], {}, []
+
+    def update_non_qualified_leads_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates a row in 'tbl_non_qualified_leads' or worksheet 'Non -Qualified Leads' on OneDrive in-place.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/rows/itemAt(index={row_index})", body={"values": [values]})
+        if "error" not in res:
+            return res
+        excel_row = row_index + 2
+        col_letter = "V"
+        ws_encoded = urllib.parse.quote(self.non_qualified_leads_ws_name)
+        return self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/range(address='A{excel_row}:{col_letter}{excel_row}')", body={"values": [values]})
+
+    def update_non_qualified_leads_contact(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None
+    ) -> bool:
+        """
+        Updates a lead's outreach tracking fields in 'Non -Qualified Leads' sheet / table on OneDrive.
+        """
+        try:
+            col_names, col_map, rows = self.get_non_qualified_leads_table_info()
+            if not rows:
+                return False
+
+            clean_email = (email or "").strip().lower()
+            clean_thread = (thread_id or "").strip()
+
+            target_row = None
+            em_idx = col_map.get("professionalemail") or col_map.get("email")
+            th_idx = col_map.get("threadid")
+
+            for r in rows:
+                vals = r["values"]
+                if em_idx is not None and len(vals) > em_idx:
+                    r_em = str(vals[em_idx] or "").strip().lower()
+                    if clean_email and r_em == clean_email:
+                        target_row = r
+                        break
+                if th_idx is not None and len(vals) > th_idx:
+                    r_th = str(vals[th_idx] or "").strip()
+                    if clean_thread and r_th == clean_thread:
+                        target_row = r
+                        break
+
+            if not target_row:
+                return False
+
+            updated_vals = list(target_row["values"])
+            for field, val in updates.items():
+                f_clean = field.strip()
+                f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+                f_idx = col_map.get(f_key)
+                if f_idx is None and "replay" in f_key:
+                    f_idx = col_map.get(f_key.replace("replay", "reply"))
+                if f_idx is not None and f_idx < len(updated_vals):
+                    updated_vals[f_idx] = val
+
+            res = self.update_non_qualified_leads_row(target_row["row_index"], updated_vals)
+            return "error" not in res
+        except Exception as e:
+            logger.error(f"Error updating Non-Qualified Leads contact in OneDrive: {e}")
             return False

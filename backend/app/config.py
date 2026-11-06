@@ -155,6 +155,16 @@ class Settings:
     VERIFIED_DATA_EXCEL_WORKSHEET_NAME: str = os.getenv("VERIFIED_DATA_EXCEL_WORKSHEET_NAME", "Verified Data")
     QUALIFIED_LEADS_EXCEL_TABLE_NAME: str = os.getenv("QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
     QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME: str = os.getenv("QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
+    NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME: str = os.getenv("NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
+    NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME: str = os.getenv("NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
+    
+    # Non-Qualified Leads Outreach Configuration (Independent Workflow)
+    NON_QUALIFIED_OUTREACH_ACTIVE: bool = os.getenv("NON_QUALIFIED_OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
+    NON_QUALIFIED_OUTREACH_SEND_TIME: str = os.getenv("NON_QUALIFIED_OUTREACH_SEND_TIME", os.getenv("SEND_TIME", "20:00"))
+    NON_QUALIFIED_OUTREACH_SEND_DAY: str = os.getenv("NON_QUALIFIED_OUTREACH_SEND_DAY", os.getenv("OUTREACH_SEND_DAY", "thu"))
+    NON_QUALIFIED_OUTREACH_DAILY_CAP: int = int(os.getenv("NON_QUALIFIED_DAILY_CAP", os.getenv("DAILY_CAP", "0")))
+    NON_QUALIFIED_DRY_RUN: bool = os.getenv("NON_QUALIFIED_DRY_RUN", os.getenv("DRY_RUN", "0")).lower() in ("1", "true", "yes")
+    
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
 
     # Speaker Replies Configuration (Dedicated Sheet & Table)

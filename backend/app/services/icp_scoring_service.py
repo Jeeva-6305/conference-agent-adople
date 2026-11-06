@@ -433,6 +433,7 @@ SHAREPOINT_MASTER_SHEET = os.getenv("SHAREPOINT_MASTER_SHEET", "Verified Data")
 SHAREPOINT_LATEST_SHEET = os.getenv("SHAREPOINT_LATEST_SHEET", "latest_week_scoring")
 SHAREPOINT_HISTORY_SHEET = os.getenv("SHAREPOINT_HISTORY_SHEET", "Companies scoring")
 SHAREPOINT_QUALIFIED_SHEET = os.getenv("SHAREPOINT_QUALIFIED_SHEET", "Qualified Leads")
+SHAREPOINT_NON_QUALIFIED_SHEET = os.getenv("SHAREPOINT_NON_QUALIFIED_SHEET", "Non -Qualified Leads")
 
 QUALIFIED_LEADS_HEADERS = [
     "Rank",
@@ -761,6 +762,12 @@ def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
             sync_qualified_leads_to_local_excel(ranked_leads)
         except Exception as e:
             print(f"⚠️ Notice syncing Qualified Leads to Local Excel: {e}")
+
+        # 4. Non -Qualified Leads in Local Excel (Score < 50)
+        try:
+            sync_non_qualified_leads_to_local_excel(ranked_leads)
+        except Exception as e:
+            print(f"⚠️ Notice syncing Non -Qualified Leads to Local Excel: {e}")
     except Exception as e:
         print(f"⚠️ Notice mirroring to Local Excel: {e}")
 
@@ -1000,6 +1007,242 @@ def build_and_sync_qualified_leads(ranked_leads: Optional[List[RankedLead]] = No
     sp_count = export_qualified_leads_to_sharepoint(client, ranked_leads)
     return {"status": "success", "local_count": local_count, "sharepoint_count": sp_count}
 
+def build_non_qualified_leads_rows(
+    ranked_leads: Optional[List[RankedLead]] = None,
+    max_score: float = 50.0
+) -> List[List[Any]]:
+    """
+    Extracts individual non-qualified / disqualified lead contacts from scoring results with ICP score strictly < max_score (50.0).
+    Adds all relevant lead details for Speakers, Attendees, and Exhibitors.
+    Deduplicates leads strictly by email.
+    Appends the 6 required Outreach Tracking Columns initialized to Disqualified/empty.
+    """
+    non_qual_rows: List[List[Any]] = []
+    seen_emails: Set[str] = set()
+
+    local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+    ver_by_comp: Dict[str, List[Any]] = {}
+    h_map: Dict[str, int] = {}
+    if local_path.exists():
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(local_path, data_only=True)
+            if "Verified Data" in wb.sheetnames:
+                ws_ver = wb["Verified Data"]
+                headers = [str(c.value or "").strip().lower().replace(" ", "").replace("_", "") for c in ws_ver[1]]
+                h_map = {name: idx for idx, name in enumerate(headers)}
+                comp_idx = h_map.get("companyname", 0)
+                for r in range(2, ws_ver.max_row + 1):
+                    row_vals = [c.value for c in ws_ver[r]]
+                    c_name = str(row_vals[comp_idx] or "").strip().lower()
+                    if c_name and c_name not in ver_by_comp:
+                        ver_by_comp[c_name] = row_vals
+            wb.close()
+        except Exception:
+            pass
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if ranked_leads:
+        for lead in ranked_leads:
+            score = float(lead.overall_score or 0.0)
+            if score >= max_score:
+                continue
+
+            prof = lead.evaluated_lead.enriched_lead.profile
+            comp = lead.company_name
+            dom = lead.domain
+            conf = lead.conference_name
+            rank = lead.rank
+            qual = lead.qualification_status
+            ind = prof.primary_industry
+            tier = prof.headcount_tier
+            spk_id = lead.speaker_id
+
+            v_row = ver_by_comp.get(comp.lower(), [])
+            cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+
+            # 1. Speaker
+            spk_name = lead.speaker_name or (str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > 4 else "")
+            spk_title = lead.job_title or (str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > 5 else "")
+            spk_email = (lead.email if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > 7 else "")
+            spk_stat = (lead.email_status if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > 8 else "Verified")
+            spk_li = (lead.linkedin_url if lead.linkedin_url != "Not Available" else "") or (str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > 6 else "")
+
+            if spk_email and "@" in spk_email and "." in spk_email:
+                clean_em = spk_email.strip().lower()
+                if clean_em not in seen_emails:
+                    seen_emails.add(clean_em)
+                    non_qual_rows.append([
+                        rank, score, qual, comp, dom, conf, cid,
+                        "Speaker", spk_name.strip(), spk_title.strip(), clean_em, spk_stat, spk_li,
+                        ind, tier, now_str,
+                        "Disqualified", "", "", "", "", ""
+                    ])
+
+            # 2. Attendee
+            att_name = getattr(lead, "attendee_name", "") or (str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > 15 else "")
+            att_title = (str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > 16 else "")
+            att_email = getattr(lead, "attendee_email", "") or (str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > 18 else "")
+            att_stat = getattr(lead, "attendee_email_status", "") or (str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > 19 else "Verified")
+            att_li = (str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > 17 else "")
+
+            if att_email and "@" in att_email and "." in att_email:
+                clean_em = att_email.strip().lower()
+                if clean_em not in seen_emails:
+                    seen_emails.add(clean_em)
+                    non_qual_rows.append([
+                        rank, score, qual, comp, dom, conf, cid,
+                        "Attendee", att_name.strip(), att_title.strip(), clean_em, att_stat, att_li,
+                        ind, tier, now_str,
+                        "Disqualified", "", "", "", "", ""
+                    ])
+
+            # 3. Exhibitor
+            exh_name = getattr(lead, "exhibitor_name", "") or (str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > 26 else "")
+            exh_title = (str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > 27 else "")
+            exh_email = getattr(lead, "exhibitor_email", "") or (str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > 29 else "")
+            exh_stat = getattr(lead, "exhibitor_email_status", "") or (str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > 30 else "Verified")
+            exh_li = (str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > 28 else "")
+
+            if exh_email and "@" in exh_email and "." in exh_email:
+                clean_em = exh_email.strip().lower()
+                if clean_em not in seen_emails:
+                    seen_emails.add(clean_em)
+                    non_qual_rows.append([
+                        rank, score, qual, comp, dom, conf, cid,
+                        "Exhibitor", exh_name.strip(), exh_title.strip(), clean_em, exh_stat, exh_li,
+                        ind, tier, now_str,
+                        "Disqualified", "", "", "", "", ""
+                    ])
+
+    else:
+        if local_path.exists():
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(local_path, data_only=True)
+                if "latest_week_scoring" in wb.sheetnames:
+                    ws_score = wb["latest_week_scoring"]
+                    for r in range(2, ws_score.max_row + 1):
+                        vals = [c.value for c in ws_score[r]]
+                        try:
+                            score = float(vals[1] or 0.0)
+                        except (ValueError, TypeError):
+                            continue
+                        if score >= max_score:
+                            continue
+                        rank = vals[0]
+                        comp = str(vals[2] or "").strip()
+                        dom = str(vals[3] or "").strip()
+                        conf = str(vals[4] or "").strip()
+                        qual = str(vals[5] or "").strip()
+                        ind = str(vals[6] or "").strip()
+                        tier = str(vals[7] or "").strip()
+                        spk_id = str(vals[19] or "").strip()
+                        eval_at = str(vals[20] or "").strip() or now_str
+
+                        v_row = ver_by_comp.get(comp.lower(), [])
+                        cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+
+                        # Speaker
+                        spk_name = str(vals[8] or (v_row[h_map.get("speakername", 4)] if len(v_row) > 4 else "") or "").strip()
+                        spk_title = str(vals[9] or (v_row[h_map.get("speakerjobtitle", 5)] if len(v_row) > 5 else "") or "").strip()
+                        spk_email = str(vals[10] or (v_row[h_map.get("speakerprofessionalemail", 7)] if len(v_row) > 7 else "") or "").strip()
+                        spk_stat = str(vals[11] or (v_row[h_map.get("speakeremailstatus", 8)] if len(v_row) > 8 else "") or "Verified").strip()
+                        spk_li = str(vals[18] or (v_row[h_map.get("speakerlinkedin", 6)] if len(v_row) > 6 else "") or "").strip()
+
+                        if spk_email and "@" in spk_email and "." in spk_email:
+                            clean_em = spk_email.strip().lower()
+                            if clean_em not in seen_emails:
+                                seen_emails.add(clean_em)
+                                non_qual_rows.append([
+                                    rank, score, qual, comp, dom, conf, cid,
+                                    "Speaker", spk_name, spk_title, clean_em, spk_stat, spk_li,
+                                    ind, tier, eval_at,
+                                    "Disqualified", "", "", "", "", ""
+                                ])
+
+                        # Attendee
+                        att_name = str(vals[15] or (v_row[h_map.get("attendeename", 15)] if len(v_row) > 15 else "") or "").strip()
+                        att_title = str((v_row[h_map.get("attendeejobtitle", 16)] if len(v_row) > 16 else "") or "").strip()
+                        att_email = str(vals[16] or (v_row[h_map.get("attendeeprofessionalemail", 18)] if len(v_row) > 18 else "") or "").strip()
+                        att_stat = str(vals[17] or (v_row[h_map.get("attendeeemailstatus", 19)] if len(v_row) > 19 else "") or "Verified").strip()
+                        att_li = str((v_row[h_map.get("attendeelinkedin", 17)] if len(v_row) > 17 else "") or "").strip()
+
+                        if att_email and "@" in att_email and "." in att_email:
+                            clean_em = att_email.strip().lower()
+                            if clean_em not in seen_emails:
+                                seen_emails.add(clean_em)
+                                non_qual_rows.append([
+                                    rank, score, qual, comp, dom, conf, cid,
+                                    "Attendee", att_name, att_title, clean_em, att_stat, att_li,
+                                    ind, tier, eval_at,
+                                    "Disqualified", "", "", "", "", ""
+                                ])
+
+                        # Exhibitor
+                        exh_name = str(vals[12] or (v_row[h_map.get("exhibitorname", 26)] if len(v_row) > 26 else "") or "").strip()
+                        exh_title = str((v_row[h_map.get("exhibitorjobtitle", 27)] if len(v_row) > 27 else "") or "").strip()
+                        exh_email = str(vals[13] or (v_row[h_map.get("exhibitorprofessionalemail", 29)] if len(v_row) > 29 else "") or "").strip()
+                        exh_stat = str(vals[14] or (v_row[h_map.get("exhibitoremailstatus", 30)] if len(v_row) > 30 else "") or "Verified").strip()
+                        exh_li = str((v_row[h_map.get("exhibitorlinkedin", 28)] if len(v_row) > 28 else "") or "")
+
+                        if exh_email and "@" in exh_email and "." in exh_email:
+                            clean_em = exh_email.strip().lower()
+                            if clean_em not in seen_emails:
+                                seen_emails.add(clean_em)
+                                non_qual_rows.append([
+                                    rank, score, qual, comp, dom, conf, cid,
+                                    "Exhibitor", exh_name, exh_title, clean_em, exh_stat, exh_li,
+                                    ind, tier, eval_at,
+                                    "Disqualified", "", "", "", "", ""
+                                ])
+                wb.close()
+            except Exception:
+                pass
+
+    return non_qual_rows
+
+def sync_non_qualified_leads_to_local_excel(ranked_leads: Optional[List[RankedLead]] = None) -> int:
+    """Mirrors non-qualified leads (score < 50) to Local Excel 'Non -Qualified Leads' worksheet with outreach tracking columns."""
+    from ..storage.excel_manager import ExcelManager
+    em = ExcelManager()
+    non_qual_rows = build_non_qualified_leads_rows(ranked_leads, max_score=50.0)
+    em.sync_non_qualified_leads_to_excel(non_qual_rows, headers=QUALIFIED_LEADS_HEADERS)
+    return len(non_qual_rows)
+
+def export_non_qualified_leads_to_sharepoint(
+    client: SharePointExcelClient,
+    ranked_leads: Optional[List[RankedLead]] = None
+) -> int:
+    """Exports only non-qualified leads (score < 50) to SharePoint 'Non -Qualified Leads' worksheet with color highlights and outreach tracking columns."""
+    sheet_name = os.getenv("SHAREPOINT_NON_QUALIFIED_SHEET", SHAREPOINT_NON_QUALIFIED_SHEET)
+    client.ensure_worksheet_exists(sheet_name)
+    non_qual_rows = build_non_qualified_leads_rows(ranked_leads, max_score=50.0)
+    if not non_qual_rows:
+        return 0
+
+    all_data = [QUALIFIED_LEADS_HEADERS] + non_qual_rows
+    last_col = col_num_to_letter(len(QUALIFIED_LEADS_HEADERS))
+    sp_range = f"A1:{last_col}{len(all_data)}"
+    client.update_range(sheet_name, sp_range, all_data)
+    client.format_range_fill(sheet_name, f"A1:{last_col}1", "#D9E1F2")
+    client.format_range_font(sheet_name, f"A1:{last_col}1", bold=True)
+    client.format_range_font(sheet_name, f"A2:{last_col}{len(all_data)}", bold=False)
+
+    for idx, q in enumerate(non_qual_rows, 2):
+        client.format_range_fill(sheet_name, f"A{idx}:{last_col}{idx}", "#FCE5CD")
+
+    print(f"🌟 [SharePoint] '{sheet_name}' tab successfully refreshed with {len(non_qual_rows)} non-qualified leads (score < 50)!")
+    return len(non_qual_rows)
+
+def build_and_sync_non_qualified_leads(ranked_leads: Optional[List[RankedLead]] = None) -> Dict[str, Any]:
+    """Generates Non -Qualified Leads (score < 50) and syncs both Local Excel and SharePoint."""
+    client = get_sharepoint_client()
+    local_count = sync_non_qualified_leads_to_local_excel(ranked_leads)
+    sp_count = export_non_qualified_leads_to_sharepoint(client, ranked_leads)
+    return {"status": "success", "local_count": local_count, "sharepoint_count": sp_count}
+
 def export_ranked_leads_to_sharepoint(
     client: SharePointExcelClient,
     ranked_leads: List[RankedLead]
@@ -1097,6 +1340,14 @@ def export_ranked_leads_to_sharepoint(
         export_qualified_leads_to_sharepoint(client, ranked_leads)
     except Exception as e:
         print(f"⚠️ Notice exporting Qualified Leads to SharePoint: {e}")
+
+    # -----------------------------------------------------------------
+    # TAB 4: Non -Qualified Leads (Leads with ICP score < 50 with Outreach Tracking Columns)
+    # -----------------------------------------------------------------
+    try:
+        export_non_qualified_leads_to_sharepoint(client, ranked_leads)
+    except Exception as e:
+        print(f"⚠️ Notice exporting Non -Qualified Leads to SharePoint: {e}")
 
     return len(all_rows_to_insert)
 

@@ -732,6 +732,35 @@ def sync_qualified_leads_endpoint():
     return build_and_sync_qualified_leads()
 
 
+@app.post("/api/outreach/sync-non-qualified-leads")
+def sync_non_qualified_leads_endpoint():
+    """
+    Refreshes the 'Non -Qualified Leads' worksheet in both Local Excel and SharePoint/OneDrive.
+    Extracts all leads from latest weekly scoring results with ICP score < 50,
+    deduplicates them, and attaches the 6 outreach tracking columns.
+    """
+    from .services.icp_scoring_service import build_and_sync_non_qualified_leads
+    return build_and_sync_non_qualified_leads()
+
+
+@app.post("/api/outreach/send-lead")
+def send_lead_manual_endpoint(
+    email: str = Query(..., description="Email address of the lead to send outreach to"),
+    dry_run: bool = Query(False, description="Whether to preview without sending"),
+    force: bool = Query(True, description="Force send even if disqualified or already contacted"),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually triggers outreach for an individual lead (Qualified or Disqualified):
+    - Selects template from template.txt based on category (Speaker, Attendee, Exhibitor).
+    - Updates outreach tracking columns in Qualified Leads / Non -Qualified Leads and original weekly sheet.
+    - Registers thread for reply monitoring.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.send_manual_lead_outreach(email=email, force=force, dry_run_override=dry_run)
+
+
 @app.post("/api/outreach/preview-send")
 def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
     """
