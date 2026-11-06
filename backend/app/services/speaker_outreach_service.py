@@ -304,6 +304,73 @@ def extract_body_text_ms(msg: Dict[str, Any]) -> str:
     return raw.strip()
 
 
+def is_bounce_email(msg: Dict[str, Any], body_text: str = "") -> bool:
+    """
+    Comprehensive NDR (Non-Delivery Report) and bounce detection:
+    - Detects Microsoft 365 Exchange automated NDRs (e.g. Microsoftexchange...<hash>@domain)
+    - Detects standard MTA bounce senders (mailer-daemon, postmaster, noreply, etc.)
+    - Detects NDR / bounce subjects ('Undeliverable:', 'Delivery has failed', 'Delivery Status Notification', etc.)
+    - Detects NDR body signatures and standard RFC failure codes (550, 554, etc.)
+    """
+    from_obj = msg.get("from", {}).get("emailAddress", {})
+    from_addr = str(from_obj.get("address", "")).strip().lower()
+    from_name = str(from_obj.get("name", "")).strip().lower()
+    subject = str(msg.get("subject", "")).strip().lower()
+    body_preview = str(msg.get("bodyPreview", "")).strip().lower()
+    combined_body = f"{body_preview} {body_text.lower()}"
+
+    # 1. Sender name / address checks
+    bounce_sender_keywords = [
+        "mailer-daemon", "postmaster", "microsoftexchange", "microsoft exchange",
+        "system-administrator", "system administrator", "mail delivery",
+        "mail delivery system", "mail delivery subsystem", "daemon"
+    ]
+    if any(k in from_addr for k in bounce_sender_keywords):
+        return True
+    if any(k in from_name for k in ["microsoft outlook", "mail delivery system", "mail delivery subsystem", "postmaster", "system administrator"]):
+        return True
+
+    # 2. Subject checks
+    bounce_subject_keywords = [
+        "undeliverable", "delivery status notification", "delivery has failed",
+        "failure notice", "mail delivery failed", "returned mail",
+        "undelivered mail", "message not delivered", "failure delivery",
+        "delivery failure", "could not be delivered"
+    ]
+    if any(k in subject for k in bounce_subject_keywords):
+        return True
+
+    # 3. Body text / preview checks
+    bounce_body_keywords = [
+        "delivery has failed to these recipients",
+        "your message couldn't be delivered",
+        "your message could not be delivered",
+        "domain name system (dns) reported that the recipient's domain does not exist",
+        "recipient's email address was not found",
+        "recipient address rejected",
+        "the email account that you tried to reach does not exist",
+        "user unknown", "mailbox unavailable", "550 5.1.1", "554 5.4.4",
+        "550 5.4.1", "550 5.7.1", "remote server returned",
+        "diagnostic information for administrators", "generating server:",
+        "rejected your message to the following email addresses"
+    ]
+    if any(k in combined_body for k in bounce_body_keywords):
+        return True
+
+    return False
+
+
+def extract_bounce_recipient(msg: Dict[str, Any], body_text: str = "") -> Optional[str]:
+    """Extracts the intended recipient's email from an NDR/bounce message body."""
+    combined = f"{msg.get('bodyPreview', '')} {body_text}"
+    candidates = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined)
+    for c in candidates:
+        c_clean = c.strip().strip("<>():;,.").lower()
+        if not c_clean.endswith("adople.ai") and "exchange" not in c_clean and "outlook" not in c_clean:
+            return c_clean
+    return None
+
+
 def get_state_file_path() -> str:
     configured = getattr(settings, "OUTREACH_STATE_FILE", "outreach_state.json")
     if os.path.isabs(configured):
@@ -903,8 +970,16 @@ class SpeakerOutreachService:
         def parse_qualified_matrix(col_map: Dict[str, int], raw_rows: List[Any], is_onedrive: bool = False) -> List[Dict[str, Any]]:
             parsed = []
             for idx, r in enumerate(raw_rows):
-                vals = r.get("values", [[]])[0] if is_onedrive else list(r)
-                row_idx = r.get("row_index", idx) if is_onedrive else idx
+                if isinstance(r, dict):
+                    v_raw = r.get("values", [])
+                    vals = v_raw[0] if v_raw and isinstance(v_raw[0], list) else v_raw
+                    row_idx = r.get("row_index", idx)
+                else:
+                    vals = list(r)
+                    row_idx = idx
+
+                if not isinstance(vals, (list, tuple)):
+                    continue
 
                 em_idx = col_map.get("professionalemail") or col_map.get("email")
                 if em_idx is None or len(vals) <= em_idx:
@@ -1034,6 +1109,186 @@ class SpeakerOutreachService:
             self._update_verified_data_outreach(email=email, updates=updates, thread_id=thread_id, category=category)
         except Exception as e:
             logger.debug(f"Notice syncing Verified Data for {email}: {e}")
+
+        # 4. Synchronize with the corresponding original Weekly sheet (Weekly Speakers, Weekly Attendees, Weekly Exhibitors)
+        try:
+            self._update_weekly_sheet_outreach(email=email, updates=updates, thread_id=thread_id, category=category)
+        except Exception as e:
+            logger.warning(f"Notice syncing Weekly sheet for {email}: {e}")
+
+    def _update_weekly_sheet_outreach(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None,
+        category: Optional[str] = None
+    ):
+        """
+        Updates outreach tracking columns in the corresponding original Weekly sheet
+        ('weekly_speakers', 'weekly_attendees', or 'weekly_exhibitors') across both
+        OneDrive Excel and Local Excel.
+        """
+        clean_email = (email or "").strip().lower()
+        clean_thread = (thread_id or updates.get("Thread ID") or updates.get("thread_id") or "").strip()
+        if not clean_email and not clean_thread:
+            return
+
+        outreach_status = updates.get("Outreach Status") or updates.get("outreach_status") or ""
+        reply_status = updates.get("Reply Status") or updates.get("reply_status") or ""
+        reply_sentiment = updates.get("Reply Sentiment") or updates.get("reply_sentiment") or updates.get("Sentiment") or ""
+        received_reply = updates.get("Received Reply") or updates.get("received_reply") or ""
+        sent_message = updates.get("Send Message") or updates.get("sent_message") or ""
+
+        # Determine target categories
+        norm_cat = normalize_category(category) if category else ""
+        
+        is_spk = (norm_cat == "speaker")
+        is_att = (norm_cat == "attendee")
+        is_exh = (norm_cat == "exhibitor")
+
+        # If category is unspecified, detect from database
+        if not is_spk and not is_att and not is_exh:
+            if clean_email:
+                is_spk = bool(self.db.query(WeeklySpeaker).filter(func.lower(WeeklySpeaker.professional_email) == clean_email).first())
+                is_att = bool(self.db.query(WeeklyAttendee).filter(func.lower(WeeklyAttendee.professional_email) == clean_email).first())
+                is_exh = bool(self.db.query(WeeklyExhibitor).filter(func.lower(WeeklyExhibitor.professional_email) == clean_email).first())
+            if not is_spk and not is_att and not is_exh:
+                is_spk = True  # Default to speaker
+
+        # =====================================================================
+        # 1. Update Weekly Speakers (Cols 15-20 in tbl_weekly_speakers / weekly_speakers)
+        # =====================================================================
+        if is_spk:
+            try:
+                # A. OneDrive tbl_weekly_speakers
+                spk_map = self.onedrive.get_existing_weekly_speaker_rows_map()
+                for (k_cid, k_name), (row_idx, cur_vals) in spk_map.items():
+                    r_em = str(cur_vals[8] if len(cur_vals) > 8 else "").strip().lower()
+                    r_th = str(cur_vals[19] if len(cur_vals) > 19 else "").strip()
+                    if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                        new_vals = list(cur_vals)
+                        while len(new_vals) < 20:
+                            new_vals.append("")
+                        if outreach_status: new_vals[14] = outreach_status
+                        if reply_status: new_vals[15] = reply_status
+                        if reply_sentiment: new_vals[16] = reply_sentiment
+                        if received_reply: new_vals[17] = received_reply
+                        if sent_message: new_vals[18] = sent_message
+                        if clean_thread: new_vals[19] = clean_thread
+                        self.onedrive.update_weekly_speaker_row(row_idx, new_vals)
+                        logger.info(f"✅ OneDrive tbl_weekly_speakers row {row_idx} synced for {clean_email or clean_thread}.")
+                        break
+
+                # B. Local Excel weekly_speakers
+                if self.local_excel_path.exists():
+                    wb = openpyxl.load_workbook(self.local_excel_path)
+                    if "weekly_speakers" in wb.sheetnames:
+                        ws = wb["weekly_speakers"]
+                        for r in range(2, ws.max_row + 1):
+                            r_em = str(ws.cell(row=r, column=9).value or "").strip().lower()
+                            r_th = str(ws.cell(row=r, column=20).value or "").strip()
+                            if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                                if outreach_status: ws.cell(row=r, column=15, value=outreach_status)
+                                if reply_status: ws.cell(row=r, column=16, value=reply_status)
+                                if reply_sentiment: ws.cell(row=r, column=17, value=reply_sentiment)
+                                if received_reply: ws.cell(row=r, column=18, value=received_reply)
+                                if sent_message: ws.cell(row=r, column=19, value=sent_message)
+                                if clean_thread: ws.cell(row=r, column=20, value=clean_thread)
+                                wb.save(self.local_excel_path)
+                                logger.info(f"✅ Local Excel weekly_speakers row {r} synced for {clean_email or clean_thread}.")
+                                break
+            except Exception as e:
+                logger.warning(f"Notice updating Weekly Speakers for {clean_email}: {e}")
+
+        # =====================================================================
+        # 2. Update Weekly Attendees (Cols 11-16 in tbl_weekly_attendees / weekly_attendees)
+        # =====================================================================
+        if is_att:
+            try:
+                # A. OneDrive tbl_weekly_attendees
+                att_map = self.onedrive.get_existing_weekly_attendee_rows_map()
+                for (k_conf, k_name), (row_idx, cur_vals) in att_map.items():
+                    r_em = str(cur_vals[5] if len(cur_vals) > 5 else "").strip().lower()
+                    r_th = str(cur_vals[15] if len(cur_vals) > 15 else "").strip()
+                    if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                        new_vals = list(cur_vals)
+                        while len(new_vals) < 16:
+                            new_vals.append("")
+                        if outreach_status: new_vals[10] = outreach_status
+                        if reply_status: new_vals[11] = reply_status
+                        if reply_sentiment: new_vals[12] = reply_sentiment
+                        if received_reply: new_vals[13] = received_reply
+                        if sent_message: new_vals[14] = sent_message
+                        if clean_thread: new_vals[15] = clean_thread
+                        self.onedrive.update_weekly_attendee_row(row_idx, new_vals)
+                        logger.info(f"✅ OneDrive tbl_weekly_attendees row {row_idx} synced for {clean_email or clean_thread}.")
+                        break
+
+                # B. Local Excel weekly_attendees
+                if self.local_excel_path.exists():
+                    wb = openpyxl.load_workbook(self.local_excel_path)
+                    if "weekly_attendees" in wb.sheetnames:
+                        ws = wb["weekly_attendees"]
+                        for r in range(2, ws.max_row + 1):
+                            r_em = str(ws.cell(row=r, column=6).value or "").strip().lower()
+                            r_th = str(ws.cell(row=r, column=16).value or "").strip()
+                            if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                                if outreach_status: ws.cell(row=r, column=11, value=outreach_status)
+                                if reply_status: ws.cell(row=r, column=12, value=reply_status)
+                                if reply_sentiment: ws.cell(row=r, column=13, value=reply_sentiment)
+                                if received_reply: ws.cell(row=r, column=14, value=received_reply)
+                                if sent_message: ws.cell(row=r, column=15, value=sent_message)
+                                if clean_thread: ws.cell(row=r, column=16, value=clean_thread)
+                                wb.save(self.local_excel_path)
+                                logger.info(f"✅ Local Excel weekly_attendees row {r} synced for {clean_email or clean_thread}.")
+                                break
+            except Exception as e:
+                logger.warning(f"Notice updating Weekly Attendees for {clean_email}: {e}")
+
+        # =====================================================================
+        # 3. Update Weekly Exhibitors (Cols 16-21 in weekly_exhibitors / weekly_exhibitors)
+        # =====================================================================
+        if is_exh:
+            try:
+                # A. OneDrive weekly_exhibitors
+                exh_map = self.onedrive.get_existing_weekly_exhibitor_rows_map()
+                for (k_conf, k_comp), (row_idx, cur_vals) in exh_map.items():
+                    r_em = str(cur_vals[9] if len(cur_vals) > 9 else "").strip().lower()
+                    r_th = str(cur_vals[20] if len(cur_vals) > 20 else "").strip()
+                    if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                        new_vals = list(cur_vals)
+                        while len(new_vals) < 21:
+                            new_vals.append("")
+                        if outreach_status: new_vals[15] = outreach_status
+                        if reply_status: new_vals[16] = reply_status
+                        if reply_sentiment: new_vals[17] = reply_sentiment
+                        if received_reply: new_vals[18] = received_reply
+                        if sent_message: new_vals[19] = sent_message
+                        if clean_thread: new_vals[20] = clean_thread
+                        self.onedrive.update_weekly_exhibitor_row(row_idx, new_vals)
+                        logger.info(f"✅ OneDrive weekly_exhibitors row {row_idx} synced for {clean_email or clean_thread}.")
+                        break
+
+                # B. Local Excel weekly_exhibitors
+                if self.local_excel_path.exists():
+                    wb = openpyxl.load_workbook(self.local_excel_path)
+                    if "weekly_exhibitors" in wb.sheetnames:
+                        ws = wb["weekly_exhibitors"]
+                        for r in range(2, ws.max_row + 1):
+                            r_em = str(ws.cell(row=r, column=10).value or "").strip().lower()
+                            r_th = str(ws.cell(row=r, column=21).value or "").strip()
+                            if (clean_email and r_em == clean_email) or (clean_thread and r_th == clean_thread):
+                                if outreach_status: ws.cell(row=r, column=16, value=outreach_status)
+                                if reply_status: ws.cell(row=r, column=17, value=reply_status)
+                                if reply_sentiment: ws.cell(row=r, column=18, value=reply_sentiment)
+                                if received_reply: ws.cell(row=r, column=19, value=received_reply)
+                                if sent_message: ws.cell(row=r, column=20, value=sent_message)
+                                if clean_thread: ws.cell(row=r, column=21, value=clean_thread)
+                                wb.save(self.local_excel_path)
+                                logger.info(f"✅ Local Excel weekly_exhibitors row {r} synced for {clean_email or clean_thread}.")
+                                break
+            except Exception as e:
+                logger.warning(f"Notice updating Weekly Exhibitors for {clean_email}: {e}")
 
     def _load_verified_data_leads(self) -> List[Dict[str, Any]]:
         """
@@ -1465,15 +1720,28 @@ class SpeakerOutreachService:
 
             conv_id = msg.get("conversationId", "")
             from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
+            body_text = extract_body_text_ms(msg)
+
+            # Accurate, robust NDR and bounce detection
+            is_bounce = is_bounce_email(msg, body_text)
+            bounced_recipient = extract_bounce_recipient(msg, body_text) if is_bounce else None
 
             # Identify target: check Weekly Speakers first, then Qualified Leads, then Verified Data
-            target_speaker = speaker_by_thread.get(conv_id) or speaker_by_email.get(from_addr)
-            qualified_target = None
-            verified_target = None
-            if not target_speaker:
-                qualified_target = qualified_by_thread.get(conv_id) or qualified_by_email.get(from_addr)
-                if not qualified_target:
-                    verified_target = verified_by_thread.get(conv_id) or verified_by_email.get(from_addr)
+            target_speaker = (
+                speaker_by_thread.get(conv_id) 
+                or (speaker_by_email.get(bounced_recipient) if bounced_recipient else None)
+                or speaker_by_email.get(from_addr)
+            )
+            qualified_target = (
+                qualified_by_thread.get(conv_id)
+                or (qualified_by_email.get(bounced_recipient) if bounced_recipient else None)
+                or qualified_by_email.get(from_addr)
+            )
+            verified_target = (
+                verified_by_thread.get(conv_id)
+                or (verified_by_email.get(bounced_recipient) if bounced_recipient else None)
+                or verified_by_email.get(from_addr)
+            )
 
             if not target_speaker and not qualified_target and not verified_target:
                 # Unrelated email - ignore safely
@@ -1503,12 +1771,18 @@ class SpeakerOutreachService:
                 else (qualified_target.get("contact_type") if qualified_target 
                 else (verified_target.get("contact_type") if verified_target else "Verified Contact"))
             )
+            contact_email = (
+                target_speaker.professional_email if (target_speaker and target_speaker.professional_email)
+                else (qualified_target.get("professional_email") if (qualified_target and qualified_target.get("professional_email"))
+                else (verified_target.get("professional_email") if (verified_target and verified_target.get("professional_email"))
+                else (bounced_recipient or from_addr)))
+            )
 
-            logger.info(f"📬 Incoming reply detected from [{contact_type}] {contact_name} <{from_addr}>!")
-            body_text = extract_body_text_ms(msg)
-
-            # Check bounce
-            is_bounce = any(b in from_addr for b in ["mailer-daemon", "postmaster"]) or "delivery status" in msg.get("subject", "").lower()
+            # Ensure both speaker and qualified leads targets are resolved if contact exists across lists
+            if target_speaker and not qualified_target:
+                qualified_target = qualified_by_thread.get(conv_id) or (qualified_by_email.get(contact_email.lower()) if contact_email else None)
+            if target_speaker and not verified_target:
+                verified_target = verified_by_thread.get(conv_id) or (verified_by_email.get(contact_email.lower()) if contact_email else None)
 
             # Fetch full conversation thread to build chronological transcript
             thread_msgs = self.graph.get_conversation_messages(conv_id) if conv_id else [msg]
@@ -1519,7 +1793,9 @@ class SpeakerOutreachService:
 
             if is_bounce:
                 bounces_count += 1
+                logger.info(f"🚫 Bounce/NDR detected for [{contact_type}] {contact_name} <{contact_email}>. Teams notification card suppressed.")
             else:
+                logger.info(f"📬 Incoming reply detected from [{contact_type}] {contact_name} <{contact_email}>!")
                 analysis = self.gemini.analyze_reply(
                     body_text,
                     name=contact_name,
@@ -1530,10 +1806,10 @@ class SpeakerOutreachService:
                 sentiment = analysis.get("sentiment", "Neutral")
                 new_replies_count += 1
 
-                # Send exactly ONE Teams notification card per new reply
+                # Send exactly ONE Teams notification card per genuine reply
                 send_teams_reply_notification(
                     speaker_name=contact_name,
-                    email=from_addr,
+                    email=contact_email,
                     conf_name=conf_name,
                     intent=intent,
                     sentiment=sentiment,
@@ -1543,17 +1819,18 @@ class SpeakerOutreachService:
 
             received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
 
+            # -----------------------------------------------------------------
+            # 1. Update Weekly Speakers if contact originated there
+            # -----------------------------------------------------------------
             if target_speaker:
-                # -----------------------------------------------------------------
-                # 1. Existing Weekly Speakers workflow: preserved and untouched
-                # -----------------------------------------------------------------
                 target_speaker.reply_status = "bounced" if is_bounce else "replied"
                 target_speaker.reply_sentiment = sentiment
-                target_speaker.received_reply = transcript
+                target_speaker.received_reply = transcript if not is_bounce else "BOUNCE: Undeliverable address"
                 self.db.commit()
                 self._update_onedrive_speaker_row(target_speaker)
 
-                if getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
+                # Only log genuine prospect replies into tbl_speakers_replies
+                if getattr(settings, "SPEAKER_REPLIES_ENABLED", True) and not is_bounce:
                     last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
                     reply_row = [
                         target_speaker.speaker_id or "",
@@ -1564,16 +1841,16 @@ class SpeakerOutreachService:
                         target_speaker.company_name or "",
                         target_speaker.personal_linkedin_url or "",
                         target_speaker.linkedin_status or "",
-                        target_speaker.professional_email or from_addr,
+                        contact_email,
                         target_speaker.email_source_url or "",
                         target_speaker.speaker_source_url or "",
                         target_speaker.verification_status or "",
                         last_checked_str,
                         target_speaker.weekly_run_id or "",
                         target_speaker.outreach_status or "sent",
-                        "bounced" if is_bounce else "replied",
+                        "replied",
                         sentiment,
-                        body_text if not is_bounce else "BOUNCE",
+                        body_text,
                         target_speaker.sent_message or "",
                         conv_id or "",
                         received_at_str,
@@ -1607,16 +1884,16 @@ class SpeakerOutreachService:
                             company_name=target_speaker.company_name or "",
                             personal_linkedin_url=target_speaker.personal_linkedin_url or "",
                             linkedin_status=target_speaker.linkedin_status or "",
-                            professional_email=target_speaker.professional_email or from_addr,
+                            professional_email=contact_email,
                             email_source_url=target_speaker.email_source_url or "",
                             speaker_source_url=target_speaker.speaker_source_url or "",
                             verification_status=target_speaker.verification_status or "",
                             last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
                             weekly_run_id=target_speaker.weekly_run_id or "",
                             outreach_status=target_speaker.outreach_status or "sent",
-                            reply_status="bounced" if is_bounce else "replied",
+                            reply_status="replied",
                             reply_sentiment=sentiment,
-                            received_reply=body_text if not is_bounce else "BOUNCE",
+                            received_reply=body_text,
                             sent_message=target_speaker.sent_message or "",
                             thread_id=conv_id or "",
                             reply_received_at=parsed_dt,
@@ -1631,10 +1908,10 @@ class SpeakerOutreachService:
 
                     logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
 
-            elif qualified_target or verified_target:
-                # -----------------------------------------------------------------
-                # 2. Qualified Leads & Verified Data workflow: updates sheets & tables in-place
-                # -----------------------------------------------------------------
+            # -----------------------------------------------------------------
+            # 2. Update Qualified Leads and Verified Data
+            # -----------------------------------------------------------------
+            if qualified_target or verified_target:
                 rep_status = "bounced" if is_bounce else "replied"
                 cat_target = (
                     qualified_target.get("category") if qualified_target 
@@ -1645,15 +1922,15 @@ class SpeakerOutreachService:
                     "Reply Status": rep_status,
                     "Reply Sentiment": sentiment,
                     "Sentiment": sentiment,
-                    "Received Reply": transcript
+                    "Received Reply": transcript if not is_bounce else "BOUNCE: Undeliverable address"
                 }
                 # Updates Qualified Leads in OneDrive & Local Excel, and syncs Verified Data
-                self._update_qualified_leads_outreach(email=from_addr, updates=reply_updates, thread_id=conv_id, category=cat_target)
-                self._sync_db_outreach_status(email=from_addr, status=rep_status, thread_id=conv_id)
+                self._update_qualified_leads_outreach(email=contact_email, updates=reply_updates, thread_id=conv_id, category=cat_target)
+                self._sync_db_outreach_status(email=contact_email, status=rep_status, thread_id=conv_id)
 
                 fresh_state = load_state()
                 fresh_state.setdefault("replies", []).append({
-                    "email": from_addr,
+                    "email": contact_email,
                     "name": contact_name,
                     "conference_name": conf_name,
                     "source": "qualified_leads" if qualified_target else "verified_data",
@@ -1663,7 +1940,7 @@ class SpeakerOutreachService:
                     "message_id": msg_id
                 })
                 save_state(fresh_state)
-                logger.info(f"✅ Stored reply for '{contact_name}' into 'Qualified Leads' and 'Verified Data' sheets & tables.")
+                logger.info(f"✅ Stored {'bounce' if is_bounce else 'reply'} for '{contact_name}' into 'Qualified Leads' and 'Verified Data' sheets & tables.")
 
             # Ensure persisted in state & deduplication set
             mark_reply_processed(msg_id)
@@ -1677,60 +1954,19 @@ class SpeakerOutreachService:
 
     def _update_onedrive_speaker_row(self, speaker: WeeklySpeaker):
         """Updates the speaker row in OneDrive Excel (tbl_weekly_speakers) and Local Excel."""
-        try:
-            # 1. Update OneDrive
-            existing_map = self.onedrive.get_existing_weekly_speaker_rows_map()
-            target_cid = str(speaker.conference_id or "").strip().lower()
-            target_name = str(speaker.speaker_name or "").strip().lower()
-            target_email = str(speaker.professional_email or "").strip().lower()
-
-            target_row_info = None
-            for (k_cid, k_name), (row_idx, cur_vals) in existing_map.items():
-                row_email = str(cur_vals[8] if len(cur_vals) > 8 else "").strip().lower()
-                if (k_cid.strip().lower() == target_cid and k_name.strip().lower() == target_name) or (target_email and row_email == target_email):
-                    target_row_info = (row_idx, cur_vals)
-                    break
-
-            if target_row_info:
-                row_idx, cur_vals = target_row_info
-                new_vals = list(cur_vals)
-                while len(new_vals) < 20:
-                    new_vals.append("")
-
-                new_vals[14] = speaker.outreach_status or ""
-                new_vals[15] = speaker.reply_status or ""
-                new_vals[16] = speaker.reply_sentiment or ""
-                new_vals[17] = speaker.received_reply or ""
-                new_vals[18] = speaker.sent_message or ""
-                new_vals[19] = speaker.email_thread_id or ""
-
-                self.onedrive.update_weekly_speaker_row(row_idx, new_vals)
-                logger.info(f"✅ OneDrive tbl_weekly_speakers row {row_idx} updated for {speaker.speaker_name}.")
-            else:
-                logger.warning(f"Speaker {speaker.speaker_name} not found in OneDrive tbl_weekly_speakers rows map.")
-
-            # 2. Update Local Excel
-            if self.local_excel_path.exists():
-                wb = openpyxl.load_workbook(self.local_excel_path)
-                ws = wb["weekly_speakers"]
-                # Ensure headers exist
-                if ws.max_column < 20:
-                    headers = ["outreach status", "reply status", "reply sentiment", "received reply", "send message", "thread id"]
-                    for c_idx, h in enumerate(headers, start=15):
-                        ws.cell(row=1, column=c_idx, value=h)
-
-                for r in range(2, ws.max_row + 1):
-                    cid = str(ws.cell(row=r, column=2).value or "").strip().lower()
-                    sname = str(ws.cell(row=r, column=4).value or "").strip().lower()
-                    semail = str(ws.cell(row=r, column=9).value or "").strip().lower()
-                    if (cid == target_cid and sname == target_name) or (target_email and semail == target_email):
-                        ws.cell(row=r, column=15, value=speaker.outreach_status or "")
-                        ws.cell(row=r, column=16, value=speaker.reply_status or "")
-                        ws.cell(row=r, column=17, value=speaker.reply_sentiment or "")
-                        ws.cell(row=r, column=18, value=speaker.received_reply or "")
-                        ws.cell(row=r, column=19, value=speaker.sent_message or "")
-                        ws.cell(row=r, column=20, value=speaker.email_thread_id or "")
-                        break
-                wb.save(self.local_excel_path)
-        except Exception as e:
-            logger.warning(f"Notice while updating Excel rows: {e}")
+        if not speaker:
+            return
+        updates = {
+            "outreach_status": speaker.outreach_status,
+            "reply_status": speaker.reply_status,
+            "reply_sentiment": speaker.reply_sentiment,
+            "received_reply": speaker.received_reply,
+            "sent_message": speaker.sent_message,
+            "thread_id": speaker.email_thread_id
+        }
+        self._update_weekly_sheet_outreach(
+            email=speaker.professional_email,
+            updates=updates,
+            thread_id=speaker.email_thread_id,
+            category="Speaker"
+        )

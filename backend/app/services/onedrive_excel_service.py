@@ -692,6 +692,24 @@ class OneDriveExcelService:
         endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows/itemAt(index={row_index})"
         return self._api_request("PATCH", endpoint, body={"values": [values]})
 
+    def update_weekly_attendee_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates an existing weekly attendee row in-place in 'tbl_weekly_attendees' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
+    def update_weekly_exhibitor_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates an existing weekly exhibitor row in-place in 'weekly_exhibitors' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
     def delete_weekly_speaker_row(self, row_index: int) -> Dict[str, Any]:
         """
         Deletes a weekly speaker row at row_index from 'tbl_weekly_speakers' on OneDrive.
