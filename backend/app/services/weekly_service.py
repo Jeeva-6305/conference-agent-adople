@@ -50,7 +50,19 @@ def calculate_weekly_target_range(
         current_now = datetime.now()
 
     today = ref_date or current_now.date()
-    effective_lead = lead_days if lead_days is not None else getattr(settings, "WEEKLY_SCRAPE_LEAD_DAYS", 3)
+    effective_lead = lead_days if lead_days is not None else getattr(settings, "WEEKLY_SCRAPE_LEAD_DAYS", 6)
+
+    # 1. Check if explicit target dates are specified in settings or env (e.g. 15th-21st)
+    env_start = getattr(settings, "WEEKLY_TARGET_START_DATE", None) or os.getenv("WEEKLY_TARGET_START_DATE")
+    env_end = getattr(settings, "WEEKLY_TARGET_END_DATE", None) or os.getenv("WEEKLY_TARGET_END_DATE")
+    if env_start and env_end and not ref_date:
+        try:
+            target_sunday = date.fromisoformat(str(env_start).strip())
+            target_saturday = date.fromisoformat(str(env_end).strip())
+            run_id = f"WEEK-{target_sunday.isoformat()}_{target_saturday.isoformat()}"
+            return target_sunday, target_saturday, run_id
+        except Exception:
+            pass
 
     # In Python: Monday is 0, Tuesday is 1, ..., Saturday is 5, Sunday is 6
     # Days until upcoming Sunday (6 - weekday) % 7
@@ -509,18 +521,7 @@ class WeeklyConferenceService:
             except Exception as e:
                 logger.warning(f"⚠️ [Weekly Workflow] Exhibitor collection notice: {e}")
 
-        # 8e. Automated Strategic ICP Scoring & Latest Week Scoring Sheet Sync
-        icp_res = {}
-        if getattr(settings, "WEEKLY_ICP_SCORING_ENABLED", True):
-            try:
-                from .icp_scoring_service import ICPScoringService
-                icp_svc = ICPScoringService(self.db)
-                icp_res = icp_svc.score_and_publish_weekly_run(run_id=run_id)
-                logger.info(f"✅ [Weekly Workflow] Automated ICP scoring & latest-week sheet sync complete: {icp_res}")
-            except Exception as e:
-                logger.warning(f"⚠️ [Weekly Workflow] ICP scoring notice: {e}", exc_info=True)
-
-        # 8f. Automated Sync to Verified Data Sheet
+        # 8e. Automated Sync to Verified Data Sheet (Aggregates new speakers, attendees, exhibitors)
         verified_res = {}
         try:
             from .verified_data_service import VerifiedDataService
@@ -529,6 +530,17 @@ class WeeklyConferenceService:
             logger.info(f"✅ [Weekly Workflow] Automated Verified Data sync complete: {verified_res}")
         except Exception as e:
             logger.warning(f"⚠️ [Weekly Workflow] Verified Data sync notice: {e}", exc_info=True)
+
+        # 8f. Automated Strategic ICP Scoring & Latest Week Scoring Sheet Sync (Runs on new Verified Data)
+        icp_res = {}
+        if getattr(settings, "WEEKLY_ICP_SCORING_ENABLED", True):
+            try:
+                from .icp_scoring_service import ICPScoringService
+                icp_svc = ICPScoringService(self.db)
+                icp_res = icp_svc.score_and_publish_weekly_run(run_id=run_id)
+                logger.info(f"✅ [Weekly Workflow] Automated ICP scoring & lead segregation complete: {icp_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Workflow] ICP scoring notice: {e}", exc_info=True)
 
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts

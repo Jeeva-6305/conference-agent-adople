@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -86,9 +87,13 @@ class Settings:
 
     # Weekly Conference Scraping & OneDrive Excel Settings
     WEEKLY_AGENT_ENABLED: bool = os.getenv("WEEKLY_AGENT_ENABLED", "false").lower() in ("true", "1", "yes")
-    WEEKLY_TIMEZONE: str = os.getenv("WEEKLY_TIMEZONE", "America/New_York")
+    WEEKLY_TIMEZONE: str = os.getenv("WEEKLY_TIMEZONE", "Asia/Kolkata")
+    WEEKLY_SCRAPE_DAY: str = os.getenv("WEEKLY_SCRAPE_DAY", "mon")
+    WEEKLY_SCRAPE_TIME: str = os.getenv("WEEKLY_SCRAPE_TIME", "06:00")
+    WEEKLY_TARGET_START_DATE: Optional[str] = os.getenv("WEEKLY_TARGET_START_DATE", "2026-11-15")
+    WEEKLY_TARGET_END_DATE: Optional[str] = os.getenv("WEEKLY_TARGET_END_DATE", "2026-11-21")
     WEEKLY_REFRESH_ENABLED: bool = os.getenv("WEEKLY_REFRESH_ENABLED", "true").lower() in ("true", "1", "yes")
-    WEEKLY_SCRAPE_LEAD_DAYS: int = int(os.getenv("WEEKLY_SCRAPE_LEAD_DAYS", "3"))
+    WEEKLY_SCRAPE_LEAD_DAYS: int = int(os.getenv("WEEKLY_SCRAPE_LEAD_DAYS", "6"))
     WEEKLY_TEAMS_CARD_ENABLED: bool = os.getenv("WEEKLY_TEAMS_CARD_ENABLED", "false").lower() in ("true", "1", "yes")
 
     WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME", "weekly_conferences")
@@ -160,10 +165,10 @@ class Settings:
     
     # Non-Qualified Leads Outreach Configuration (Independent Workflow)
     NON_QUALIFIED_OUTREACH_ACTIVE: bool = os.getenv("NON_QUALIFIED_OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
-    NON_QUALIFIED_OUTREACH_SEND_TIME: str = os.getenv("NON_QUALIFIED_OUTREACH_SEND_TIME", os.getenv("SEND_TIME", "20:00"))
-    NON_QUALIFIED_OUTREACH_SEND_DAY: str = os.getenv("NON_QUALIFIED_OUTREACH_SEND_DAY", os.getenv("OUTREACH_SEND_DAY", "thu"))
-    NON_QUALIFIED_OUTREACH_DAILY_CAP: int = int(os.getenv("NON_QUALIFIED_DAILY_CAP", os.getenv("DAILY_CAP", "0")))
-    NON_QUALIFIED_DRY_RUN: bool = os.getenv("NON_QUALIFIED_DRY_RUN", os.getenv("DRY_RUN", "0")).lower() in ("1", "true", "yes")
+    NON_QUALIFIED_OUTREACH_SEND_TIME: str = os.getenv("NON_QUALIFIED_SEND_TIME", "20:00")
+    NON_QUALIFIED_OUTREACH_SEND_DAY: str = os.getenv("NON_QUALIFIED_SEND_DAY", "fri")
+    NON_QUALIFIED_OUTREACH_DAILY_CAP: int = int(os.getenv("NON_QUALIFIED_DAILY_CAP", "0"))
+    NON_QUALIFIED_DRY_RUN: bool = os.getenv("NON_QUALIFIED_DRY_RUN", "0").lower() in ("1", "true", "yes")
     
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
 

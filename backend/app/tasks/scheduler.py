@@ -204,13 +204,19 @@ def start_scheduler():
         else:
             logger.info("⏸️ [Scheduler] T-2 hourly scraping & publication engine are temporarily PAUSED (T2_WORKFLOW_ENABLED=false).")
 
-        # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage
-        weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "America/New_York")
+        # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage (Every Monday at 06:00 AM IST)
+        weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "Asia/Kolkata")
+        weekly_day = getattr(settings, "WEEKLY_SCRAPE_DAY", "mon")
+        weekly_time_str = getattr(settings, "WEEKLY_SCRAPE_TIME", "06:00")
+        try:
+            whour, wmin = [int(p) for p in weekly_time_str.split(":", 1)]
+        except Exception:
+            whour, wmin = 6, 0
         scheduler.add_job(
             weekly_scrape_job,
-            trigger=CronTrigger(hour=6, minute=0, timezone=weekly_tz),
+            trigger=CronTrigger(day_of_week=weekly_day, hour=whour, minute=wmin, timezone=weekly_tz),
             id="weekly_conference_scraper_job",
-            name="Weekly Conference Scraping & OneDrive Excel Storage",
+            name=f"Weekly Conference Scraping ({weekly_day.upper()} {weekly_time_str} {weekly_tz})",
             replace_existing=True
         )
 
@@ -226,26 +232,27 @@ def start_scheduler():
 
         # 5. Scheduled Outreach Sender (Every Thursday at 19:00 / 7:00 PM IST)
         # Note: Will safely skip execution until OUTREACH_ACTIVE=True is set after user template approval
-        send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "19:00")
+        # 5. Scheduled Outreach Sender for Qualified Leads (Every Thursday at 20:00 / 8:00 PM IST)
+        send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "20:00")
         outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
         outreach_day = getattr(settings, "OUTREACH_SEND_DAY", "thu")
         try:
             shour, smin = [int(p) for p in send_time_str.split(":", 1)]
         except Exception:
-            shour, smin = 19, 0
+            shour, smin = 20, 0
         scheduler.add_job(
             weekly_speaker_scheduled_send_job,
             trigger=CronTrigger(day_of_week=outreach_day, hour=shour, minute=smin, timezone=outreach_tz),
             id="weekly_speaker_scheduled_send_job",
-            name=f"Scheduled Weekly Speaker Outreach Sender ({outreach_day.upper()} {send_time_str})",
+            name=f"Scheduled Qualified Leads Outreach Sender ({outreach_day.upper()} {send_time_str} {outreach_tz})",
             replace_existing=True
         )
 
-        # 6. Scheduled Non-Qualified Outreach Sender (Every Thursday at NON_QUALIFIED_OUTREACH_SEND_TIME)
+        # 6. Scheduled Outreach Sender for Non-Qualified Leads (Every Friday at 20:00 / 8:00 PM IST)
         # Note: Will safely skip execution until NON_QUALIFIED_OUTREACH_ACTIVE=True is set in .env
         nq_send_time_str = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_TIME", "20:00")
         nq_outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
-        nq_outreach_day = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "thu")
+        nq_outreach_day = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "fri")
         try:
             nq_hour, nq_min = [int(p) for p in nq_send_time_str.split(":", 1)]
         except Exception:
