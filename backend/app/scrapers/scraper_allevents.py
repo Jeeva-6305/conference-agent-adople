@@ -129,9 +129,10 @@ class AllEventsScraper(BaseScraper):
                                     for a_link in ev_soup.find_all('a', href=True):
                                         h = a_link['href'].strip()
                                         if h.startswith('http') and not any(ign in h.lower() for ign in [
-                                            'allevents.in', 'google.com', 'facebook.com', 'twitter.com',
+                                            'allevents.in', 'google.com', 'facebook.com', 'twitter.com', 'x.com',
                                             'linkedin.com', 'instagram.com', 'apple.com', 'itunes.apple',
-                                            'play.google', 'apps.apple', 'youtube.com'
+                                            'play.google', 'apps.apple', 'youtube.com', 'pinterest.com',
+                                            'tiktok.com', 'snapchat.com', 'vimeo.com', 'reddit.com'
                                         ]):
                                             official_site_url = h.rstrip('.,;)\"')
                                             break

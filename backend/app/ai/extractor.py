@@ -659,6 +659,36 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
         except Exception:
             pass
 
+    # High-accuracy fallback: Tavily Search if direct Bing was blocked or inconclusive
+    if not candidates and getattr(settings, "TAVILY_API_KEY", ""):
+        try:
+            import requests as _rq
+            target_scope = company_name or job_title or "USA"
+            t_query = f'site:linkedin.com/in "{clean_name}" "{target_scope}"'
+            t_resp = _rq.post(
+                "https://api.tavily.com/search",
+                json={"api_key": settings.TAVILY_API_KEY, "query": t_query, "max_results": 3},
+                timeout=6
+            )
+            if t_resp.status_code == 200:
+                for it in t_resp.json().get("results", []):
+                    u_cand = it.get("url", "")
+                    if "linkedin.com/in/" in u_cand:
+                        m = re.match(r"(https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[a-zA-Z0-9_\-%]+)", u_cand)
+                        if m:
+                            clean_u = m.group(1).rstrip("/")
+                            clean_u = re.sub(r"https?://[a-z]{2,3}\.linkedin\.com", "https://www.linkedin.com", clean_u)
+                            if clean_u not in seen_urls:
+                                seen_urls.add(clean_u)
+                                candidates.append({
+                                    "url": clean_u,
+                                    "title": it.get("title", ""),
+                                    "snippet": it.get("content", ""),
+                                    "query_used": t_query
+                                })
+        except Exception:
+            pass
+
     return candidates
 
 def score_candidate(candidate: dict, speaker_name: str, company_name: str = "", job_title: str = "", location: str = ""):

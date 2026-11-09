@@ -54,10 +54,11 @@ class EventbriteScraper(BaseScraper):
             sat_str = exact_t2
 
         discovery_urls = [
-            f"https://www.eventbrite.com/d/united-states/conferences/?start_date={exact_t2}&end_date={exact_t2}",
             f"https://www.eventbrite.com/d/united-states/business--conferences/?start_date={sun_str}&end_date={sat_str}",
             f"https://www.eventbrite.com/d/united-states/science-and-tech--conferences/?start_date={sun_str}&end_date={sat_str}",
             f"https://www.eventbrite.com/d/united-states/health--conferences/?start_date={sun_str}&end_date={sat_str}",
+            f"https://www.eventbrite.com/d/united-states/conferences/?start_date={sun_str}&end_date={sat_str}",
+            f"https://www.eventbrite.com/d/united-states/conferences/?start_date={exact_t2}&end_date={exact_t2}",
             "https://www.eventbrite.com/d/united-states/business--conferences/",
             "https://www.eventbrite.com/d/united-states/science-and-tech--conferences/",
             "https://www.eventbrite.com/d/united-states/health--conferences/",
@@ -95,11 +96,11 @@ class EventbriteScraper(BaseScraper):
 
                             seen_urls.add(url)
                             candidate_items.append((name, url))
-                            if len(candidate_items) >= 25:
+                            if len(candidate_items) >= 60:
                                 break
                     except Exception:
                         pass
-                if len(candidate_items) >= 25:
+                if len(candidate_items) >= 60:
                     break
             except Exception as e:
                 logger.error(f"[{self.source_name}] Error crawling {disc_url}: {e}")
@@ -160,6 +161,8 @@ class EventbriteScraper(BaseScraper):
                 performers = event_data.get('performer', [])
                 performer_names = []
                 performer_details = []
+                full_body_text = soup.get_text('\n', strip=True)
+                full_desc_and_body = f"{desc} {full_body_text}"
                 if isinstance(performers, list):
                     for p in performers:
                         if isinstance(p, dict):
@@ -167,10 +170,20 @@ class EventbriteScraper(BaseScraper):
                             p_url = p.get('url', '')
                             if p_name and p_name.lower() not in title.lower():
                                 performer_names.append(p_name)
-                                if p_url:
-                                    performer_details.append(f"{p_name} ({p_url})")
+                                # Extract Role & Company from page text: e.g. "Name (Role at Company)" or "Name from Company"
+                                m_rc = re.search(rf"\b{re.escape(p_name)}\s*\(([^()]+?)\)", full_desc_and_body)
+                                if m_rc:
+                                    rc_str = m_rc.group(1).replace("\n", " ").strip()
+                                    performer_details.append(f"{p_name} ({rc_str})")
                                 else:
-                                    performer_details.append(p_name)
+                                    m_comp = re.search(rf"\b{re.escape(p_name)}\s+(?:from|of|at)\s+([A-Z][A-Za-z0-9\.\s&]+?)(?:\s*[,–\.\n]|Career|Investing|Tickets|\Z)", full_desc_and_body)
+                                    if m_comp:
+                                        c_name = m_comp.group(1).replace("\n", " ").strip()
+                                        performer_details.append(f"{p_name} (Speaker at {c_name})")
+                                    elif p_url:
+                                        performer_details.append(f"{p_name} ({p_url})")
+                                    else:
+                                        performer_details.append(p_name)
 
                 # FAQ / Agenda / Description details
                 faq_text = ""
@@ -196,8 +209,6 @@ class EventbriteScraper(BaseScraper):
                     if valid_from:
                         pub_date = valid_from[:10]
 
-                # Extract full text and speaker mentions from page body
-                full_body_text = soup.get_text('\n', strip=True)
                 speaker_section_text = ""
                 for spk_marker in ["Featured Speakers", "Keynote Speakers", "Our Speakers", "Speakers"]:
                     if spk_marker in full_body_text:
@@ -209,7 +220,11 @@ class EventbriteScraper(BaseScraper):
                 official_site_url = ""
                 for a in soup.find_all('a', href=True):
                     h_val = a['href'].strip()
-                    if h_val.startswith('http') and not any(ign in h_val.lower() for ign in ['eventbrite.com', 'google.com', 'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com', 'youtube.com', 'apple.com', 'android.com']):
+                    if h_val.startswith('http') and not any(ign in h_val.lower() for ign in [
+                        'eventbrite.com', 'google.com', 'facebook.com', 'twitter.com', 'x.com',
+                        'instagram.com', 'linkedin.com', 'youtube.com', 'apple.com', 'android.com',
+                        'pinterest.com', 'tiktok.com', 'snapchat.com', 'vimeo.com'
+                    ]):
                         official_site_url = h_val.rstrip('.,;)\"')
                         break
                 

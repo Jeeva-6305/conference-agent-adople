@@ -246,6 +246,30 @@ def fetch_official_site_speakers(official_url: str, conf_title: str = "") -> Lis
                             role = it.get('jobTitle', '').strip()
                             works_for = it.get('worksFor', {})
                             company = works_for.get('name', '').strip() if isinstance(works_for, dict) else str(works_for)
+                            if company.lower() in ('none', '{}', 'n/a'):
+                                company = ''
+
+                            # If role or company is missing from json-ld, check page text
+                            if not role or not company:
+                                page_txt = soup.get_text(' ', strip=True)
+                                m_rc = re.search(rf"\b{re.escape(name)}\s*\(([^()]+?)\)", page_txt)
+                                if m_rc:
+                                    rc_part = m_rc.group(1).replace('\n', ' ').strip()
+                                    if ' at ' in rc_part:
+                                        p_split = rc_part.split(' at ', 1)
+                                        role = role or p_split[0].strip()
+                                        company = company or p_split[1].strip()
+                                    elif ' of ' in rc_part:
+                                        p_split = rc_part.split(' of ', 1)
+                                        role = role or p_split[0].strip()
+                                        company = company or p_split[1].strip()
+                                    else:
+                                        role = role or rc_part
+                                if not company:
+                                    m_comp = re.search(rf"\b{re.escape(name)}\s+(?:from|of|at)\s+([A-Z][A-Za-z0-9\.\s&]+?)(?:\s*[,–\.\n]|Career|Investing|Tickets|\Z)", page_txt)
+                                    if m_comp:
+                                        company = m_comp.group(1).replace('\n', ' ').strip()
+
                             same_as = it.get('sameAs', '')
                             spk_url = it.get('url', target_url)
 
@@ -255,8 +279,8 @@ def fetch_official_site_speakers(official_url: str, conf_title: str = "") -> Lis
                             discovered.append({
                                 'conference_name': conf_title,
                                 'speaker_name': name,
-                                'company_name': company or 'Industry Organization',
-                                'company_organization': company or 'Industry Organization',
+                                'company_name': company or conf_title or 'Industry Organization',
+                                'company_organization': company or conf_title or 'Industry Organization',
                                 'job_role_designation': role or 'Keynote Speaker',
                                 'linkedin_url': li_url,
                                 'official_company_website_url': comp_website,

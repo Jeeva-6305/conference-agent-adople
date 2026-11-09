@@ -838,7 +838,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly conference row(s) into '{self.weekly_conf_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 20
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly conference row(s) into '{self.weekly_conf_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -947,7 +956,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly speaker row(s) into '{self.weekly_spk_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 26
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly speaker row(s) into '{self.weekly_spk_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1029,7 +1047,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly attendee row(s) into '{self.weekly_att_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 16
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly attendee row(s) into '{self.weekly_att_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1118,7 +1145,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly exhibitor row(s) into '{self.weekly_exh_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 21
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly exhibitor row(s) into '{self.weekly_exh_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1148,18 +1184,31 @@ class OneDriveExcelService:
 
         rows_to_insert = []
         for l in logs:
+            def _val(obj, key, default=""):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                return getattr(obj, key, default)
+
             rows_to_insert.append([
-                l.get("run_id", ""),
-                str(l.get("run_date", "")),
-                l.get("source_name", ""),
-                l.get("source_status", "success"),
-                int(l.get("pages_checked", 1)),
-                int(l.get("conferences_found", 0)),
-                int(l.get("conferences_accepted", 0)),
-                int(l.get("speakers_found", 0)),
-                str(l.get("error_details", "") or ""),
-                round(float(l.get("duration_seconds", 0.0)), 2)
+                _val(l, "run_id", ""),
+                str(_val(l, "run_date", "")),
+                _val(l, "source_name", ""),
+                _val(l, "source_status", "success"),
+                int(_val(l, "pages_checked", 1) or 1),
+                int(_val(l, "conferences_found", 0) or 0),
+                int(_val(l, "conferences_accepted", 0) or 0),
+                int(_val(l, "speakers_found", 0) or 0),
+                str(_val(l, "error_details", "") or ""),
+                round(float(_val(l, "duration_seconds", 0.0) or 0.0), 2)
             ])
+
+        cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_log_tbl_name}/columns")
+        expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 10
+        for r_idx in range(len(rows_to_insert)):
+            while len(rows_to_insert[r_idx]) < expected_width:
+                rows_to_insert[r_idx].append("")
+            if len(rows_to_insert[r_idx]) > expected_width:
+                rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
 
         endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_log_tbl_name}/rows"
         res = self._api_request("POST", endpoint, body={"values": rows_to_insert})

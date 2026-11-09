@@ -150,6 +150,29 @@ class SpeakerEnrichmentService:
                     linkedin_status = "needs_review"
 
         # -------------------------------------------------------------
+        # Step 2b: Re-query Prospeo with newly discovered LinkedIn URL
+        # -------------------------------------------------------------
+        if not professional_email and discovered_li and self.prospeo_enabled:
+            try:
+                p_res = self.prospeo.enrich_person(
+                    name=clean_name,
+                    company=clean_company,
+                    linkedin_url=discovered_li
+                )
+                if p_res.get("status") == "success":
+                    p_email = p_res.get("email")
+                    if p_email and "@" in p_email:
+                        professional_email = p_email
+                        email_source = "prospeo.io"
+                        verification_status = p_res.get("verification_status") or "verified"
+                        enrichment_stage = "enriched_via_prospeo"
+                        logger.info(
+                            f"✅ [Enrichment] Discovered verified email via Prospeo using LinkedIn for '{clean_name}': {professional_email}"
+                        )
+            except Exception as e:
+                logger.warning(f"⚠️ [Enrichment] Prospeo LinkedIn retry notice for '{clean_name}': {e}")
+
+        # -------------------------------------------------------------
         # Step 3: Fallback Email Discovery (Hunter.io API)
         # -------------------------------------------------------------
         if not professional_email and self.hunter_enabled:
@@ -381,6 +404,12 @@ class SpeakerEnrichmentService:
                     while len(updated_vals) < 20:
                         updated_vals.append("")
 
+                    # Col 4: Job_Title
+                    if spk.job_title and spk.job_title not in ["Keynote Speaker", "Speaker"]:
+                        updated_vals[4] = spk.job_title
+                    # Col 5: Company_Name
+                    if spk.company_name and spk.company_name not in ["Industry Organization", "N/A"]:
+                        updated_vals[5] = spk.company_name
                     # Col 6: Personal_LinkedIn_URL
                     if spk.personal_linkedin_url:
                         updated_vals[6] = spk.personal_linkedin_url

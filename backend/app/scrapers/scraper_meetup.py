@@ -81,12 +81,33 @@ class MeetupScraper(BaseScraper):
                             venue = loc.get('name', '') if isinstance(loc, dict) else ''
                             full_loc = f"{venue}, {default_loc}".strip(', ')
 
+                            # Deep scrape individual Meetup event page for full description, speakers, and official URL
+                            deep_desc = desc
+                            official_site_url = url
+                            try:
+                                m_resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=6)
+                                if m_resp.status_code == 200:
+                                    m_soup = BeautifulSoup(m_resp.text, 'html.parser')
+                                    body_el = m_soup.find('div', class_='break-words') or m_soup.find('section')
+                                    if body_el:
+                                        deep_desc = body_el.get_text('\n', strip=True)
+                                    for a_el in m_soup.find_all('a', href=True):
+                                        h_el = a_el['href'].strip()
+                                        if h_el.startswith('http') and not any(ign in h_el.lower() for ign in [
+                                            'meetup.com', 'google.com', 'facebook.com', 'twitter.com', 'x.com',
+                                            'instagram.com', 'linkedin.com', 'youtube.com', 'apple.com', 'pinterest.com'
+                                        ]):
+                                            official_site_url = h_el.rstrip('.,;)\"')
+                                            break
+                            except Exception:
+                                pass
+
                             raw_text = (
                                 f"Conference Title: {name}\n"
-                                f"Overview & Description: {desc}\n"
+                                f"Overview & Description: {deep_desc}\n"
                                 f"Venue: {venue}\n"
                                 f"Address: {full_loc}\n"
-                                f"Official Event URL: {url}\n"
+                                f"Official Event URL: {official_site_url}\n"
                                 f"Registration URL: {url}\n"
                                 f"Start Date: {start_date}\n"
                                 f"End Date: {end_date}\n"
@@ -96,7 +117,7 @@ class MeetupScraper(BaseScraper):
 
                             events.append(RawEventData(
                                 source_name=self.source_name,
-                                source_url=url,
+                                source_url=official_site_url or url,
                                 raw_title=name,
                                 raw_text=raw_text,
                                 raw_location=full_loc,
