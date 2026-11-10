@@ -1,22 +1,41 @@
 
 import logging
 import re
+import threading
 import uuid
 import time
-import urllib.request
+import urllib.parse
 import json
-import ssl
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional, Tuple
+import requests
 from sqlalchemy.orm import Session
 from bs4 import BeautifulSoup
 
 from ..config import settings
 from ..models import WeeklyConference, WeeklyExhibitor
+from ..scrapers.base_scraper import BaseScraper, clean_html_text
 from ..services.onedrive_excel_service import OneDriveExcelService
 from ..storage.excel_manager import ExcelManager
 
 logger = logging.getLogger(__name__)
+
+_AZURE_EXHIBITOR_EXHAUSTED = False
+
+_AGGREGATOR_DOMAINS = (
+    "eventbrite.", "meetup.com", "lu.ma", "luma.com", "allevents.in",
+    "10times.com", "tsnn.com", "tradefest.io", "eventseye.com",
+    "eventsinamerica.com", "cvent.com", "govevents.com",
+)
+
+_EXHIBITOR_NOISE_PATTERNS = re.compile(
+    r"^(become an exhibitor|exhibitor list|exhibitor directory|exhibitors|sponsors|partners|"
+    r"view all|see all|learn more|register now|book a booth|request booth|exhibitor prospectus|"
+    r"home|about|agenda|speakers|faq|contact us|privacy policy|terms|n/a|tbd|tba|none|unknown|"
+    r"platinum sponsor|gold sponsor|silver sponsor|bronze sponsor|title sponsor|media partner)$",
+    re.I,
+)
 
 
 def validate_company_linkedin_url(url: Optional[str]) -> str:
@@ -30,7 +49,7 @@ def validate_company_linkedin_url(url: Optional[str]) -> str:
     if "linkedin.com/company/" in clean_lower:
         if not clean.startswith("http://") and not clean.startswith("https://"):
             clean = "https://" + clean
-        return clean
+        return clean.split("?")[0].rstrip("/")
     return ""
 
 
@@ -40,12 +59,12 @@ def validate_personal_linkedin_url(url: Optional[str]) -> str:
         return ""
     clean = str(url).strip()
     clean_lower = clean.lower()
-    if any(blocked in clean_lower for blocked in ["/company/", "/school/", "/showcase/", "/feed/", "/jobs/"]):
+    if any(blocked in clean_lower for blocked in ["/company/", "/school/", "/showcase/", "/feed/", "/jobs/", "/posts/"]):
         return ""
     if "linkedin.com/in/" in clean_lower:
         if not clean.startswith("http://") and not clean.startswith("https://"):
             clean = "https://" + clean
-        return clean
+        return clean.split("?")[0].rstrip("/")
     return ""
 
 
@@ -55,684 +74,385 @@ def generate_weekly_exhibitor_id(conf_id: str, comp_name: str) -> str:
     return f"EXH-{conf_id}-{norm}-{uuid.uuid4().hex[:3].upper()}"
 
 
-# Verified Exhibitor Directories for Major Weekly Trade Shows & Conferences
-CONFIRMED_WEEKLY_EXHIBITORS: Dict[str, List[Dict[str, str]]] = {
-    # AAPEX (Automotive Aftermarket Products Expo)
-    "aapex": [
-        {
-            "company_name": "Bosch Automotive Aftermarket",
-            "company_website": "https://www.boschautoparts.com",
-            "category_industry": "Automotive Systems & Replacement Parts",
-            "company_description": "Leading global supplier of OE-quality technology, diagnostic systems, and automotive replacement parts.",
-            "booth_number": "Booth #2838",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/bosch-mobility",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "Brembo North America",
-            "company_website": "https://www.brembo.com",
-            "category_industry": "Braking Systems & Performance Components",
-            "company_description": "World leader in the design, development and production of high-performance braking systems and components.",
-            "booth_number": "Booth #3226",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/brembo",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "Denso Products and Services Americas",
-            "company_website": "https://www.densoautoparts.com",
-            "category_industry": "Thermal, Electrical & Electronic Components",
-            "company_description": "Global automotive supplier of advanced technology, heating, air conditioning, and electrical components.",
-            "booth_number": "Booth #2226",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/denso",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "Continental Automotive Systems",
-            "company_website": "https://www.continental-aftermarket.com",
-            "category_industry": "Brake Systems, Powertrain & Telematics",
-            "company_description": "Global pioneer in intelligent technologies for mobility, commercial vehicle services, and automotive electronics.",
-            "booth_number": "Booth #3824",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/continental",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "ZF Group (Aftermarket)",
-            "company_website": "https://aftermarket.zf.com",
-            "category_industry": "Driveline & Chassis Technology",
-            "company_description": "Worldwide leader in driveline and chassis technology as well as active and passive safety technology.",
-            "booth_number": "Booth #3038",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/zf-group",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "Dorman Products",
-            "company_website": "https://www.dormanproducts.com",
-            "category_industry": "Replacement Auto Parts & Fasteners",
-            "company_description": "Leading supplier of OE replacement parts, hardware, and innovative repair solutions for automotive technicians.",
-            "booth_number": "Booth #3438",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/dorman-products",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        },
-        {
-            "company_name": "Gates Corporation",
-            "company_website": "https://www.gates.com",
-            "category_industry": "Power Transmission & Fluid Power Solutions",
-            "company_description": "Global manufacturer of application-specific fluid power and power transmission belts, hoses, and tensioners.",
-            "booth_number": "Booth #3638",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/gates-corporation",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aapex2026.mapyourshow.com/8_0/explore/exhibitor-gallery.cfm"
-        }
-    ],
+def _is_valid_exhibitor_name(name: str, conf_name: str = "") -> bool:
+    if not name:
+        return False
+    clean = clean_html_text(name).strip("•|–- \t\n,")
+    if len(clean) < 2 or len(clean) > 100:
+        return False
+    if _EXHIBITOR_NOISE_PATTERNS.match(clean):
+        return False
+    if conf_name and clean.lower() == conf_name.strip().lower():
+        return False
+    if re.search(r"(https?://|www\.|cookie|privacy policy|all rights reserved|register today|buy ticket)", clean, re.I):
+        return False
+    return True
 
-    # SEMA Show
-    "sema": [
-        {
-            "company_name": "MagnaFlow Exhaust Products",
-            "company_website": "https://www.magnaflow.com",
-            "category_industry": "Performance Exhaust Systems & Catalytic Converters",
-            "company_description": "Global manufacturer of high-performance exhaust systems, mufflers, and emissions components.",
-            "booth_number": "Central Hall #23543",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/magnaflow",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://tradefest.io/en/event/sema-show"
-        },
-        {
-            "company_name": "Borla Performance Industries",
-            "company_website": "https://www.borla.com",
-            "category_industry": "Stainless Steel Performance Exhausts",
-            "company_description": "Pioneer and leading manufacturer of aerospace-grade stainless steel performance exhaust systems.",
-            "booth_number": "Central Hall #23265",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/borla-exhaust",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://tradefest.io/en/event/sema-show"
-        },
-        {
-            "company_name": "Holley Performance Products",
-            "company_website": "https://www.holley.com",
-            "category_industry": "Fuel Injection & Performance Engine Hardware",
-            "company_description": "Industry leader in fuel injection systems, engine electronics, carburetors, and automotive performance hardware.",
-            "booth_number": "Central Hall #22463",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/holley-performance-products",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://tradefest.io/en/event/sema-show"
-        },
-        {
-            "company_name": "Wilwood Disc Brakes",
-            "company_website": "https://www.wilwood.com",
-            "category_industry": "High-Performance Disc Brake Hardware",
-            "company_description": "Designs and manufactures high-performance disc brake systems and components for racing and specialty vehicles.",
-            "booth_number": "Central Hall #24723",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/wilwood-disc-brakes",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://tradefest.io/en/event/sema-show"
-        },
-        {
-            "company_name": "FOX Factory",
-            "company_website": "https://www.ridefox.com",
-            "category_industry": "Off-Road Shocks & Suspension Systems",
-            "company_description": "World-renowned designer and manufacturer of premium performance shock absorbers and racing suspension products.",
-            "booth_number": "South Hall #31129",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/fox-factory",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://tradefest.io/en/event/sema-show"
-        }
-    ],
 
-    # DEMA Show (Diving Equipment & Marketing Association)
-    "dema": [
-        {
-            "company_name": "Scubapro (Johnson Outdoors)",
-            "company_website": "https://www.scubapro.com",
-            "category_industry": "Scuba Diving Regulators, BCDs & Dive Computers",
-            "company_description": "World leader in high-performance scuba diving equipment, regulators, buoyancy compensators, and dive computers.",
-            "booth_number": "Booth #1435",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/scubapro",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.demashow.com"
-        },
-        {
-            "company_name": "Aqua Lung America",
-            "company_website": "https://www.aqualung.com",
-            "category_industry": "Diving Gear, Thermal Suits & Safety Equipment",
-            "company_description": "Pioneer of modern diving equipment, developing premier breathing apparatuses, wet suits, and masks for sport and military.",
-            "booth_number": "Booth #1641",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/aqua-lung",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.demashow.com"
-        },
-        {
-            "company_name": "PADI (Professional Association of Diving Instructors)",
-            "company_website": "https://www.padi.com",
-            "category_industry": "Diving Education, Certification & Marine Conservation",
-            "company_description": "World's largest ocean exploration and diver organization operating across 186 countries and territories.",
-            "booth_number": "Booth #1823",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/padi",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.demashow.com"
-        },
-        {
-            "company_name": "Cressi Sub USA",
-            "company_website": "https://www.cressi.com",
-            "category_industry": "Scuba, Snorkeling & Freediving Hardware",
-            "company_description": "Historic Italian manufacturer of premier water sports equipment, masks, fins, spearguns, and electronic instruments.",
-            "booth_number": "Booth #1227",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/cressi-sub",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.demashow.com"
-        },
-        {
-            "company_name": "Shearwater Research",
-            "company_website": "https://www.shearwater.com",
-            "category_industry": "Technical Dive Computers & Rebreather Electronics",
-            "company_description": "Global standard for recreational and technical dive computers, known for high reliability, readability, and decompression algorithms.",
-            "booth_number": "Booth #1931",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/shearwater-research-inc-",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.demashow.com"
-        }
-    ],
+def _azure_extract_exhibitors_from_text(page_text: str, conf_title: str, source_url: str) -> List[Dict[str, str]]:
+    """
+    Uses Azure OpenAI (gpt-5.4-mini) to extract ONLY genuinely listed exhibitor / showcase companies
+    from exhibitor directory or event page text. Verifies each company literally appears in text.
+    """
+    global _AZURE_EXHIBITOR_EXHAUSTED
+    if _AZURE_EXHIBITOR_EXHAUSTED:
+        return []
+    api_key = getattr(settings, "AZURE_OPENAI_API_KEY", "") or ""
+    base_url = getattr(settings, "AZURE_OPENAI_BASE_URL", "") or ""
+    deployment = getattr(settings, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini") or "gpt-5.4-mini"
+    if not api_key or not base_url or not page_text or len(page_text) < 120:
+        return []
 
-    # The Hospitality Show
-    "hospitality show": [
-        {
-            "company_name": "Oracle Hospitality",
-            "company_website": "https://www.oracle.com/hospitality",
-            "category_industry": "Property Management & Hotel Cloud Systems",
-            "company_description": "Industry-leading cloud technology, property management systems (OPERA Cloud), and food & beverage POS solutions.",
-            "booth_number": "Booth #618",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/oracle",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.thehospitalityshow.com"
-        },
-        {
-            "company_name": "LG Business Solutions (Hospitality)",
-            "company_website": "https://www.lg.com/us/business/hospitality",
-            "category_industry": "Commercial Hotel Displays & Pro:Centric Smart TVs",
-            "company_description": "Delivers advanced in-room commercial displays, digital signage, HVAC, and interactive guest entertainment technologies.",
-            "booth_number": "Booth #724",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/lg-electronics",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.thehospitalityshow.com"
-        },
-        {
-            "company_name": "ASSA ABLOY Global Solutions",
-            "company_website": "https://www.assaabloyglobalsolutions.com",
-            "category_industry": "Electronic Hotel Locks & Mobile Key Access",
-            "company_description": "Global authority in hotel security, VingCard electronic door locks, mobile access, and in-room electronic safes.",
-            "booth_number": "Booth #512",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/assa-abloy-group",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.thehospitalityshow.com"
-        },
-        {
-            "company_name": "Cloudbeds",
-            "company_website": "https://www.cloudbeds.com",
-            "category_industry": "Hospitality Management Platform & Booking Engines",
-            "company_description": "Award-winning cloud hospitality platform powering independent hotels, boutique resorts, and multi-property groups.",
-            "booth_number": "Booth #832",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/cloudbeds",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.thehospitalityshow.com"
-        }
-    ],
+    if not re.search(r"\b(exhibitor|exhibitors|exhibiting|booth|pavilion|floorplan|floor plan|showcase|directory)\b", page_text, re.I):
+        return []
 
-    # Wisconsin Lodging Trade Show - WHLA
-    "wisconsin lodging": [
-        {
-            "company_name": "Ecolab",
-            "company_website": "http://www.ecolab.com",
-            "category_industry": "Commercial Hygiene, Sanitization & Water Solutions",
-            "company_description": "Global sustainability leader offering comprehensive hygiene, sanitation, and infection prevention solutions for hospitality.",
-            "booth_number": "Trade Show Floor #12",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/ecolab",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://web.wisconsinlodging.org/events/2026-Wisconsin-Lodging-Conference-Trade-Show-198/details"
-        },
-        {
-            "company_name": "Amadeus Hospitality",
-            "company_website": "https://www.amadeus-hospitality.com",
-            "category_industry": "Hotel Operations & Reservation Distribution",
-            "company_description": "Enterprise hospitality technology providing property management, sales & catering, and central reservation distribution.",
-            "booth_number": "Trade Show Floor #18",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/amadeus",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://web.wisconsinlodging.org/events/2026-Wisconsin-Lodging-Conference-Trade-Show-198/details"
-        },
-        {
-            "company_name": "Spectrum Business",
-            "company_website": "http://enterprise.spectrum.com",
-            "category_industry": "Commercial Fiber Internet & Guest Connectivity",
-            "company_description": "Delivers scalable broadband Internet, fiber connectivity, and digital entertainment solutions tailored for hotel properties.",
-            "booth_number": "Trade Show Floor #24",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/spectrum-enterprise",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://web.wisconsinlodging.org/events/2026-Wisconsin-Lodging-Conference-Trade-Show-198/details"
-        },
-        {
-            "company_name": "IDeaS Revenue Solutions",
-            "company_website": "https://ideas.com",
-            "category_industry": "Automated Hotel Revenue Management Systems",
-            "company_description": "Pioneering revenue management software and automated pricing intelligence for hospitality accommodation providers.",
-            "booth_number": "Trade Show Floor #09",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/ideas-revenue-solutions",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://web.wisconsinlodging.org/events/2026-Wisconsin-Lodging-Conference-Trade-Show-198/details"
-        }
-    ],
+    snippet = page_text[:13000]
+    prompt = (
+        f"Extract ONLY genuine exhibiting companies / vendors / showcase exhibitors explicitly listed for '{conf_title}'.\n"
+        f"CRITICAL RULES:\n"
+        f"1. ONLY include companies explicitly identified as exhibitors, exhibiting companies, booth holders, or expo showcase vendors whose names literally appear in TEXT.\n"
+        f"2. NEVER include the conference organizer itself, venue hotels, cities, speaker names (unless company), generic sponsor tier labels ('Gold Sponsor'), or placeholders ('N/A', 'TBD', 'Not Publicly Available').\n"
+        f"3. NEVER invent websites, emails, LinkedIn URLs, contacts, booth numbers, or descriptions. Leave any field not stated in TEXT as \"\".\n"
+        f"4. Return JSON with key 'exhibitors': list of objects with keys company_name, booth_number, category_industry, company_description, company_website, contact_person, contact_designation, professional_email.\n\n"
+        f"TEXT:\n{snippet}"
+    )
 
-    # Advanced Textiles Expo
-    "advanced textiles": [
-        {
-            "company_name": "Glen Raven Custom Fabrics (Sunbrella)",
-            "company_website": "https://www.glenraven.com",
-            "category_industry": "Performance Architectural & Marine Fabrics",
-            "company_description": "World leader in performance fabrics and custom technical textiles for marine, shade, and architectural applications.",
-            "booth_number": "Booth #1420",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/glen-raven",
-            "contact_person_linkedin_url": "",
-            "source_url": "http://ifaiexpo.com/"
-        },
-        {
-            "company_name": "Herculite Products",
-            "company_website": "https://www.herculite.com",
-            "category_industry": "High-Performance Flexible Composite Textiles",
-            "company_description": "Innovator in flexible composite and laminated fabrics engineered for healthcare, military, and commercial graphics.",
-            "booth_number": "Booth #1126",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/herculite-products-inc",
-            "contact_person_linkedin_url": "",
-            "source_url": "http://ifaiexpo.com/"
-        },
-        {
-            "company_name": "Autometrix Precision Cutting Systems",
-            "company_website": "https://autometrix.com",
-            "category_industry": "Automated Textile Cutting & Pattern Machinery",
-            "company_description": "Engineers and manufactures automated fabric cutting tables and CAD pattern optimization software for industrial fabrics.",
-            "booth_number": "Booth #1842",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/autometrix",
-            "contact_person_linkedin_url": "",
-            "source_url": "http://ifaiexpo.com/"
-        }
-    ],
+    try:
+        endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        resp = requests.post(
+            endpoint,
+            headers={
+                "api-key": api_key,
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": deployment,
+                "messages": [
+                    {"role": "system", "content": "You extract strictly factual exhibitor directories from webpage text. Never fabricate."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=25,
+        )
+        if resp.status_code in (401, 402, 429):
+            if resp.status_code in (401, 402):
+                _AZURE_EXHIBITOR_EXHAUSTED = True
+            return []
+        if resp.status_code != 200:
+            return []
 
-    # The International Gift Exposition in the Smokies - IGES
-    "gift exposition": [
-        {
-            "company_name": "Smith Western Co.",
-            "company_website": "https://www.smithwestern.com",
-            "category_industry": "Souvenir & Custom Destination Merchandise",
-            "company_description": "Premier designer, manufacturer, and distributor of custom destination souvenirs, apparel, and resort gifts.",
-            "booth_number": "Sevierville #310",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/smith-western-company",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.iges.us"
-        },
-        {
-            "company_name": "The Petting Zoo",
-            "company_website": "https://www.pettingzooplush.com",
-            "category_industry": "Plush Toys & Eco-Friendly Resort Gifts",
-            "company_description": "Leading designer of premium plush animals crafted from recycled materials for zoos, aquariums, and resort gift shops.",
-            "booth_number": "Pigeon Forge #422",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/the-petting-zoo",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.iges.us"
-        }
-    ],
+        raw_content = resp.json()["choices"][0]["message"]["content"]
+        parsed = json.loads(raw_content)
+        out: List[Dict[str, str]] = []
+        for item in parsed.get("exhibitors", []) or []:
+            if not isinstance(item, dict):
+                continue
+            comp = clean_html_text(item.get("company_name") or "").strip()
+            if not _is_valid_exhibitor_name(comp, conf_title):
+                continue
+            # Ensure company name token appears literally in snippet
+            tokens = [t for t in re.findall(r"[a-zA-Z0-9]{3,}", comp)]
+            if tokens and not any(t.lower() in snippet.lower() for t in tokens):
+                continue
 
-    # NAFCD & NBMDA Annual Convention
-    "nafcd": [
-        {
-            "company_name": "Mercier Wood Flooring",
-            "company_website": "https://www.mercier-wood-flooring.com",
-            "category_industry": "Hardwood Flooring & Building Materials",
-            "company_description": "Pioneer of prefinished solid and engineered wood flooring for commercial and residential distributor networks.",
-            "booth_number": "Tabletop #412",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/mercier-wood-flooring",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.distributorconvention.org"
-        },
-        {
-            "company_name": "Arauco North America",
-            "company_website": "https://www.arauco.com",
-            "category_industry": "Engineered Composite Panels & Plywood",
-            "company_description": "Global producer of sustainable composite wood panels, thermally fused laminate (TFL), and commercial plywood.",
-            "booth_number": "Tabletop #308",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/arauco-north-america",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.distributorconvention.org"
-        }
-    ],
+            website = clean_html_text(item.get("company_website") or "").strip()
+            if website and any(dom in website.lower() for dom in _AGGREGATOR_DOMAINS):
+                website = ""
+            email = clean_html_text(item.get("professional_email") or "").strip()
+            if email and ("@" not in email or email.lower() not in snippet.lower()):
+                email = ""
 
-    # IOFM Fall Conference & Expo
-    "iofm": [
-        {
-            "company_name": "Corpay (Fleetcor)",
-            "company_website": "https://www.corpay.com",
-            "category_industry": "Corporate Payments & Accounts Payable Automation",
-            "company_description": "Global S&P 500 payments provider automating commercial AP workflows, cross-border payments, and virtual card issuance.",
-            "booth_number": "Expo Hall #204",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/corpay",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://events.iofm.com/conference-fall/"
-        },
-        {
-            "company_name": "Basware",
-            "company_website": "https://www.basware.com",
-            "category_industry": "e-Invoicing & Procure-to-Pay Automation",
-            "company_description": "Global leader in automated e-invoicing and AP software facilitating touchless invoice matching and compliance.",
-            "booth_number": "Expo Hall #312",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/basware",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://events.iofm.com/conference-fall/"
-        }
-    ],
-
-    # AI Engineer Code Summit
-    "ai engineer": [
-        {
-            "company_name": "Warp",
-            "company_website": "https://www.warp.dev",
-            "category_industry": "AI Developer Platform & Modern Terminal",
-            "company_description": "Terminal and AI developer platform built for software engineers, automating command generation and team workflows.",
-            "booth_number": "Expo Hall #A1",
-            "contact_person": "Zach Lloyd",
-            "contact_designation": "CEO",
-            "professional_email": "zach.lloyd@warp.dev",
-            "company_linkedin_url": "https://www.linkedin.com/company/warpdotdev",
-            "contact_person_linkedin_url": "https://www.linkedin.com/in/zachlloyd",
-            "source_url": "https://www.ai.engineer/code-summit-2026"
-        },
-        {
-            "company_name": "Anthropic",
-            "company_website": "https://www.anthropic.com",
-            "category_industry": "AI Safety & Frontier Foundation Models",
-            "company_description": "AI safety and research company that builds reliable, interpretable, and steerable AI systems including Claude.",
-            "booth_number": "Expo Hall #A2",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/anthropicresearch",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.ai.engineer/code-summit-2026"
-        },
-        {
-            "company_name": "Cognition",
-            "company_website": "https://www.cognition.ai",
-            "category_industry": "Autonomous AI Software Engineering",
-            "company_description": "Applied AI lab creating Devin, the world's first fully autonomous AI software engineer.",
-            "booth_number": "Expo Hall #A3",
-            "contact_person": "Walden Yan",
-            "contact_designation": "Chief Product Officer",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/cognition-ai",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.ai.engineer/code-summit-2026"
-        },
-        {
-            "company_name": "Composio",
-            "company_website": "https://composio.dev",
-            "category_industry": "Tooling Ecosystem & Integrations for AI Agents",
-            "company_description": "Production integration tooling ecosystem enabling AI agents and LLMs to interact with 250+ enterprise apps.",
-            "booth_number": "Expo Hall #A4",
-            "contact_person": "Karan Vaidya",
-            "contact_designation": "Co-founder & CTO",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/composio-dev",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.ai.engineer/code-summit-2026"
-        }
-    ],
-
-    # AIMed Global Summit
-    "aimed": [
-        {
-            "company_name": "AdventHealth",
-            "company_website": "https://www.adventhealth.com",
-            "category_industry": "Healthcare System & Clinical Innovation",
-            "company_description": "National nonprofit health system integrating AI and precision medicine across acute and ambulatory care networks.",
-            "booth_number": "Platinum Pavilion #102",
-            "contact_person": "Douglas McKee",
-            "contact_designation": "Chief Medical Officer",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/adventhealth",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aimed26.com"
-        },
-        {
-            "company_name": "Medigram",
-            "company_website": "https://www.medigram.com",
-            "category_industry": "Mobile Enterprise Clinical Communication Platform",
-            "company_description": "Enterprise mobile software platform built for reliable, compliant clinical communication and healthcare informatics.",
-            "booth_number": "Booth #214",
-            "contact_person": "Sherri Douville",
-            "contact_designation": "CEO & Board Member",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/medigram",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://aimed26.com"
-        }
-    ],
-
-    # Milken Institute Future of Health Summit
-    "future of health": [
-        {
-            "company_name": "Moderna",
-            "company_website": "https://www.modernatx.com",
-            "category_industry": "mRNA Therapeutics & Biotechnology",
-            "company_description": "Pioneering biotechnology company developing mRNA medicines and vaccines for infectious diseases and oncology.",
-            "booth_number": "Summit Sponsor Suite #1",
-            "contact_person": "Stéphane Bancel",
-            "contact_designation": "CEO",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/modernatx",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://milkeninstitute.org/events/future-of-health-summit-2026"
-        },
-        {
-            "company_name": "Guardant Health",
-            "company_website": "https://www.guardanthealth.com",
-            "category_industry": "Precision Oncology & Liquid Biopsy Diagnostics",
-            "company_description": "Leading precision oncology company dedicated to helping conquer cancer through proprietary blood tests and vast analytics.",
-            "booth_number": "Summit Sponsor Suite #2",
-            "contact_person": "AmirAli Talasaz",
-            "contact_designation": "Co-founder & Co-CEO",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/guardant-health",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://milkeninstitute.org/events/future-of-health-summit-2026"
-        }
-    ],
-
-    # SFNet 82nd Annual Convention
-    "sfnet": [
-        {
-            "company_name": "Chapman and Cutler LLP",
-            "company_website": "https://www.chapman.com",
-            "category_industry": "Secured Finance Legal Services & Regulatory Advisory",
-            "company_description": "National law firm specializing in financial services, asset-based lending, private credit, and commercial transactions.",
-            "booth_number": "Booth #201",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/chapman-and-cutler-llp",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.sfnet.com"
-        },
-        {
-            "company_name": "Allianz Trade",
-            "company_website": "https://www.allianz-trade.com",
-            "category_industry": "Trade Credit Insurance & Risk Management",
-            "company_description": "Global leader in trade credit insurance, surety bonds, and commercial risk mitigation solutions.",
-            "booth_number": "Booth #115",
-            "contact_person": "",
-            "contact_designation": "",
-            "professional_email": "",
-            "company_linkedin_url": "https://www.linkedin.com/company/allianz-trade",
-            "contact_person_linkedin_url": "",
-            "source_url": "https://www.sfnet.com"
-        }
-    ]
-}
+            out.append({
+                "company_name": comp[:120],
+                "company_website": website[:250],
+                "category_industry": clean_html_text(item.get("category_industry") or "")[:120],
+                "company_description": clean_html_text(item.get("company_description") or "")[:300],
+                "booth_number": clean_html_text(item.get("booth_number") or "")[:60],
+                "contact_person": clean_html_text(item.get("contact_person") or "")[:100],
+                "contact_designation": clean_html_text(item.get("contact_designation") or "")[:100],
+                "professional_email": email[:120],
+                "company_linkedin_url": validate_company_linkedin_url(item.get("company_linkedin_url") or ""),
+                "contact_person_linkedin_url": validate_personal_linkedin_url(item.get("contact_person_linkedin_url") or ""),
+                "source_url": source_url,
+            })
+        return out
+    except Exception as e:
+        logger.debug(f"Azure exhibitor extraction notice for '{conf_title}': {e}")
+        return []
 
 
 class WeeklyExhibitorService:
     """
     Dedicated Weekly Conference Exhibitor Collection & Sync Service:
-    - Collects genuine exhibitor rosters for weekly conferences and trade shows.
-    - Strictly avoids treating speakers, attendees, or sponsors as exhibitors unless identified as such.
-    - Captures company name, website, industry category, description, booth number, and verified LinkedIn URLs.
-    - If exhibitor list is private or unavailable, records 'Not Publicly Available'.
-    - Stores records exclusively in the dedicated 'weekly_exhibitors' worksheet and table.
-    - Preserves all existing conferences, speakers, attendees, and tables completely untouched.
+    - Live-crawls official conference websites, exhibitor directories, floorplans, and partner/expo pages,
+      supplemented by sanctioned Tavily discovery when directories are external.
+    - Never relies on hardcoded exhibitor lists or placeholder rows ('Not Publicly Available').
+    - Never fabricates company websites, emails, LinkedIn URLs, or contacts.
+    - Stores genuine exhibitors in PostgreSQL, Local Excel ('weekly_exhibitors'), and OneDrive ('weekly_exhibitors' table).
+    - Preserves all existing historical rows and outreach tracking columns untouched.
     """
 
     def __init__(self, db: Session):
         self.db = db
         self.onedrive_svc = OneDriveExcelService()
         self.excel_mgr = ExcelManager()
-        self.ssl_ctx = ssl.create_default_context()
-        self.ssl_ctx.check_hostname = False
-        self.ssl_ctx.verify_mode = ssl.CERT_NONE
+        self._thread_local = threading.local()
+        self.session = self._get_session()
 
-    def find_confirmed_exhibitors_for_conference(self, conf: WeeklyConference) -> Tuple[bool, List[Dict[str, str]]]:
+    def _get_session(self) -> requests.Session:
+        s = getattr(self._thread_local, "session", None)
+        if s is None:
+            s = requests.Session()
+            s.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            })
+            self._thread_local.session = s
+        return s
+
+    def _extract_exhibitors_from_html(self, html_text: str, page_url: str, conf_name: str) -> List[Dict[str, str]]:
+        """Extracts genuine exhibitor entries from HTML tables, cards, MapYourShow/a2z blocks, or grounded Azure text."""
+        soup = BeautifulSoup(html_text, "html.parser")
+        found: List[Dict[str, str]] = []
+        seen_comps = set()
+
+        def _add(rec: Dict[str, str]):
+            comp = clean_html_text(rec.get("company_name") or "").strip()
+            if not _is_valid_exhibitor_name(comp, conf_name):
+                return
+            key = comp.lower()
+            if key in seen_comps:
+                return
+            seen_comps.add(key)
+            found.append({
+                "company_name": comp,
+                "company_website": rec.get("company_website", "") or "",
+                "category_industry": rec.get("category_industry", "") or "",
+                "company_description": rec.get("company_description", "") or "",
+                "booth_number": rec.get("booth_number", "") or "",
+                "contact_person": rec.get("contact_person", "") or "",
+                "contact_designation": rec.get("contact_designation", "") or "",
+                "professional_email": rec.get("professional_email", "") or "",
+                "company_linkedin_url": validate_company_linkedin_url(rec.get("company_linkedin_url", "")),
+                "contact_person_linkedin_url": validate_personal_linkedin_url(rec.get("contact_person_linkedin_url", "")),
+                "source_url": rec.get("source_url") or page_url,
+            })
+
+        parsed_page = urllib.parse.urlparse(page_url)
+
+        # 1. Explicit exhibitor HTML tables
+        for tbl in soup.find_all("table"):
+            t_ctx = tbl.get_text(" ", strip=True).lower()
+            if any(k in t_ctx for k in ["exhibitor", "booth", "company", "organization", "pavilion"]):
+                rows = tbl.find_all("tr")
+                hdrs = [clean_html_text(th.get_text(" ", strip=True)).lower() for th in (rows[0].find_all(["th", "td"]) if rows else [])]
+                if not any(h in " ".join(hdrs) for h in ["exhibitor", "company", "organization", "booth", "vendor"]):
+                    continue
+                for tr in rows[1:]:
+                    cols = [clean_html_text(td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+                    if not cols:
+                        continue
+                    comp_val = cols[0]
+                    booth_val = ""
+                    cat_val = ""
+                    for idx_c, h in enumerate(hdrs):
+                        if idx_c < len(cols):
+                            if "booth" in h:
+                                booth_val = cols[idx_c]
+                            elif any(x in h for x in ["category", "industry", "sector", "track"]):
+                                cat_val = cols[idx_c]
+                            elif any(x in h for x in ["company", "exhibitor", "organization"]) and cols[idx_c]:
+                                comp_val = cols[idx_c]
+                    ext_site = ""
+                    li_comp = ""
+                    for a in tr.find_all("a", href=True):
+                        href = a["href"].strip()
+                        if "linkedin.com/company/" in href.lower():
+                            li_comp = href
+                        elif href.startswith("http") and urllib.parse.urlparse(href).netloc != parsed_page.netloc and not any(d in href.lower() for d in _AGGREGATOR_DOMAINS):
+                            if not ext_site:
+                                ext_site = href
+                    _add({
+                        "company_name": comp_val,
+                        "company_website": ext_site,
+                        "category_industry": cat_val,
+                        "booth_number": booth_val,
+                        "company_linkedin_url": li_comp,
+                        "source_url": page_url,
+                    })
+
+        # 2. Structured exhibitor cards / directory tiles (MapYourShow, Cadmium, custom React/WP grids)
+        for container in soup.find_all(["section", "div", "ul"], class_=re.compile(r"\b(exhibitor|exhibitors|booth|floorplan|expo|vendor|showcase|directory)\b", re.I)):
+            c_cls = " ".join(container.get("class", [])).lower()
+            if any(bad in c_cls for bad in ["nav", "menu", "header", "footer", "button"]):
+                continue
+            cards = container.find_all(["div", "li", "article"], class_=re.compile(r"(card|item|exhibitor|tile|company|vendor|logo|row)", re.I))
+            if not cards:
+                cards = container.find_all("li", recursive=False)
+            for card in cards[:120]:
+                heading = card.find(["h2", "h3", "h4", "h5", "strong", "a"])
+                cand_comp = clean_html_text(heading.get_text(" ", strip=True)) if heading else ""
+                if not cand_comp:
+                    img = card.find("img", alt=True)
+                    if img:
+                        cand_comp = clean_html_text(img.get("alt") or "")
+                        cand_comp = re.sub(r"\s*logo\s*$", "", cand_comp, flags=re.I).strip()
+                if not _is_valid_exhibitor_name(cand_comp, conf_name):
+                    continue
+                card_txt = clean_html_text(card.get_text("\n", strip=True))
+                booth_m = re.search(r"\b(Booth\s*#?\s*[A-Z0-9\-]+)\b", card_txt, re.I)
+                ext_site, li_comp = "", ""
+                for a in card.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if "linkedin.com/company/" in href.lower():
+                        li_comp = href
+                    elif href.startswith("http") and urllib.parse.urlparse(href).netloc != parsed_page.netloc and not any(d in href.lower() for d in _AGGREGATOR_DOMAINS):
+                        if "linkedin.com" not in href.lower() and not ext_site:
+                            ext_site = href
+                _add({
+                    "company_name": cand_comp,
+                    "company_website": ext_site,
+                    "booth_number": booth_m.group(1) if booth_m else "",
+                    "company_linkedin_url": li_comp,
+                    "source_url": page_url,
+                })
+
+        # 3. Grounded Azure OpenAI extraction when on an exhibitor/expo/floorplan/sponsors page and DOM didn't return structured cards
+        is_exh_page = any(k in page_url.lower() for k in ["exhibitor", "floorplan", "mapyourshow", "a2z", "cadmium", "expo", "directory", "showcase"])
+        if len(found) < 2 and is_exh_page:
+            text_all = clean_html_text(soup.get_text("\n", strip=True))
+            for rec in _azure_extract_exhibitors_from_text(text_all, conf_name, page_url):
+                _add(rec)
+
+        return found
+
+    def discover_live_exhibitors_for_conference(
+        self,
+        conf: WeeklyConference,
+        tavily_helper: Optional[BaseScraper] = None,
+    ) -> Tuple[bool, List[Dict[str, str]]]:
         """
-        Determines whether genuine exhibitors exist for the conference:
-        1. Checks verified exhibitor roster mappings by conference name keywords.
-        2. Inspects conference event URLs if live directories are present.
+        Live-discovers genuine exhibitors for a weekly conference by:
+        1. Crawling official_event_url + source_url and discovering exhibitor/floorplan/expo/partner links.
+        2. Probing standard official exhibitor subpaths on non-aggregator domains.
+        3. Using sanctioned Tavily search when direct pages yield 0 exhibitors.
         Returns (has_exhibitors, exhibitor_records).
         """
-        name_lower = (conf.conference_name or "").lower()
-        url_lower = (conf.official_event_url or conf.source_url or "").lower()
+        conf_name = clean_html_text(conf.conference_name or "").strip()
+        seed_urls = []
+        for u in [conf.official_event_url, conf.source_url]:
+            if u and u.startswith("http") and u not in seed_urls:
+                seed_urls.append(u)
 
-        # Check matched exhibitor roster keywords
-        for key, exhibitors in CONFIRMED_WEEKLY_EXHIBITORS.items():
-            if key in name_lower or key in url_lower:
-                return True, exhibitors
+        urls_to_try: List[str] = list(seed_urls)
+        seen_urls = {u.rstrip("/") for u in seed_urls}
 
-        return False, []
+        def _queue(u: str):
+            cu = u.split("#")[0].rstrip("/")
+            if cu and cu not in seen_urls and len(urls_to_try) < 10:
+                seen_urls.add(cu)
+                urls_to_try.append(u.split("#")[0])
+
+        for u in seed_urls:
+            p = urllib.parse.urlparse(u)
+            if not any(dom in p.netloc.lower() for dom in _AGGREGATOR_DOMAINS):
+                trimmed = u.rstrip("/")
+                base = f"{p.scheme}://{p.netloc}"
+                for path in ["/exhibitors", "/exhibitor-list", "/exhibitor-directory", "/exhibitors-list", "/floorplan", "/expo", "/sponsors", "/partners"]:
+                    _queue(trimmed + path)
+                    if trimmed != base:
+                        _queue(base + path)
+
+        all_found: List[Dict[str, str]] = []
+        seen_comp_names = set()
+
+        def _merge(recs: List[Dict[str, str]]):
+            for rec in recs:
+                c = (rec.get("company_name") or "").strip()
+                k = c.lower()
+                if c and k not in seen_comp_names:
+                    seen_comp_names.add(k)
+                    all_found.append(rec)
+
+        idx = 0
+        while idx < len(urls_to_try) and idx < 10:
+            target = urls_to_try[idx]
+            idx += 1
+            try:
+                resp = self._get_session().get(target, timeout=8)
+                if resp.status_code != 200 or not resp.text:
+                    continue
+
+                # Discover internal or external exhibitor directory links (e.g. mapyourshow, a2z, /exhibitors)
+                if idx <= len(seed_urls):
+                    soup_nav = BeautifulSoup(resp.text, "html.parser")
+                    for a in soup_nav.find_all("a", href=True):
+                        href = a["href"].strip()
+                        txt = (a.get_text(" ", strip=True) or "").lower()
+                        href_l = href.lower()
+                        if any(k in href_l or k in txt for k in ["exhibitor", "floorplan", "floor-plan", "mapyourshow", "a2z", "cadmium", "directory", "showcase", "expo-hall"]):
+                            abs_u = urllib.parse.urljoin(target, href)
+                            if abs_u.startswith("http") and not abs_u.lower().endswith((".pdf", ".jpg", ".png")):
+                                _queue(abs_u)
+
+                recs = self._extract_exhibitors_from_html(resp.text, target, conf_name)
+                _merge(recs)
+                if len(all_found) >= 15:
+                    break
+            except Exception as e:
+                logger.debug(f"Exhibitor crawl notice on {target}: {e}")
+
+        # Supplement with sanctioned Tavily search if direct crawl found 0 exhibitors
+        if not all_found and tavily_helper and getattr(settings, "TAVILY_API_KEY", ""):
+            try:
+                t_results = tavily_helper.tavily_search(
+                    f'"{conf_name}" 2026 ("exhibitor list" OR "exhibitor directory" OR "exhibitors" OR "floorplan" OR "mapyourshow")',
+                    max_results=5,
+                )
+                snippet_blocks: List[str] = []
+                for tr in t_results:
+                    r_url = tr.get("url", "")
+                    r_title = tr.get("title", "")
+                    if r_url and any(k in (r_url + " " + r_title).lower() for k in ["exhibitor", "floorplan", "mapyourshow", "directory", "a2z", "cadmium", "expo", "partner", "sponsor"]):
+                        try:
+                            resp = self._get_session().get(r_url, timeout=8)
+                            if resp.status_code == 200 and resp.text:
+                                _merge(self._extract_exhibitors_from_html(resp.text, r_url, conf_name))
+                        except Exception:
+                            pass
+                    r_txt = clean_html_text(f"{r_title}\n{tr.get('content', '')}")
+                    if r_txt:
+                        snippet_blocks.append(f"[{r_url}]\n{r_txt}")
+                if not all_found and snippet_blocks:
+                    _merge(
+                        _azure_extract_exhibitors_from_text(
+                            "\n\n".join(snippet_blocks),
+                            conf_name,
+                            conf.official_event_url or conf.source_url or "",
+                        )
+                    )
+            except Exception as te:
+                logger.debug(f"Tavily exhibitor discovery notice for '{conf_name}': {te}")
+
+        return (len(all_found) > 0), all_found
 
     def collect_weekly_exhibitors(
         self,
         conference_id: Optional[str] = None,
         run_id: Optional[str] = None,
-        force: bool = False
+        force: bool = False,
+        sync_verified: bool = True,
     ) -> Dict[str, Any]:
         """
-        Executes exhibitor collection for weekly conferences:
-        1. Queries target WeeklyConference records.
-        2. Evaluates each conference for genuine exhibitor lists.
-        3. If exhibitors are found, validates company name, website, category, booth, and LinkedIn.
-        4. If exhibitor list is unavailable or private, records 'Not Publicly Available'.
-        5. Appends records to PostgreSQL, Local Excel ('weekly_exhibitors'), and OneDrive ('weekly_exhibitors' table).
-        6. Keeps all existing conference, speaker, and attendee data completely untouched.
+        Executes live exhibitor collection for weekly conferences:
+        1. Queries target WeeklyConference records in the active run / target Sunday-Saturday range.
+        2. Removes any legacy placeholder rows ('Not Publicly Available') within target conferences.
+        3. Live-crawls official websites/directories + sanctioned Tavily search for genuine exhibitors.
+        4. Stores ONLY genuine public exhibitors (inserts 0 rows when no exhibitor directory exists).
+        5. Syncs to PostgreSQL, Local Excel ('weekly_exhibitors'), OneDrive ('weekly_exhibitors' table), and Verified Data.
         """
         start_time = time.time()
         logger.info("🚀 [Exhibitor Collection] Starting weekly conference exhibitor collection...")
@@ -740,11 +460,35 @@ class WeeklyExhibitorService:
         query = self.db.query(WeeklyConference)
         if conference_id:
             query = query.filter(WeeklyConference.conference_id == conference_id)
-        if run_id:
-            query = query.filter(WeeklyConference.weekly_run_id == run_id)
+        elif run_id:
+            parsed_range = None
+            m_run = re.match(r"^WEEK-(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$", str(run_id).strip())
+            if m_run:
+                try:
+                    parsed_range = (date.fromisoformat(m_run.group(1)), date.fromisoformat(m_run.group(2)))
+                except ValueError:
+                    parsed_range = None
+            if parsed_range is None:
+                from .weekly_service import calculate_weekly_target_range
+                t_sun, t_sat, _ = calculate_weekly_target_range()
+                parsed_range = (t_sun, t_sat)
+            t_sun, t_sat = parsed_range
+            query = query.filter(
+                (WeeklyConference.weekly_run_id == run_id) |
+                ((WeeklyConference.start_date >= t_sun) & (WeeklyConference.start_date <= t_sat))
+            )
 
         target_confs = query.order_by(WeeklyConference.start_date.asc()).all()
-        logger.info(f"Checking {len(target_confs)} weekly conferences for exhibitor lists...")
+        target_conf_ids = [c.conference_id for c in target_confs]
+        logger.info(f"Checking {len(target_confs)} weekly conferences for live exhibitor directories...")
+
+        # Remove stale 'Not Publicly Available' placeholders for target conferences
+        if target_conf_ids:
+            self.db.query(WeeklyExhibitor).filter(
+                WeeklyExhibitor.conference_id.in_(target_conf_ids),
+                WeeklyExhibitor.company_name == "Not Publicly Available"
+            ).delete(synchronize_session=False)
+            self.db.flush()
 
         # Existing exhibitors map in DB
         existing_db_exhs = self.db.query(WeeklyExhibitor).all()
@@ -755,38 +499,51 @@ class WeeklyExhibitorService:
 
         collected_records: List[WeeklyExhibitor] = []
         confs_with_exhibitors = 0
-        confs_not_public = 0
+        confs_no_exhibitors = 0
         today = date.today()
-
+        tavily_helper = BaseScraper("weekly_exhibitor_discovery", "")
+        confs_needing_exh = []
+        retained_conf_ids = set()
         for conf in target_confs:
-            conf_name = conf.conference_name.strip()
-            conf_date = conf.start_date
-            c_run_id = conf.weekly_run_id or "WEEKLY-EXHIBITOR-RUN"
-            event_url = conf.official_event_url or conf.source_url or ""
-
-            # Check if this conference already has real exhibitor records
+            conf_name_chk = clean_html_text(conf.conference_name).strip()
             has_real_existing = any(
-                k[0] == conf_name.lower() and k[1] != "not publicly available"
+                k[0] == conf_name_chk.lower() and k[1] != "not publicly available"
                 for k in existing_exh_keys
             )
             if has_real_existing and not force:
-                logger.info(f"Skipping already collected real exhibitor records for '{conf_name}'.")
-                continue
+                logger.info(f"Retaining already collected genuine exhibitors for '{conf_name_chk}'.")
+                confs_with_exhibitors += 1
+                retained_conf_ids.add(conf.conference_id)
+            else:
+                confs_needing_exh.append(conf)
 
-            has_exhibitors, raw_exhibitors = self.find_confirmed_exhibitors_for_conference(conf)
+        exh_discovered_map: Dict[str, Tuple[bool, List[Dict[str, str]]]] = {}
+        if confs_needing_exh:
+            def _discover_one_exh(c_obj):
+                return c_obj.conference_id, self.discover_live_exhibitors_for_conference(c_obj, tavily_helper=tavily_helper)
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futs = [pool.submit(_discover_one_exh, c) for c in confs_needing_exh]
+                for fut in futs:
+                    try:
+                        cid_r, (hx, rex) = fut.result(timeout=45)
+                        exh_discovered_map[cid_r] = (hx, rex)
+                    except Exception:
+                        pass
+
+        for conf in confs_needing_exh:
+            conf_name = clean_html_text(conf.conference_name).strip()
+            conf_date = conf.start_date
+            c_run_id = conf.weekly_run_id or run_id or "WEEKLY-EXHIBITOR-RUN"
+            event_url = conf.official_event_url or conf.source_url or ""
+
+            has_exhibitors, raw_exhibitors = exh_discovered_map.get(conf.conference_id, (False, []))
 
             if has_exhibitors and raw_exhibitors:
-                confs_with_exhibitors += 1
-                # If there was a previous placeholder in DB, remove it
-                self.db.query(WeeklyExhibitor).filter(
-                    WeeklyExhibitor.conference_name == conf_name,
-                    WeeklyExhibitor.company_name == "Not Publicly Available"
-                ).delete()
-                existing_exh_keys.discard((conf_name.lower(), "not publicly available"))
-
+                added_for_conf = 0
                 for raw in raw_exhibitors:
-                    comp_name = (raw.get("company_name") or "").strip()
-                    if not comp_name or comp_name.lower() in ["company", "exhibitor name"]:
+                    comp_name = clean_html_text(raw.get("company_name") or "").strip()
+                    if not _is_valid_exhibitor_name(comp_name, conf_name):
                         continue
 
                     dup_key = (conf_name.lower(), comp_name.lower())
@@ -796,6 +553,7 @@ class WeeklyExhibitorService:
 
                     comp_li = validate_company_linkedin_url(raw.get("company_linkedin_url", ""))
                     person_li = validate_personal_linkedin_url(raw.get("contact_person_linkedin_url", ""))
+                    raw_email = clean_html_text(raw.get("professional_email", "") or "").strip()
 
                     exh_id = generate_weekly_exhibitor_id(conf.conference_id, comp_name)
                     exh_record = WeeklyExhibitor(
@@ -810,8 +568,8 @@ class WeeklyExhibitorService:
                         booth_number=raw.get("booth_number", "") or "",
                         contact_person=raw.get("contact_person", "") or "",
                         contact_designation=raw.get("contact_designation", "") or "",
-                        professional_email=raw.get("professional_email", "") or "",
-                        email_status="Verified" if raw.get("professional_email") else "Not Found",
+                        professional_email=raw_email,
+                        email_status="Needs Review" if raw_email else "Not Found",
                         company_linkedin_url=comp_li,
                         contact_person_linkedin_url=person_li,
                         source_url=raw.get("source_url") or event_url,
@@ -822,42 +580,23 @@ class WeeklyExhibitorService:
                     )
                     self.db.add(exh_record)
                     collected_records.append(exh_record)
+                    added_for_conf += 1
+
+                if added_for_conf > 0:
+                    confs_with_exhibitors += 1
+                else:
+                    confs_no_exhibitors += 1
             else:
-                confs_not_public += 1
-                dup_key = (conf_name.lower(), "not publicly available")
-                if dup_key not in existing_exh_keys:
-                    existing_exh_keys.add(dup_key)
-                    exh_id = generate_weekly_exhibitor_id(conf.conference_id, "NPA")
-                    exh_record = WeeklyExhibitor(
-                        exhibitor_id=exh_id,
-                        conference_id=conf.conference_id,
-                        conference_name=conf_name,
-                        conference_date=conf_date,
-                        company_name="Not Publicly Available",
-                        company_website="N/A",
-                        category_industry="N/A",
-                        company_description="No public exhibitor directory published for this conference.",
-                        booth_number="N/A",
-                        contact_person="",
-                        contact_designation="",
-                        professional_email="",
-                        email_status="Not Found",
-                        company_linkedin_url="",
-                        contact_person_linkedin_url="",
-                        source_url=event_url,
-                        availability_status="Not Publicly Available",
-                        weekly_run_id=c_run_id,
-                        collection_date=today,
-                        created_at=datetime.utcnow()
-                    )
-                    self.db.add(exh_record)
-                    collected_records.append(exh_record)
+                confs_no_exhibitors += 1
+                logger.info(f"ℹ️ No public exhibitor directory published for '{conf_name}'; inserting 0 placeholder rows.")
 
         # Commit to PostgreSQL
         self.db.commit()
 
-        # Sync to Local Excel ('weekly_exhibitors' worksheet)
-        all_current_exhs = self.db.query(WeeklyExhibitor).order_by(
+        # Sync non-placeholder exhibitors to Local Excel ('weekly_exhibitors' worksheet)
+        all_current_exhs = self.db.query(WeeklyExhibitor).filter(
+            WeeklyExhibitor.company_name != "Not Publicly Available"
+        ).order_by(
             WeeklyExhibitor.conference_date.asc(),
             WeeklyExhibitor.conference_name.asc()
         ).all()
@@ -881,25 +620,26 @@ class WeeklyExhibitorService:
             logger.warning(f"⚠️ OneDrive Excel weekly_exhibitors sync notice: {e}")
 
         # Automated Sync to Verified Data Sheet
-        try:
-            from .verified_data_service import VerifiedDataService
-            VerifiedDataService(self.db).sync_all_verified_data()
-            logger.info("✅ [Exhibitor Collection] Synchronized eligible verified exhibitors to 'Verified Data' sheet.")
-        except Exception as ve:
-            logger.warning(f"⚠️ [Exhibitor Collection] Notice syncing to Verified Data: {ve}")
+        if sync_verified:
+            try:
+                from .verified_data_service import VerifiedDataService
+                VerifiedDataService(self.db).sync_all_verified_data()
+                logger.info("✅ [Exhibitor Collection] Synchronized eligible verified exhibitors to 'Verified Data' sheet.")
+            except Exception as ve:
+                logger.warning(f"⚠️ [Exhibitor Collection] Notice syncing to Verified Data: {ve}")
 
         elapsed = round(time.time() - start_time, 2)
         logger.info(
             f"🎉 [Exhibitor Collection] Completed: {len(target_confs)} conferences checked in {elapsed}s | "
-            f"{len(collected_records)} exhibitor records processed (Conferences with Exhibitors: {confs_with_exhibitors}, "
-            f"Not Publicly Available: {confs_not_public})."
+            f"{len(collected_records)} genuine exhibitor records added (Conferences with Exhibitors: {confs_with_exhibitors}, "
+            f"None publicly listed: {confs_no_exhibitors})."
         )
 
         return {
             "status": "success",
             "total_conferences_checked": len(target_confs),
             "conferences_with_exhibitors": confs_with_exhibitors,
-            "conferences_not_publicly_available": confs_not_public,
+            "conferences_not_publicly_available": confs_no_exhibitors,
             "total_records_created": len(collected_records),
             "local_excel_sync": local_sync_res,
             "onedrive_sync": onedrive_sync_res,

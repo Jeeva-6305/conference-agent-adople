@@ -2,10 +2,12 @@ import base64
 import json
 import logging
 import re
+import threading
 import unicodedata
 from datetime import datetime, timedelta, date
 from typing import Optional
 import urllib.parse
+import requests as std_requests
 from bs4 import BeautifulSoup
 try:
     from curl_cffi import requests as cffi_requests
@@ -13,109 +15,11 @@ except ImportError:
     import requests as cffi_requests
 from ..config import settings
 from ..schemas import RawEventData, AIConferenceExtraction, SpeakerDetailItem, AttendeeDetailItem
+from ..scrapers.base_scraper import clean_html_text, extract_date_range_from_text
 
 logger = logging.getLogger(__name__)
 
 JOB_ROLES_EXACT = {"ceo", "cto", "ciso", "cio", "cfo", "cro", "coo", "president", "founder", "co-founder", "vice president", "vp"}
-
-VERIFIED_LINKEDIN_HANDLES = {
-    "dave lewis": "https://www.linkedin.com/in/gattaca",
-    "john johnson": "https://www.linkedin.com/in/john-d-johnson-ph-d-cissp-9226191",
-    "paula januszkiewicz": "https://www.linkedin.com/in/paulajanuszkiewicz",
-    "tanya janca": "https://www.linkedin.com/in/tanya-janca",
-    "jayson e. street": "https://www.linkedin.com/in/jaysonestreet",
-    "jayson street": "https://www.linkedin.com/in/jaysonestreet",
-    "ira winkler": "https://www.linkedin.com/in/irawinkler",
-    "chloe messdaghi": "https://www.linkedin.com/in/chloemessdaghi",
-    "gene spafford": "https://www.linkedin.com/in/spaf",
-    "doug brush": "https://www.linkedin.com/in/dougbrush",
-    "joshua corman": "https://www.linkedin.com/in/cormanjoshua",
-    "michael daugherty": "https://www.linkedin.com/in/michael-daugherty-443b7115",
-    "gadi evron": "https://www.linkedin.com/in/gadievron",
-    "bob flores": "https://www.linkedin.com/in/bob-flores-00216b2",
-    "richard greenberg": "https://www.linkedin.com/in/richardagreenberg",
-    "steve hunt": "https://www.linkedin.com/in/stevehunt",
-    "kate kuehn": "https://www.linkedin.com/in/katekuehn",
-    "bobby kuzma": "https://www.linkedin.com/in/bobbykuzma",
-    "fred kwong": "https://www.linkedin.com/in/fredkwong",
-    "jeff man": "https://www.linkedin.com/in/jeff-man-pci",
-    "richard rushing": "https://www.linkedin.com/in/richardrushing",
-    "winn schwartau": "https://www.linkedin.com/in/winnschwartau",
-    "greg schaffer": "https://www.linkedin.com/in/gregschaffer",
-    "robert wagner": "https://www.linkedin.com/in/robert-wagner-ciso",
-    "cyrus walker": "https://www.linkedin.com/in/cyrus-walker",
-    "matt scheurer": "https://www.linkedin.com/in/scubamatt",
-    "swati babbar": "https://www.linkedin.com/in/swatibabbar",
-    "erik bernhardsson": "https://www.linkedin.com/in/erikbern",
-    "greg brockman": "https://www.linkedin.com/in/gregbrockman",
-    "alex ohayon": "https://www.linkedin.com/in/alex-ohayon-79174665",
-    "ashir alam": "https://www.linkedin.com/in/ashir-alam",
-    "ryan perry": "https://www.linkedin.com/in/ryanperry4",
-    "reggie aggarwal": "https://www.linkedin.com/in/reggie-aggarwal",
-    "jen easterly": "https://www.linkedin.com/in/jeneasterly",
-    "anne neuberger": "https://www.linkedin.com/in/anne-neuberger-7323863",
-    "christopher krebs": "https://www.linkedin.com/in/chris-krebs-cisa",
-    "kemba walden": "https://www.linkedin.com/in/kemba-walden",
-    "rob joyce": "https://www.linkedin.com/in/robjoyce",
-    "kevin mandia": "https://www.linkedin.com/in/kevin-mandia",
-    "matthew travis": "https://www.linkedin.com/in/matthew-travis-cyberab",
-    "joseph purita": "https://www.linkedin.com/in/josephpurita",
-    "peter verlander": "https://www.linkedin.com/in/peter-verlander-phd",
-    "douglas spiel": "https://www.linkedin.com/in/douglas-spiel-md-1160a012",
-    "sharon mcquillan": "https://www.linkedin.com/in/sharon-mcquillan-md",
-    "susan kressly": "https://www.linkedin.com/in/susan-kressly-md",
-    "mark del monte": "https://www.linkedin.com/in/mark-del-monte-jd",
-    "sandy chung": "https://www.linkedin.com/in/sandy-chung-md",
-    "benjamin hoffman": "https://www.linkedin.com/in/benjamin-hoffman-md",
-    "lee savio beers": "https://www.linkedin.com/in/lee-savio-beers-md",
-    "colleen kraft": "https://www.linkedin.com/in/colleen-kraft-md",
-    "kyle yasuda": "https://www.linkedin.com/in/kyle-yasuda-md",
-    "moira szilagyi": "https://www.linkedin.com/in/moira-szilagyi-md-phd",
-    "jeffrey morgan": "https://www.linkedin.com/in/jmorganca",
-    "michael elabd": "https://www.linkedin.com/in/michael-elabd",
-    "erwan menard": "https://www.linkedin.com/in/erwanmenard",
-    "keith peiris": "https://www.linkedin.com/in/keithpeiris",
-    "omer golan": "https://www.linkedin.com/in/omergolan",
-    "sharon rao": "https://www.linkedin.com/in/sharonrao",
-    "brandon slicklein": "https://www.linkedin.com/in/brandon-slicklein",
-    "abhay garg": "https://www.linkedin.com/in/gargabhay06",
-    "prasanna gopalakrishnan": "https://www.linkedin.com/in/prasannagopalakrishnan",
-    "judy wu": "https://www.linkedin.com/in/wujudy",
-    "mary lieu": "https://www.linkedin.com/in/marylieu",
-    "joseph kolko": "https://www.linkedin.com/in/joseph-k-b48817194",
-    "ian kistner": "https://www.linkedin.com/in/ian-kistner",
-    "amy lin": "https://www.linkedin.com/in/heyamylin",
-    "andy chen": "https://www.linkedin.com/in/atchen",
-    "brian zhou": "https://www.linkedin.com/in/brian-zhou",
-    "terry jones": "https://www.linkedin.com/in/terrellbjones",
-    "eva galperin": "https://www.linkedin.com/in/eva-galperin-4825a92ba",
-    "sridhar ramaswamy": "https://www.linkedin.com/in/sridhar-ramaswamy",
-    "christian kleinerman": "https://www.linkedin.com/in/christian-kleinerman-a973102",
-    "brenner adams": "https://www.linkedin.com/in/brenneradams",
-    "anne l. peters": "https://www.linkedin.com/in/annetheresepeters",
-    "anne peters": "https://www.linkedin.com/in/annetheresepeters",
-    "christie m. ballantyne": "https://www.linkedin.com/in/christie-ballantyne-md-bb954914",
-    "christie ballantyne": "https://www.linkedin.com/in/christie-ballantyne-md-bb954914",
-    "chris volpe": "https://www.linkedin.com/in/nychrisvolpe",
-    "amanda gardner": "https://www.linkedin.com/in/amanda-gardner-36ba5419",
-    "mike hruska": "https://www.linkedin.com/in/mikehruska",
-    "tom hale": "https://www.linkedin.com/in/tomeghale",
-    "ben kompa": "https://www.linkedin.com/in/ben-kompa-99629670",
-    "jamie goldstein": "https://www.linkedin.com/in/jamie-goldstein-77699",
-    "dan furman": "https://www.linkedin.com/in/dan-furman-9343351",
-    "conor walsh": "https://www.linkedin.com/in/conor-walsh-a14a0914",
-    "jonathan leary": "https://www.linkedin.com/in/drjonathanleary",
-    "casey caruso": "https://www.linkedin.com/in/caseycaruso",
-    "dinesh nirmal": "https://www.linkedin.com/in/dineshnirmal",
-    "angela cain": "https://www.linkedin.com/in/angelacain",
-    "glyn hughes": "https://www.linkedin.com/in/glyn-hughes-aircargo",
-    "steven polmans": "https://www.linkedin.com/in/stevenpolmans",
-    "rob willig": "https://www.linkedin.com/in/robert-willig-2591605",
-    "robert willig": "https://www.linkedin.com/in/robert-willig-2591605",
-    "ed youdell": "https://www.linkedin.com/in/ed-youdell-a521401",
-    "jim pittas": "https://www.linkedin.com/in/jimpittas",
-    "jorge izquierdo": "https://www.linkedin.com/in/jorge-izquierdo-4609311"
-}
 
 COMPANY_URL_MAPPINGS = [
     (["luma"], "https://lu.ma"),
@@ -310,6 +214,7 @@ US_STATES = {
 }
 
 _LINKEDIN_CACHE: dict = {}
+_LINKEDIN_CACHE_LOCK = threading.Lock()
 
 def normalize_text(text: str) -> str:
     if not text:
@@ -346,7 +251,13 @@ TARGET_CATEGORIES = {
     "Technology": [
         "technology", "tech", "software", "cloud", "cybersecurity", "security",
         "engineering", "devops", "platform", "data", "developer", "hardware",
-        "iot", "robotics", "it", "computing", "network", "web", "startup", "innovation"
+        "iot", "robotics", "it", "computing", "supercomputing", "hpc", "quantum",
+        "network", "web", "startup", "innovation", "semiconductor", "saas", "enterprise software"
+    ],
+    "Supply Chain & Logistics": [
+        "supply chain", "logistics", "procurement", "freight", "warehousing",
+        "transportation", "distribution", "cold chain", "manufacturing", "sourcing",
+        "shipping", "fleet", "inventory", "maritime"
     ]
 }
 
@@ -367,6 +278,76 @@ T2_ALLOWED_CATEGORIES = {
     "AI Solutions": TARGET_CATEGORIES["AI Solutions"],
     "Financial Services": TARGET_CATEGORIES["Financial Services"]
 }
+
+WEEKLY_ALLOWED_CATEGORIES = {
+    "Healthcare": TARGET_CATEGORIES["Healthcare"],
+    "Medicines & Hospitals": TARGET_CATEGORIES["Medicines & Hospitals"],
+    "Enterprise AI": TARGET_CATEGORIES["Enterprise AI"],
+    "AI Solutions": TARGET_CATEGORIES["AI Solutions"],
+    "Financial Services": TARGET_CATEGORIES["Financial Services"],
+    "Technology": TARGET_CATEGORIES["Technology"],
+    "Supply Chain & Logistics": TARGET_CATEGORIES["Supply Chain & Logistics"],
+}
+
+WEEKLY_EXCLUDED_TITLE_PATTERNS = [
+    r"\bsigning\s+ceremony\b",
+    r"\bbook\s+signing\b",
+    r"\bauthor\s+(?:talk|signing|reading)\b",
+    r"\bawards?\s+(?:ceremony|gala|dinner|night)\b",
+    r"\bappreciation\s+(?:ceremony|dinner|gala|reception|event)\b",
+    r"\bwine\s+(?:tasting|festival|expo)\b",
+    r"\bfood\s+(?:festival|show|expo|tasting)\b",
+    r"\bbeer\s+(?:festival|tasting|garden)\b",
+    r"\bgrocery\s+run\b",
+    r"\bchurch\b",
+    r"\bministry\b",
+    r"\bmen'?s\s+conference\b",
+    r"\bwomen'?s\s+retreat\b",
+    r"\bprayer\b",
+    r"\brevival\b",
+    r"\bholy\s+spirit\b",
+    r"\breasonable\s+faith\b",
+    r"\bbar\s*crawl\b",
+    r"\bpub\s*crawl\b",
+    r"\bspeed\s+dating\b",
+    r"\bsingles\s+night\b",
+    r"\bkaraoke\b",
+    r"\bgun\s+show\b",
+    r"\bknife\s+show\b",
+    r"\bfirearm\b",
+    r"\bsound\s+therapy\b",
+    r"\bcomedy\s+(?:show|night|club)\b",
+    r"\brock\s+concert\b",
+    r"\bmortuary\b",
+    r"\bfuneral\b",
+    r"\byoga\b",
+    r"\bpre-?natal\b",
+    r"\bpost-?natal\b",
+    r"\bbridal\s+(?:expo|show|fair)\b",
+    r"\bwedding\s+(?:expo|show|fair)\b",
+    r"\bholiday\s+boutique\b",
+    r"\bart\s*(?:&|and)?\s*craft\b",
+    r"\bsalsa\b",
+    r"\bbachata\b",
+    r"\bkizomba\b",
+    r"\bfraternity\b",
+    r"\bsorority\b",
+    r"\bbarista\b",
+    r"\bsuicide\s+awareness\b",
+    r"\bblack\s+studies\b",
+    r"\bfind\s+government\s+events\b",
+    r"\bwine\b.*\bfestival\b",
+    r"\bauto\s+show\b",
+    r"\bholiday\s+(?:market|boutique|show|bazaar)\b",
+    r"\bchristmas\s+(?:connection|market|show|bazaar|expo)\b",
+    r"\bin\s+conversation\s+with\b",
+    r"\bscholarships?\s*(?:&|and)?\s*awards?\s+gala\b",
+    r"\bfilm\s+festival\b",
+    r"\bcomic\s*con\b",
+    r"\bboat\s+show\b",
+    r"\brv\s+show\b",
+    r"\bhome\s*(?:&|and)?\s*garden\s+show\b",
+]
 
 T2_EXCLUDED_PATTERNS = [
     r"\bsigning\s+ceremony\b",
@@ -411,7 +392,7 @@ T2_EXCLUDED_PATTERNS = [
 
 
 def is_valid_deep_conference_url(url: Optional[str]) -> bool:
-    """Verifies that a conference URL is a deep, valid event link and not a portal root."""
+    """Verifies that a conference URL is a deep, valid event link and not a portal/sponsor directory root."""
     if not url or not isinstance(url, str):
         return False
     u = url.strip().lower()
@@ -425,10 +406,23 @@ def is_valid_deep_conference_url(url: Optional[str]) -> bool:
         "https://allevents.in", "http://allevents.in", "https://www.allevents.in",
         "https://10times.com", "http://10times.com", "https://www.10times.com",
         "https://www.meetup.com", "http://www.meetup.com",
-        "https://meetup.com"
+        "https://meetup.com",
+        "https://www.govevents.com", "https://govevents.com",
+        "https://www.eventsinamerica.com", "https://eventsinamerica.com",
+        "https://m.eventsinamerica.com",
     ]
     u_clean = u.rstrip("/")
     if u_clean in [r.rstrip("/") for r in generic_roots]:
+        return False
+    blocked_path_segments = [
+        "govevents.com/orgs/",
+        "govevents.com/find",
+        "govevents.com/calendar",
+        "eventsinamerica.com/trade-shows-events/",
+        "/category/events",
+        "/category/trade-shows-events",
+    ]
+    if any(seg in u_clean for seg in blocked_path_segments):
         return False
     return True
 
@@ -456,6 +450,30 @@ def match_t2_categories(text: str) -> list:
     for cat_name, kw_list in T2_ALLOWED_CATEGORIES.items():
         for kw in kw_list:
             if re.search(rf"\b{re.escape(kw)}\b", norm, re.I):
+                matched.append(cat_name)
+                break
+    return matched
+
+
+def match_weekly_categories(title_text: str, full_text: str = "") -> list:
+    """
+    Classifies weekly B2B conferences accurately across Healthcare, Medicines & Hospitals,
+    Enterprise AI, AI Solutions, Financial Services, Technology, and Supply Chain & Logistics.
+    Applies exclusion patterns on the event title so genuine B2B conferences mentioning
+    terms like 'Main Stage', 'Networking Dinner', or 'Gene Therapy' in their body text are not falsely rejected.
+    """
+    if not title_text and not full_text:
+        return []
+    norm_title = normalize_text(title_text or "")
+    for pat in WEEKLY_EXCLUDED_TITLE_PATTERNS:
+        if re.search(pat, norm_title, re.I):
+            return []
+
+    combined = normalize_text(f"{title_text or ''} {full_text or ''}")
+    matched = []
+    for cat_name, kw_list in WEEKLY_ALLOWED_CATEGORIES.items():
+        for kw in kw_list:
+            if re.search(rf"\b{re.escape(kw)}\b", combined, re.I):
                 matched.append(cat_name)
                 break
     return matched
@@ -767,20 +785,18 @@ def score_candidate(candidate: dict, speaker_name: str, company_name: str = "", 
 
 def discover_and_verify_linkedin_profile(speaker_name: str, company_name: str = "", job_title: str = "", location: str = "") -> str:
     cache_key = f"{speaker_name.lower().strip()}|{company_name.lower().strip()}"
-    if cache_key in _LINKEDIN_CACHE:
-        return _LINKEDIN_CACHE[cache_key]
+    with _LINKEDIN_CACHE_LOCK:
+        if cache_key in _LINKEDIN_CACHE:
+            return _LINKEDIN_CACHE[cache_key]
 
     clean_spk_name = re.sub(r'^(Dr\.|Doctor|Prof\.|Professor|Mr\.|Ms\.|Mrs\.)\s+', '', speaker_name.lower().strip(), flags=re.I).strip()
     clean_spk_name = re.sub(r'[\s,]+(MD|PhD|JD|CISO|CISSP|Esq|Jr\.|Sr\.|III|II|IV)[\s.]*$', '', clean_spk_name, flags=re.I).strip()
 
     candidates = search_linkedin_candidates(clean_spk_name, company_name, job_title, location)
     if not candidates:
-        if clean_spk_name in VERIFIED_LINKEDIN_HANDLES:
-            v_url = VERIFIED_LINKEDIN_HANDLES[clean_spk_name]
-            _LINKEDIN_CACHE[cache_key] = v_url
-            return v_url
         logger.info(f"LinkedIn verification: No candidates found for '{speaker_name}' at '{company_name}'. Kept empty (needs_review).")
-        _LINKEDIN_CACHE[cache_key] = ""
+        with _LINKEDIN_CACHE_LOCK:
+            _LINKEDIN_CACHE[cache_key] = ""
         return ""
 
     scored_candidates = []
@@ -795,12 +811,9 @@ def discover_and_verify_linkedin_profile(speaker_name: str, company_name: str = 
             })
 
     if not scored_candidates:
-        if clean_spk_name in VERIFIED_LINKEDIN_HANDLES:
-            v_url = VERIFIED_LINKEDIN_HANDLES[clean_spk_name]
-            _LINKEDIN_CACHE[cache_key] = v_url
-            return v_url
         logger.info(f"LinkedIn verification: Candidates for '{speaker_name}' failed identity checks. Kept empty (needs_review).")
-        _LINKEDIN_CACHE[cache_key] = ""
+        with _LINKEDIN_CACHE_LOCK:
+            _LINKEDIN_CACHE[cache_key] = ""
         return ""
 
     scored_candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -810,12 +823,9 @@ def discover_and_verify_linkedin_profile(speaker_name: str, company_name: str = 
     top_reasons = top["reasons"]
 
     if top_score < 65:
-        if clean_spk_name in VERIFIED_LINKEDIN_HANDLES:
-            v_url = VERIFIED_LINKEDIN_HANDLES[clean_spk_name]
-            _LINKEDIN_CACHE[cache_key] = v_url
-            return v_url
         logger.info(f"LinkedIn verification: Score {top_score} < 65 for '{speaker_name}'. Reasons: {'; '.join(top_reasons)}. Kept empty (needs_review).")
-        _LINKEDIN_CACHE[cache_key] = ""
+        with _LINKEDIN_CACHE_LOCK:
+            _LINKEDIN_CACHE[cache_key] = ""
         return ""
 
     if len(scored_candidates) > 1:
@@ -823,12 +833,14 @@ def discover_and_verify_linkedin_profile(speaker_name: str, company_name: str = 
         second_score = second["score"]
         if top_score - second_score < 10 and not top["details"].get("company_matched"):
             logger.info(f"LinkedIn verification: Ambiguous top candidates for '{speaker_name}'. Kept empty (needs_review).")
-            _LINKEDIN_CACHE[cache_key] = ""
+            with _LINKEDIN_CACHE_LOCK:
+                _LINKEDIN_CACHE[cache_key] = ""
             return ""
 
     selected_url = top_cand["url"]
     logger.info(f"LinkedIn verification: Selected '{selected_url}' for '{speaker_name}' ({company_name}) with score {top_score}. Reasons: {'; '.join(top_reasons)}")
-    _LINKEDIN_CACHE[cache_key] = selected_url
+    with _LINKEDIN_CACHE_LOCK:
+        _LINKEDIN_CACHE[cache_key] = selected_url
     return selected_url
 
 def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: str, conf_title: str = "", conf_url: str = "", location: str = ""):
@@ -840,8 +852,8 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
         return "", "", "", "", ""
     # 1. Clean speaker name
     name = re.sub(r'[\s~]+$', '', speaker_name).strip().strip(",- \t\n")
-    role = job_role.strip().rstrip(".,;")
-    company = company_name.strip().rstrip(".,;")
+    role = (job_role or "").strip().rstrip(".,;")
+    company = (company_name or "").strip().rstrip(".,;")
 
     # Reject speaker names matching conference title or contained in conference title
     if conf_title:
@@ -874,36 +886,34 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
         if role.lower() in ["ceo", "founder"]:
             role = "Founder & CEO"
 
-    # 4. Preserve original scraped company and designation (No hardcoded speaker overrides)
-    if not company or company.lower() in ["tbd", "none", "n/a"]:
-        company = organizer_or_conf = conf_title or "Industry Organization"
+    # 4. Preserve original scraped company and designation (never fabricate fallbacks)
+    if company.lower() in ["tbd", "tba", "none", "n/a", "unknown", "industry organization", "industry trade organizer"]:
+        company = ""
+    if conf_title and company.lower() == conf_title.lower().strip():
+        company = ""
+    if role.lower() in ["speaker", "keynote speaker", "featured guest", "event host & organizer", "tbd", "tba", "none", "n/a", "unknown"]:
+        role = ""
 
-
-    # 5. Resolve official company website
+    # 5. Resolve official company website strictly when company is known
     comp_lower = company.lower()
     company_url = ""
-    for kw_list, target_url in COMPANY_URL_MAPPINGS:
-        matched = False
-        for kw in kw_list:
-            if len(kw) <= 4:
-                if re.search(rf"\b{re.escape(kw)}\b", comp_lower):
-                    matched = True
-                    break
-            else:
-                if kw in comp_lower:
-                    matched = True
-                    break
-        if matched:
-            company_url = target_url
-            break
-
-    if not company_url:
-        if "luma" in comp_lower:
+    if comp_lower:
+        for kw_list, target_url in COMPANY_URL_MAPPINGS:
+            matched = False
+            for kw in kw_list:
+                if len(kw) <= 4:
+                    if re.search(rf"\b{re.escape(kw)}\b", comp_lower):
+                        matched = True
+                        break
+                else:
+                    if kw in comp_lower:
+                        matched = True
+                        break
+            if matched:
+                company_url = target_url
+                break
+        if not company_url and "luma" in comp_lower:
             company_url = "https://lu.ma"
-        elif conf_url:
-            company_url = conf_url
-        else:
-            company_url = ""
 
     # 6. Discover and verify genuine LinkedIn profile URL via candidate search (No slug guessing)
     linkedin_url = discover_and_verify_linkedin_profile(name, company, role, location)
@@ -912,79 +922,352 @@ def clean_and_resolve_speaker(speaker_name: str, job_role: str, company_name: st
 
     return name, role, company, company_url, linkedin_url
 
+US_CITY_STATE_ALIASES = [
+    ("Las Vegas", "NV", ["las vegas", "vegas"]),
+    ("Boston", "MA", ["boston", "cambridge, ma", "harvard business school", "hbs"]),
+    ("San Francisco", "CA", ["san francisco", "south san francisco"]),
+    ("New York", "NY", ["new york", "nyc", "manhattan", "brooklyn"]),
+    ("Chicago", "IL", ["chicago"]),
+    ("Oak Brook", "IL", ["oak brook"]),
+    ("Austin", "TX", ["austin"]),
+    ("Houston", "TX", ["houston"]),
+    ("Dallas", "TX", ["dallas", "frisco", "irving"]),
+    ("San Antonio", "TX", ["san antonio"]),
+    ("Baltimore", "MD", ["baltimore", "national harbor"]),
+    ("Orlando", "FL", ["orlando"]),
+    ("Miami", "FL", ["miami", "fort lauderdale", "boca raton"]),
+    ("Tampa", "FL", ["tampa"]),
+    ("Washington", "DC", ["washington, dc", "washington d.c.", "washington dc"]),
+    ("Nashville", "TN", ["nashville"]),
+    ("Seattle", "WA", ["seattle", "bellevue, wa"]),
+    ("Denver", "CO", ["denver"]),
+    ("San Diego", "CA", ["san diego", "la jolla"]),
+    ("Los Angeles", "CA", ["los angeles", "santa monica", "anaheim"]),
+    ("San Jose", "CA", ["san jose", "santa clara", "silicon valley", "palo alto", "mountain view", "stanford"]),
+    ("Philadelphia", "PA", ["philadelphia"]),
+    ("Pittsburgh", "PA", ["pittsburgh"]),
+    ("Phoenix", "AZ", ["phoenix"]),
+    ("Scottsdale", "AZ", ["scottsdale"]),
+    ("Charlotte", "NC", ["charlotte"]),
+    ("Raleigh", "NC", ["raleigh", "durham"]),
+    ("Salt Lake City", "UT", ["salt lake city"]),
+    ("Minneapolis", "MN", ["minneapolis"]),
+    ("Atlanta", "GA", ["atlanta"]),
+    ("Davenport", "IA", ["davenport", "quad cities"]),
+    ("Portland", "OR", ["portland, or"]),
+    ("New Orleans", "LA", ["new orleans"]),
+]
+
+US_STATE_CODES_CS = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "DC"
+}
+
+
+def resolve_us_city_state(raw_city: str, context_text: str = "") -> str:
+    """Normalizes US city string to 'City, ST' using known aliases or regex fallback."""
+    c_clean = clean_html_text(raw_city or "").strip()
+    if c_clean and re.search(r",\s*[A-Z]{2}\b", c_clean):
+        return c_clean
+
+    search_space = f"{c_clean} {context_text[:2000]}"
+    # If raw_city is already a known city without state, find its state first
+    for c_name, c_state, aliases in US_CITY_STATE_ALIASES:
+        if c_clean and c_clean.lower() == c_name.lower():
+            return f"{c_name}, {c_state}"
+
+    for c_name, c_state, aliases in US_CITY_STATE_ALIASES:
+        if any(re.search(rf"\b{re.escape(a)}\b", search_space, re.I) for a in aliases):
+            return f"{c_name}, {c_state}"
+
+    m_cs = re.search(r"\b([A-Za-z][A-Za-z\.\s]{1,24}),\s*([A-Z]{2})\b", search_space)
+    if m_cs and m_cs.group(2) in US_STATE_CODES_CS:
+        return f"{m_cs.group(1).strip()}, {m_cs.group(2).strip()}"
+
+    return c_clean or "USA"
+
+
 class AIConferenceExtractor:
     def __init__(self):
         self.api_key = settings.GEMINI_API_KEY
         self.client = None
+        self._state_lock = threading.Lock()
         self._quota_exhausted = False
+        self._disabled_gemini_models: set = set()
+        self._gemini_consecutive_failures: int = 0
+        self._azure_exhausted = False
         if self.api_key:
             try:
                 from google import genai
-                self.client = genai.Client(api_key=self.api_key)
+                from google.genai import types as genai_types
+                self.client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=genai_types.HttpOptions(timeout=15000),
+                )
                 logger.info("Gemini AI Agent initialized successfully with API key.")
             except Exception as e:
                 logger.error(f"Could not initialize Gemini Client: {e}")
 
-    def extract_and_validate(self, raw_data: RawEventData) -> Optional[AIConferenceExtraction]:
+    def _validate_and_finalize_extraction(
+        self,
+        extraction: AIConferenceExtraction,
+        raw_data: RawEventData,
+        mode: str = "t2",
+        engine_label: str = "AI",
+    ) -> Optional[AIConferenceExtraction]:
+        if not extraction or not extraction.is_valid_usa_conference:
+            return None
+
+        clean_title = clean_html_text(extraction.conference_title)
+        clean_desc = clean_html_text(extraction.description or "")
+        clean_raw_title = clean_html_text(raw_data.raw_title)
+        clean_raw_text = clean_html_text(raw_data.raw_text)
+
+        # Prevent LLM from replacing the conference name with a vendor/sponsor name (e.g. AWS, Oracle)
+        if clean_raw_title and clean_title and clean_title.lower() != clean_raw_title.lower():
+            stop_words = {"the", "and", "for", "of", "in", "on", "at", "to", "a", "an", "usa", "us", "2025", "2026", "2027", "annual", "conference", "summit"}
+            t_tokens = {w for w in re.findall(r"[a-z0-9]{2,}", clean_title.lower()) if w not in stop_words}
+            r_tokens = {w for w in re.findall(r"[a-z0-9]{2,}", clean_raw_title.lower()) if w not in stop_words}
+            if r_tokens and t_tokens and len(t_tokens & r_tokens) == 0:
+                logger.warning(f"LLM altered title '{clean_raw_title}' -> '{clean_title}' with zero overlap; preserving original title.")
+                clean_title = clean_raw_title
+
+        extraction.conference_title = clean_title or clean_raw_title
+        extraction.description = clean_desc
+        extraction.city = resolve_us_city_state(extraction.city, f"{raw_data.raw_location or ''} {clean_raw_text[:2000]}")
+
+        if mode == "weekly":
+            matched_cats = match_weekly_categories(
+                f"{clean_raw_title} {extraction.conference_title}",
+                f"{extraction.industry_category} {clean_desc} {clean_raw_text}"
+            )
+        else:
+            matched_cats = match_t2_categories(
+                f"{extraction.conference_title} {extraction.industry_category} {clean_desc} {clean_raw_text}"
+            )
+
+        if not matched_cats:
+            logger.info(f"Skipping '{extraction.conference_title}': does not match required business categories or is excluded.")
+            return None
+        extraction.industry_category = " / ".join(matched_cats)
+
+        if not is_valid_deep_conference_url(extraction.official_conference_url):
+            extraction.official_conference_url = raw_data.source_url
+        if not is_valid_deep_conference_url(extraction.registration_url):
+            extraction.registration_url = raw_data.source_url
+        if not is_valid_deep_conference_url(extraction.official_conference_url):
+            logger.warning(f"Skipping '{extraction.conference_title}': invalid/root portal URL ({extraction.official_conference_url})")
+            return None
+
+        # Validate ISO date strings strictly; repair via scraped date hints if needed
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(extraction.start_date or "").strip()):
+            s_fix, e_fix = extract_date_range_from_text(f"{raw_data.raw_date or ''} {clean_raw_text}")
+            if not s_fix:
+                return None
+            extraction.start_date = s_fix
+            extraction.end_date = e_fix or s_fix
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(extraction.end_date or "").strip()):
+            extraction.end_date = extraction.start_date
+
+        if not extraction.attendee_details:
+            extraction.attendee_details = extract_attendee_details_from_text(
+                clean_raw_text, extraction.conference_title, extraction.industry_category
+            )
+
+        extraction.speakers = [
+            clean_html_text(s) for s in extraction.speakers
+            if s and s.strip() and "tbd" not in s.lower() and "placeholder" not in s.lower()
+        ]
+        extraction.speaker_titles_companies = [
+            clean_html_text(t) for t in extraction.speaker_titles_companies
+            if t and t.strip() and "experts & leaders" not in t.lower()
+        ]
+
+        # Cross-verify against complete scraped text to ensure NO speakers are missed
+        text_speakers, text_titles, text_details = self._extract_all_speakers_from_text(
+            clean_raw_text,
+            extraction.conference_title,
+            extraction.city,
+            extraction.country,
+            extraction.organizer,
+            extraction.speaker_talks_details or "",
+            extraction.official_conference_url
+        )
+        if len(text_speakers) > len(extraction.speakers):
+            extraction.speakers = text_speakers
+            extraction.speaker_titles_companies = text_titles
+            extraction.speaker_details = text_details
+        elif not extraction.speaker_details and extraction.speakers:
+            extraction.speaker_details = text_details
+
+        # Clean speaker_details to ensure zero fake placeholder strings leak through
+        cleaned_details = []
+        for sd in extraction.speaker_details:
+            r_clean = (sd.job_role_designation or "").strip()
+            c_clean = (sd.company_name or sd.company_organization or "").strip()
+            if r_clean.lower() in ("speaker", "keynote speaker", "featured guest", "event host & organizer", "tbd", "n/a"):
+                r_clean = ""
+            if c_clean.lower() in ("industry organization", "tbd", "n/a", "unknown", extraction.conference_title.lower()):
+                c_clean = ""
+            sd.job_role_designation = r_clean
+            sd.company_name = c_clean
+            sd.company_organization = c_clean
+            if sd.linkedin_url and "linkedin.com/in/" not in sd.linkedin_url.lower():
+                sd.linkedin_url = ""
+            cleaned_details.append(sd)
+        extraction.speaker_details = cleaned_details
+
+        extraction.speakers_available = "Yes" if len(extraction.speakers) > 0 else "No"
+
+        if not extraction.registration_url or "http" not in extraction.registration_url:
+            extraction.registration_url = raw_data.source_url
+        if not extraction.official_conference_url or "http" not in extraction.official_conference_url:
+            extraction.official_conference_url = raw_data.source_url
+
+        if "/en/events" in extraction.registration_url:
+            extraction.registration_url = extraction.registration_url.replace("/en/events", "/events")
+        if "/en/events" in extraction.official_conference_url:
+            extraction.official_conference_url = extraction.official_conference_url.replace("/en/events", "/events")
+
+        logger.info(f"✅ {engine_label} validated genuine conference: {extraction.conference_title} | Category: {extraction.industry_category} | Dates: {extraction.start_date} to {extraction.end_date} | Total Speakers: {len(extraction.speakers)}")
+        return extraction
+
+    def _extract_with_azure(self, raw_data: RawEventData, mode: str = "t2") -> Optional[AIConferenceExtraction]:
+        """Fallback structured extraction via Azure OpenAI (gpt-5.4-mini) when Gemini is unavailable/exhausted."""
+        if self._azure_exhausted:
+            return None
+        api_key = getattr(settings, "AZURE_OPENAI_API_KEY", "") or ""
+        base_url = getattr(settings, "AZURE_OPENAI_BASE_URL", "") or ""
+        deployment = getattr(settings, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini") or "gpt-5.4-mini"
+        if not api_key or not base_url:
+            return None
+
+        today_str = date.today().isoformat()
+        clean_title = clean_html_text(raw_data.raw_title)
+        clean_loc = clean_html_text(raw_data.raw_location or "")
+        clean_text = clean_html_text(raw_data.raw_text)[:12000]
+
+        prompt = f"""Analyze this genuine conference listing scraped from {raw_data.source_name} and output a JSON object matching the exact schema keys below.
+Raw Title: {clean_title}
+Location: {clean_loc}
+Date Hint: {raw_data.raw_date}
+Source URL: {raw_data.source_url}
+Current System Date: {today_str}
+Text / Agenda / Speakers:
+{clean_text}
+
+CRITICAL RULES:
+0. PRESERVE EVENT IDENTITY: Keep "conference_title" faithful to the Raw Title (fix minor artifacts only; NEVER replace the event name with a sponsor/vendor name such as AWS or Oracle). If the page is a sponsor/organization profile directory rather than a specific conference, set "is_valid_usa_conference": false.
+1. Set "is_valid_usa_conference": true ONLY if this is a genuine conference/summit/symposium/expo/forum happening physically in the USA. Set false for foreign events, casual meetups, bar crawls, yoga classes, church revivals, bridal shows, or webinars.
+2. Extract exact "start_date" and "end_date" as YYYY-MM-DD from the Date Hint / Text. Never guess or fabricate dates.
+3. Extract city as "City, ST" when state is known (e.g. "Las Vegas, NV" or "Boston, MA"), "country": "USA".
+4. Extract ONLY real human speakers explicitly named in the Text under "speaker_details" (each with speaker_name, job_role_designation, company_name, linkedin_url if literally in text else ""). NEVER invent or guess speakers, roles, companies, or LinkedIn URLs; leave unknown fields as "".
+5. Return ONLY valid JSON with keys:
+conference_title, industry_category, start_date, end_date, speakers (list of names), speaker_titles_companies (list), speaker_details (list of dicts with speaker_name, job_role_designation, company_organization, company_name, official_company_website_url, linkedin_url, location), description, venue, city, country, organizer, official_conference_url, registration_url, publication_date, speakers_available ("Yes"/"No"), is_valid_usa_conference (boolean)."""
+
+        try:
+            endpoint = f"{base_url.rstrip('/')}/chat/completions"
+            resp = std_requests.post(
+                endpoint,
+                headers={
+                    "api-key": api_key,
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": deployment,
+                    "messages": [
+                        {"role": "system", "content": "You are a strict Conference Verification AI Agent. Extract facts only; never fabricate speakers, companies, titles, or dates."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=25,
+            )
+            if resp.status_code in (401, 402, 429):
+                logger.warning(f"Azure OpenAI extractor API notice (HTTP {resp.status_code}).")
+                if resp.status_code in (401, 402):
+                    self._azure_exhausted = True
+                return None
+            if resp.status_code != 200:
+                return None
+            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
+            extraction = AIConferenceExtraction(**parsed)
+            return self._validate_and_finalize_extraction(extraction, raw_data, mode=mode, engine_label="Azure OpenAI")
+        except Exception as e:
+            logger.debug(f"Azure OpenAI extractor notice for '{clean_title}': {e}")
+            return None
+
+    def extract_and_validate(self, raw_data: RawEventData, mode: str = "t2") -> Optional[AIConferenceExtraction]:
         """
         Extracts structured conference details and validates USA location.
-        Tries Gemini API first with gemini-3.5-flash-lite / gemini-3.5-flash.
-        Collects actual speakers' names, designations, company names, speaking background,
-        and real start/end dates.
+        Tries Gemini API -> Azure OpenAI -> Deterministic real-text parser.
         NO FAKE OR MOCK DATA IS EVER GENERATED.
         """
-        if self._quota_exhausted:
-            return self._parse_from_real_scraped_data(raw_data)
-        # Step 1: Filter out non-conferences (e.g. workshops, meetups, classes, webinars, happy hours)
-        title_lower = raw_data.raw_title.lower()
-        non_conf_terms = [
-            "workshop", "webinar", "bootcamp", "hackathon", "class", "meetup",
-            "bar crawl", "barcrawl", "dating", "singles night", "happy hour", 
+        if not is_valid_deep_conference_url(raw_data.source_url):
+            logger.info(f"Skipping non-conference/directory URL: {raw_data.source_url}")
+            return None
+
+        clean_title = clean_html_text(raw_data.raw_title)
+        title_lower = clean_title.lower()
+        # Skip clearly non-B2B social/consumer/religious events upfront before LLM calls
+        strict_social_terms = [
+            "bar crawl", "barcrawl", "dating", "singles night", "happy hour",
             "board game", "karaoke", "speed dating", "pub crawl", "skip the small talk",
             "psychadelic flow", "workout ever", "coworking day", "zoom event", "mixer"
         ]
-        if any(term in title_lower for term in non_conf_terms):
-            logger.info(f"Skipping non-conference event (workshop/social): {raw_data.raw_title}")
+        if any(term in title_lower for term in strict_social_terms):
+            logger.info(f"Skipping non-conference social event: {clean_title}")
+            return None
+        if mode == "weekly" and any(re.search(pat, title_lower, re.I) for pat in WEEKLY_EXCLUDED_TITLE_PATTERNS):
+            logger.info(f"Skipping excluded non-B2B event title: {clean_title}")
+            return None
+        minor_terms = ["workshop", "webinar", "bootcamp", "hackathon", "class", "meetup"]
+        formal_terms = ["conference", "summit", "symposium", "forum", "expo", "congress", "convention"]
+        if any(re.search(rf"\b{t}\b", title_lower) for t in minor_terms) and not any(re.search(rf"\b{f}\b", title_lower) for f in formal_terms):
+            logger.info(f"Skipping non-conference event (workshop/meetup/class): {clean_title}")
             return None
 
-        # Step 2: Try Gemini API
-        if self.client:
-            for model_name in ['gemini-3.5-flash-lite', 'gemini-3-flash-preview', 'gemini-flash-latest']:
+        # Step 2: Try Gemini API (with model blacklist on 404 & circuit-breaker on repeated errors/timeouts)
+        with self._state_lock:
+            gemini_enabled = bool(self.client) and not self._quota_exhausted
+            active_models = [
+                m for m in ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview']
+                if m not in self._disabled_gemini_models
+            ] if gemini_enabled else []
+            if gemini_enabled and not active_models:
+                self._quota_exhausted = True
+                gemini_enabled = False
+
+        if gemini_enabled:
+            for model_name in active_models:
                 try:
                     today_str = date.today().isoformat()
                     prompt = f"""
                     You are an expert Conference Verification AI Agent.
                     Analyze this genuine conference listing scraped from {raw_data.source_name}:
 
-                    Raw Title: {raw_data.raw_title}
-                    Location: {raw_data.raw_location}
+                    Raw Title: {clean_title}
+                    Location: {clean_html_text(raw_data.raw_location or '')}
                     Date Hint: {raw_data.raw_date}
-                    Text / Agenda / Speakers: {raw_data.raw_text}
+                    Text / Agenda / Speakers: {clean_html_text(raw_data.raw_text)[:12000]}
                     Source URL: {raw_data.source_url}
                     Current System Date: {today_str}
 
                     Instructions:
-                    1. Verify this event is a formal CONFERENCE located in the USA. If it is a casual meetup, workshop, or not in the USA, set is_valid_usa_conference=False.
+                    1. Verify this event is a formal CONFERENCE located in the USA. Keep "conference_title" faithful to the Raw Title (never replace it with a sponsor name). If it is a casual meetup, workshop, or not in the USA, set is_valid_usa_conference=False.
                     2. Extract the exact conference start date (YYYY-MM-DD) and end date (YYYY-MM-DD). If it is a 1-day event, start_date and end_date must be identical.
-                    3. Extract the ORIGINAL conference publication or announcement date (YYYY-MM-DD) when the conference was first published/announced to the public. DO NOT use the current system date or scraping date.
-                    4. SPEAKER EXTRACTION (MANDATORY COMPLETE EXTRACTION):
-                       - Extract EVERY SINGLE SPEAKER mentioned in the text. Ensure no speaker names are missed when a speaker list is available.
-                       - For each speaker, collect all available details:
-                         * 'speaker_name': Full verified person's name (must be a real person, not an organization or role).
-                         * 'job_role_designation': Job title, role, or executive position.
-                         * 'company_organization': Company, institution, or government agency name.
-                         * 'company_name': Company name.
-                         * 'official_company_website_url': Official company website URL where the speaker works (e.g. https://company.com).
-                         * 'linkedin_url': Speaker's original LinkedIn profile URL (e.g. https://www.linkedin.com/in/username).
-                         * 'location': Speaker's city, state, or company location (or conference location if not specified).
-                       - Deduplicate: ensure each speaker appears only once per conference (no duplicate names).
-                       - Populate 'speakers' list with all unique full names.
-                       - Populate 'speaker_titles_companies' list matching each speaker.
-                       - Populate 'speaker_details' with structured SpeakerDetailItem for each speaker.
-                       - If speakers are present, set speakers_available="Yes", otherwise "No".
-                       - DO NOT add fake, sample, or unverified speaker information.
-                    5. Extract accurate venue, city, and organizer.
-                    6. Return official_conference_url and registration_url (use {raw_data.source_url} if direct link is not specified). NEVER return URLs that give 404 errors.
+                    3. Extract the ORIGINAL conference publication or announcement date (YYYY-MM-DD) when the conference was first published/announced.
+                    4. SPEAKER EXTRACTION:
+                       - Extract ONLY EVERY SINGLE REAL SPEAKER explicitly mentioned in the text.
+                       - Leave job_role_designation, company_name, or linkedin_url empty ("") if not explicitly written in the text. NEVER guess or insert placeholders like "Keynote Speaker" or "Industry Organization".
+                       - Populate 'speakers', 'speaker_titles_companies', and 'speaker_details'.
+                    5. Extract accurate venue, city (e.g. "Las Vegas, NV"), and organizer.
+                    6. Return official_conference_url and registration_url (use {raw_data.source_url} if direct link is not specified).
                     """
                     response = self.client.models.generate_content(
                         model=model_name,
@@ -995,167 +1278,201 @@ class AIConferenceExtractor:
                         }
                     )
                     if response and response.text:
+                        with self._state_lock:
+                            self._gemini_consecutive_failures = 0
                         parsed = json.loads(response.text)
                         extraction = AIConferenceExtraction(**parsed)
-                        if extraction.is_valid_usa_conference:
-                            # Verify that conference matches at least one of the 5 strict T-2 business categories
-                            # (Enterprise AI, Healthcare, Financial Services, Medical and Hospital, AI Solutions)
-                            # and does not match any excluded patterns (signing ceremonies, wine/food festivals, retreats, etc.)
-                            matched_cats = match_t2_categories(
-                                f"{extraction.conference_title} {extraction.industry_category} {extraction.description} {raw_data.raw_text}"
-                            )
-                            if not matched_cats:
-                                logger.info(f"Skipping '{extraction.conference_title}': does not match any of the 5 required T-2 business categories or is excluded.")
-                                return None
-                            extraction.industry_category = " / ".join(matched_cats)
-
-                            # Validate deep URL (must not be generic root portal like eventbrite.ca)
-                            if not is_valid_deep_conference_url(extraction.official_conference_url):
-                                extraction.official_conference_url = raw_data.source_url
-                            if not is_valid_deep_conference_url(extraction.registration_url):
-                                extraction.registration_url = raw_data.source_url
-                            if not is_valid_deep_conference_url(extraction.official_conference_url):
-                                logger.warning(f"Skipping '{extraction.conference_title}': invalid/root portal URL ({extraction.official_conference_url})")
-                                return None
-
-                            # Populate attendee profile details if missing
-                            if not extraction.attendee_details:
-                                extraction.attendee_details = extract_attendee_details_from_text(
-                                    raw_data.raw_text, extraction.conference_title, extraction.industry_category
-                                )
-
-                            # Sanitize speaker fields: never allow "Keynote Speakers TBD" or "TBD"
-                            extraction.speakers = [
-                                s for s in extraction.speakers 
-                                if s and s.strip() and "tbd" not in s.lower() and "placeholder" not in s.lower()
-                            ]
-                            extraction.speaker_titles_companies = [
-                                t for t in extraction.speaker_titles_companies 
-                                if t and t.strip() and "experts & leaders" not in t.lower()
-                            ]
-                            
-                            # CRITICAL: Cross-verify against complete scraped text to ensure NO speakers are missed
-                            text_speakers, text_titles, text_details = self._extract_all_speakers_from_text(
-                                raw_data.raw_text,
-                                extraction.conference_title,
-                                extraction.city,
-                                extraction.country,
-                                extraction.organizer,
-                                extraction.speaker_talks_details or ""
-                            )
-                            if len(text_speakers) > len(extraction.speakers):
-                                extraction.speakers = text_speakers
-                                extraction.speaker_titles_companies = text_titles
-                                extraction.speaker_details = text_details
-                            elif not extraction.speaker_details and extraction.speakers:
-                                extraction.speaker_details = text_details
-
-                            extraction.speakers_available = "Yes" if len(extraction.speakers) > 0 else "No"
-
-                            if not extraction.registration_url or "http" not in extraction.registration_url:
-                                extraction.registration_url = raw_data.source_url
-                            if not extraction.official_conference_url or "http" not in extraction.official_conference_url:
-                                extraction.official_conference_url = raw_data.source_url
-                            
-                            # Fix any broken /en/events URLs
-                            if "/en/events" in extraction.registration_url:
-                                extraction.registration_url = extraction.registration_url.replace("/en/events", "/events")
-                            if "/en/events" in extraction.official_conference_url:
-                                extraction.official_conference_url = extraction.official_conference_url.replace("/en/events", "/events")
-
-                            logger.info(f"✅ Gemini validated genuine conference: {extraction.conference_title} | Category: {extraction.industry_category} | Dates: {extraction.start_date} to {extraction.end_date} | Total Speakers: {len(extraction.speakers)}")
-                            return extraction
-                        return None
+                        return self._validate_and_finalize_extraction(extraction, raw_data, mode=mode, engine_label="Gemini")
                 except Exception as e:
-                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
-                        self._quota_exhausted = True
+                    err_str = str(e)
+                    if "404" in err_str or "NOT_FOUND" in err_str:
+                        with self._state_lock:
+                            self._disabled_gemini_models.add(model_name)
+                        logger.debug(f"Gemini model '{model_name}' 404 unavailable; disabling for remaining run.")
+                        continue
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                        with self._state_lock:
+                            self._quota_exhausted = True
+                        logger.warning(f"Gemini API quota exhausted ({e}), switching to Azure OpenAI / real-text parser...")
+                        break
+                    with self._state_lock:
+                        self._gemini_consecutive_failures += 1
+                        failures_now = self._gemini_consecutive_failures
+                        if failures_now >= 3:
+                            self._quota_exhausted = True
                     logger.warning(f"Gemini API ({model_name}) error ({e}), trying fallback parser...")
+                    if failures_now >= 3:
+                        logger.warning("Gemini API consecutive failures >= 3; circuit-breaking directly to Azure OpenAI / deterministic parser for remaining events.")
                     break
 
-        # Step 3: High-fidelity parser on real scraped fields
-        return self._parse_from_real_scraped_data(raw_data)
+        # Step 2b: Azure OpenAI structured extraction fallback
+        if not self._azure_exhausted:
+            az_ext = self._extract_with_azure(raw_data, mode=mode)
+            if az_ext is not None:
+                return az_ext
+
+        # Step 3: High-fidelity deterministic parser on real scraped fields
+        return self._parse_from_real_scraped_data(raw_data, mode=mode)
 
     extract_conference_details = extract_and_validate
 
-    def _parse_from_real_scraped_data(self, raw_data: RawEventData) -> Optional[AIConferenceExtraction]:
+    def _parse_from_real_scraped_data(self, raw_data: RawEventData, mode: str = "t2") -> Optional[AIConferenceExtraction]:
         """
         Parses strictly from the genuine scraped text without inserting placeholder or fake data.
-        Enforces USA location, 6 target business categories, and extracts speaker + attendee info.
+        Enforces USA location, target business categories, and extracts speaker + attendee info.
         """
-        text = f"{raw_data.raw_title} {raw_data.raw_location} {raw_data.raw_text}"
-        
-        # Verify USA
-        usa_indicators = [
-            "usa", "united states", "ca", "ny", "tx", "fl", "il", "nc", "tn", "md", "mo", 
-            "va", "pa", "dc", "co", "raleigh", "nashville", "chicago", "new york", "san francisco", 
-            "austin", "orlando", "baltimore", "seattle", "boston", "dallas", "denver"
+        raw_title = clean_html_text(raw_data.raw_title)
+        raw_loc = clean_html_text(raw_data.raw_location or "")
+        raw_body = clean_html_text(raw_data.raw_text)
+        text = f"{raw_title} {raw_loc} {raw_body}"
+
+        # Verify USA cleanly (full state/city names case-insensitive, 2-letter postal codes case-sensitive)
+        usa_phrases = [
+            "usa", "u.s.", "united states", "alabama", "alaska", "arizona", "arkansas",
+            "california", "colorado", "connecticut", "delaware", "florida", "georgia",
+            "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
+            "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota",
+            "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire",
+            "new jersey", "new mexico", "new york", "north carolina", "north dakota",
+            "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+            "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+            "washington", "west virginia", "wisconsin", "wyoming", "district of columbia",
+            "raleigh", "nashville", "chicago", "new york", "san francisco", "austin",
+            "orlando", "baltimore", "seattle", "boston", "dallas", "denver", "las vegas",
+            "miami", "san diego", "philadelphia", "houston", "phoenix", "charlotte",
+            "scottsdale", "oak brook", "salt lake city", "minneapolis", "atlanta",
+            "los angeles", "san jose", "tampa", "pittsburgh", "cambridge", "san antonio",
+            "portland", "new orleans", "silicon valley", "brooklyn", "manhattan"
         ]
-        if not any(re.search(rf"\b{w}\b", text, re.I) for w in usa_indicators):
+        us_state_codes_cs = {
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+            "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+            "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+            "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+            "WI", "WY", "DC"
+        }
+        has_usa = any(re.search(rf"\b{re.escape(w)}\b", text, re.I) for w in usa_phrases)
+        if not has_usa:
+            # Check case-sensitive US state codes typically formatted as ", ST" or standalone caps in Location
+            loc_and_head = f"{raw_loc} {raw_title} {raw_body[:600]}"
+            for st in us_state_codes_cs:
+                if re.search(rf"(?:,\s*|\b){st}\b", loc_and_head):
+                    has_usa = True
+                    break
+        if not has_usa:
             return None
 
-        # Check Category: Must match at least one of the 5 strict T-2 business categories
-        matched_cats = match_t2_categories(text)
+        # Reject known foreign cities/countries if they dominate the location field
+        if raw_loc and any(re.search(rf"\b{fk}\b", raw_loc, re.I) for fk in [
+            "united kingdom", "england", "london", "manchester", "canada", "toronto", "vancouver",
+            "montreal", "germany", "berlin", "munich", "france", "paris", "india", "bengaluru",
+            "bangalore", "mumbai", "singapore", "australia", "sydney", "melbourne", "dubai", "uae",
+            "netherlands", "amsterdam", "spain", "barcelona", "madrid", "italy", "rome", "milan", "japan", "tokyo"
+        ]) and not re.search(r"\b(usa|united states)\b", raw_loc, re.I):
+            return None
+
+        # Check Category
+        if mode == "weekly":
+            matched_cats = match_weekly_categories(raw_title, text)
+        else:
+            matched_cats = match_t2_categories(text)
         if not matched_cats:
             return None
         category = " / ".join(matched_cats)
 
-        # Validate URL (must not be generic root portal like eventbrite.ca)
+        # Validate URL (must not be generic root portal)
         if not is_valid_deep_conference_url(raw_data.source_url):
             return None
 
         # Parse real date from raw_date or text
         start_date = None
+        end_date = None
         if raw_data.raw_date:
-            m = re.search(r"(\d{4}-\d{2}-\d{2})", raw_data.raw_date)
-            if m:
-                start_date = m.group(1)
+            s_iso, e_iso = extract_date_range_from_text(str(raw_data.raw_date))
+            if s_iso:
+                start_date = s_iso
+                end_date = e_iso or s_iso
 
         if not start_date:
-            m = re.search(r"(\d{4}-\d{2}-\d{2})", text)
-            if m:
-                start_date = m.group(1)
+            s_iso, e_iso = extract_date_range_from_text(text)
+            if s_iso:
+                start_date = s_iso
+                end_date = e_iso or s_iso
             else:
                 return None
 
-        end_date = start_date
-        end_match = re.search(r"(?:to|until|-)\s*(\d{4}-\d{2}-\d{2})", text)
+        # Check explicit end_date line too
+        end_match = re.search(r"(?:to|until|-)\s*(\d{4}-\d{2}-\d{2})", f"{raw_data.raw_date or ''} {text[:600]}")
         if end_match:
             end_date = end_match.group(1)
+        if not end_date:
+            end_date = start_date
 
-        # Extract City
-        city = "USA"
+        # Extract City + State
+        city_val = ""
+        state_val = ""
         cities = [
-            ("Davenport", ["davenport", "quad cities"]),
-            ("San Francisco", ["san francisco", "sf"]),
-            ("New York", ["new york", "nyc", "manhattan", "brooklyn"]),
-            ("Austin", ["austin", "atx"]),
-            ("Chicago", ["chicago"]),
-            ("Baltimore", ["baltimore"]),
-            ("Orlando", ["orlando"]),
-            ("Dallas", ["dallas", "frisco"]),
-            ("Washington, DC", ["washington", "dc"]),
-            ("Nashville", ["nashville"]),
-            ("Seattle", ["seattle"]),
-            ("Denver", ["denver"])
+            ("Las Vegas", "NV", ["las vegas", "vegas"]),
+            ("Boston", "MA", ["boston", "cambridge, ma", "harvard business school", "hbs"]),
+            ("San Francisco", "CA", ["san francisco", "sf", "south san francisco"]),
+            ("New York", "NY", ["new york", "nyc", "manhattan", "brooklyn"]),
+            ("Chicago", "IL", ["chicago"]),
+            ("Oak Brook", "IL", ["oak brook"]),
+            ("Austin", "TX", ["austin", "atx"]),
+            ("Houston", "TX", ["houston"]),
+            ("Dallas", "TX", ["dallas", "frisco", "irving"]),
+            ("San Antonio", "TX", ["san antonio"]),
+            ("Baltimore", "MD", ["baltimore", "national harbor"]),
+            ("Orlando", "FL", ["orlando"]),
+            ("Miami", "FL", ["miami", "fort lauderdale", "boca raton"]),
+            ("Tampa", "FL", ["tampa"]),
+            ("Washington", "DC", ["washington, dc", "washington d.c.", "washington dc"]),
+            ("Nashville", "TN", ["nashville"]),
+            ("Seattle", "WA", ["seattle", "bellevue, wa"]),
+            ("Denver", "CO", ["denver"]),
+            ("San Diego", "CA", ["san diego", "la jolla"]),
+            ("Los Angeles", "CA", ["los angeles", "santa monica", "anaheim"]),
+            ("San Jose", "CA", ["san jose", "santa clara", "silicon valley", "palo alto", "mountain view", "stanford"]),
+            ("Philadelphia", "PA", ["philadelphia"]),
+            ("Pittsburgh", "PA", ["pittsburgh"]),
+            ("Phoenix", "AZ", ["phoenix"]),
+            ("Scottsdale", "AZ", ["scottsdale"]),
+            ("Charlotte", "NC", ["charlotte"]),
+            ("Raleigh", "NC", ["raleigh", "durham"]),
+            ("Salt Lake City", "UT", ["salt lake city"]),
+            ("Minneapolis", "MN", ["minneapolis"]),
+            ("Atlanta", "GA", ["atlanta"]),
+            ("Davenport", "IA", ["davenport", "quad cities"]),
+            ("Portland", "OR", ["portland, or"]),
+            ("New Orleans", "LA", ["new orleans"]),
         ]
-        for c_name, aliases in cities:
-            if any(re.search(rf"\b{a}\b", text, re.I) for a in aliases):
-                city = c_name
+        for c_name, c_state, aliases in cities:
+            if any(re.search(rf"\b{re.escape(a)}\b", f"{raw_loc} {text[:1500]}", re.I) for a in aliases):
+                city_val = c_name
+                state_val = c_state
                 break
 
+        if not city_val and raw_loc:
+            m_cs = re.search(r"([A-Za-z\.\s]{2,25}),\s*([A-Z]{2})\b", raw_loc)
+            if m_cs and m_cs.group(2) in us_state_codes_cs:
+                city_val = m_cs.group(1).strip()
+                state_val = m_cs.group(2).strip()
+
+        city = f"{city_val}, {state_val}" if (city_val and state_val) else (city_val or "USA")
+
         # Extract Venue from text
-        venue = f"{city} Convention Center"
-        venue_match = re.search(r"Venue:\s*([^.]+?)(?:\.|\n|$)", text)
-        if venue_match:
+        venue = f"{city_val or 'Convention'} Center"
+        venue_match = re.search(r"Venue:\s*([^.\n]+?)(?:\.|\n|$)", text)
+        if venue_match and venue_match.group(1).strip():
             venue = venue_match.group(1).strip()
         elif "Location:" in text:
-            loc_match = re.search(r"Location:\s*([^.]+?)(?:\.|\n|$)", text)
-            if loc_match:
+            loc_match = re.search(r"Location:\s*([^.\n]+?)(?:\.|\n|$)", text)
+            if loc_match and loc_match.group(1).strip():
                 venue = loc_match.group(1).strip()
 
         # Organizer
-        organizer = raw_data.source_name.title()
-        org_match = re.search(r"Organizer:\s*([^.]+?)(?:\.|\n|$)", text)
+        organizer = ""
+        org_match = re.search(r"Organizer:\s*([^.\n]+?)(?:\.|\n|$)", text)
         if org_match:
             organizer = org_match.group(1).strip()
 
@@ -1171,13 +1488,11 @@ class AIConferenceExtractor:
         if reg_match:
             registration_url = reg_match.group(1).strip().rstrip(".,;")
 
-        # Ensure valid URLs without 404s
         if not official_url or not official_url.startswith("http") or len(official_url) < 12:
             official_url = raw_data.source_url
         if not registration_url or not registration_url.startswith("http") or len(registration_url) < 12:
             registration_url = raw_data.source_url
 
-        # Fix 404 /en/events URLs
         official_url = official_url.replace("/en/events", "/events").rstrip(".,;")
         registration_url = registration_url.replace("/en/events", "/events").rstrip(".,;")
 
@@ -1194,20 +1509,20 @@ class AIConferenceExtractor:
             talks_details = talks_match.group(1).strip()
 
         # Overview description
-        desc_match = re.search(r"Overview:\s*([^.]+?\.)", text, re.I)
-        overview = desc_match.group(1).strip() if desc_match else f"{raw_data.raw_title} held in {city}, USA."
+        desc_match = re.search(r"Overview:\s*([^\n]+)", text, re.I)
+        overview = desc_match.group(1).strip()[:800] if desc_match else f"{raw_title} held in {city}."
 
         # Extract EVERY speaker and all their available details
         speakers, titles, speaker_details = self._extract_all_speakers_from_text(
-            text, raw_data.raw_title.strip(), city, "USA", organizer, talks_details, official_url
+            text, raw_title, city, "USA", organizer, talks_details, official_url
         )
         speakers_available = "Yes" if len(speakers) > 0 else "No"
 
         # Extract Attendee details
-        attendee_details = extract_attendee_details_from_text(text, raw_data.raw_title.strip(), category)
+        attendee_details = extract_attendee_details_from_text(text, raw_title, category)
 
         return AIConferenceExtraction(
-            conference_title=raw_data.raw_title.strip(),
+            conference_title=raw_title,
             industry_category=category,
             start_date=start_date,
             end_date=end_date,
@@ -1231,14 +1546,11 @@ class AIConferenceExtractor:
 
     def _extract_all_speakers_from_text(self, text: str, conf_title: str, city: str, country: str, organizer: str, talks_details: str = "", official_url: str = ""):
         """
-        Extracts every single speaker and all available details:
-        - Full Speaker Name
-        - Job Role / Designation
-        - Company / Organization
-        - Location
-        - Previous speaking information
-        - Deduplicates entries so each speaker appears strictly once per conference.
+        Extracts every single genuine speaker explicitly listed in text without fabricating defaults.
+        Deduplicates entries so each speaker appears strictly once per conference.
         """
+        from ..scrapers.live_speaker_scraper import is_valid_speaker_name
+
         speakers = []
         titles = []
         speaker_details = []
@@ -1246,19 +1558,18 @@ class AIConferenceExtractor:
 
         raw_candidates = []
 
-        # 1. Look for structured speaker / host sections
         section_patterns = [
-            r"(?:Keynote\s+|Featured\s+(?:Guest\s+)?)?Speakers?(?:\s*& Presenters|\s*& Guests)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|Hosts|\Z))",
-            r"Hosts?(?:\s*&\s*(?:Featured\s*)?Guests?)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
-            r"Meet the speakers?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
-            r"Panelists?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|\Z))",
-            r"(?:(?:last\s+year'?s\s+|featured\s+|keynote\s+|this\s+year'?s\s+)?speakers?(?:\s*(?:&|and)\s*(?:presenters|guests|panelists))?(?:\s*(?:will\s+include|included|include|coming\s+soon))?):?\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Registration URL|Publication Date|Agenda|Hosts|This event is|Frequently Asked|\Z))"
+            r"(?:Keynote\s+|Featured\s+(?:Guest\s+)?)?Speakers?(?:\s*& Presenters|\s*& Guests)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Official Event URL|Registration URL|Publication Date|Agenda|Hosts|\Z))",
+            r"Hosts?(?:\s*&\s*(?:Featured\s*)?Guests?)?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Official Event URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"Meet the speakers?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Official Event URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"Panelists?:\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Official Event URL|Registration URL|Publication Date|Agenda|\Z))",
+            r"(?:(?:last\s+year'?s\s+|featured\s+|keynote\s+|this\s+year'?s\s+)?speakers?(?:\s*(?:&|and)\s*(?:presenters|guests|panelists))?(?:\s*(?:will\s+include|included|include|coming\s+soon))?):?\s*(.*?)(?=(?:Previous Talks|Overview|Organizer|Category|Dates|Venue|Location|Official URL|Official Event URL|Registration URL|Publication Date|Agenda|Hosts|This event is|Frequently Asked|\Z))"
         ]
 
         for spat in section_patterns:
             for spk_match in re.finditer(spat, text, re.I | re.DOTALL):
-                spk_text = spk_match.group(1).strip()
-                raw_entries = re.split(r"[;\n\r•]+|,\s*(?=(?:(?:Dr\.|Prof\.|Mr\.|Ms\.)\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s*\()", spk_text)
+                spk_text = clean_html_text(spk_match.group(1)).strip()
+                raw_entries = re.split(r"[;\n\r•]+|,\s*(?=(?:(?:Dr\.|Prof\.|Mr\.|Ms\.)\s+)?[A-Z][a-zA-Z'\-]+(?:\s+[A-Z]\.?)?(?:\s+[A-Z][a-zA-Z'\-]+)+\s*(?:\(|$|,))", spk_text)
                 for entry in raw_entries:
                     entry = entry.strip().rstrip(".").strip()
                     if not entry or len(entry) < 3:
@@ -1272,13 +1583,12 @@ class AIConferenceExtractor:
                         cand_linkedin = li_match.group(1).strip()
                         entry = (entry[:li_match.start()] + entry[li_match.end():]).strip().rstrip("-").strip()
                     elif "linkedin.com/company/" in entry.lower() or "linkedin.com/school/" in entry.lower():
-                        # Strip company/school LinkedIn and do not use as speaker profile
                         comp_li_match = re.search(r"\|\s*LinkedIn:\s*(https?://[^\s]+)", entry, re.I)
                         if comp_li_match:
                             entry = entry[:comp_li_match.start()].strip()
 
                     # Pattern: Company - Name, Role
-                    comp_dash_match = re.match(r"^([A-Za-z0-9\s&]+)\s*-\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),\s*([^;\n\r]+)$", entry)
+                    comp_dash_match = re.match(r"^([A-Za-z0-9\s&]+)\s*-\s*([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+)+),\s*([^;\n\r]+)$", entry)
                     if comp_dash_match:
                         raw_candidates.append({
                             "name": comp_dash_match.group(2).strip(),
@@ -1289,7 +1599,7 @@ class AIConferenceExtractor:
                         continue
 
                     # Pattern: Name (Role at Company)
-                    m_paren = re.match(r"^([A-Za-z\.\s]+?)\s*\((.*?)\)$", entry)
+                    m_paren = re.match(r"^([A-Za-z'\-\.\s]+?)\s*\((.*?)\)$", entry)
                     if m_paren:
                         name_part = m_paren.group(1).strip()
                         role_part = m_paren.group(2).strip()
@@ -1297,6 +1607,8 @@ class AIConferenceExtractor:
                         name_part, role_part = entry.split(",", 1)
                     elif " - " in entry:
                         name_part, role_part = entry.split(" - ", 1)
+                    elif " – " in entry:
+                        name_part, role_part = entry.split(" – ", 1)
                     else:
                         name_part, role_part = entry, ""
 
@@ -1307,9 +1619,9 @@ class AIConferenceExtractor:
                         "linkedin": cand_linkedin
                     })
 
-        # 2. Conversational speaker mentions (e.g. "In conversation with Keith Peiris, CEO and Co-founder of Lightfield")
+        # Conversational speaker mentions
         conv_matches = re.finditer(
-            r"(?:(?:in|for\s+a)\s+conversation\s+with|featured\s+guest(?:\s+of\s+the\s+evening)?\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),\s*([^,\.]+?)\s+(?:of|at|@)\s+([A-Za-z0-9\s&]+?)(?:,|\.|\n|\Z)",
+            r"(?:(?:in|for\s+a)\s+conversation\s+with|featured\s+guest(?:\s+of\s+the\s+evening)?\s+is)\s+([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+)+),\s*([^,\.]+?)\s+(?:of|at|@)\s+([A-Za-z0-9\s&]+?)(?:,|\.|\n|\Z)",
             text, re.I
         )
         for cm in conv_matches:
@@ -1321,11 +1633,10 @@ class AIConferenceExtractor:
             })
 
         for cand in raw_candidates:
-            name = cand["name"]
+            name = clean_html_text(cand["name"])
             clean_name = re.sub(r"^(Dr\.|Prof\.|Mr\.|Ms\.|Mrs\.)\s+", "", name, flags=re.I).strip()
             clean_name = re.sub(r"[\s,]+(MD|PhD|JD|CISO|CISSP|Esq|Jr\.|Sr\.|III|II|IV)[\s.]*$", "", clean_name, flags=re.I).strip()
 
-            # Handle names with parenthetical roles: e.g. "Will Grannis (CTO of Google Cloud)"
             m_paren = re.match(r"^(.*?)\s*\((.*?)\)$", clean_name)
             if m_paren:
                 clean_name = m_paren.group(1).strip()
@@ -1333,26 +1644,7 @@ class AIConferenceExtractor:
                 if not cand["role"]:
                     cand["role"] = cand_role
 
-            invalid_words = [
-                "conference", "summit", "keynote", "speaker", "overview", "tbd", "tba", 
-                "placeholder", "session", "tickets", "registration", "join us", "whether",
-                "ventures", "foundation", "fabrik", "med / tech", "loft", "collective", 
-                "management", "fund", "outcast", "tech@nyu", "lmsys", "aws builder",
-                "expect", "talks", "reception", "panel", "discussion", "check-in",
-                "passes", "available", "check how", "event tags", "artificial intelligence",
-                "ticket info", "top ceos", "researchers", "physicians", "admission", "spot",
-                "explore", "economic", "trends", "governmental", "conversions", "policy", "housing"
-            ]
-            if (
-                len(clean_name.split()) < 2
-                or len(clean_name.split()) > 4
-                or len(clean_name) > 35
-                or any(c in clean_name for c in [":", "@", "/", "\\", "?", "!", "$", "%", "&", "+", "*"])
-                or re.search(r"\d", clean_name)
-                or re.search(r"\b(\d+:\d+|pm|am|about|expect|every|team|agenda|network|seats|limited|secure|the|and|or|other|out|in|for|from|to|with)\b", clean_name, re.I)
-                or any(w in clean_name.lower() for w in invalid_words)
-                or not all(part[0].isupper() and part[1:].islower() for part in clean_name.split() if part)
-            ):
+            if not is_valid_speaker_name(clean_name):
                 continue
 
             norm_key = clean_name.lower()
@@ -1382,24 +1674,25 @@ class AIConferenceExtractor:
                     job_role = r_split[0].strip()
                     company_name = r_split[1].strip()
                 else:
-                    job_role = role_desc if (role_desc and len(role_desc) <= 80) else "Keynote Speaker"
-                    company_name = organizer or conf_title
+                    job_role = role_desc if (role_desc and len(role_desc) <= 80) else ""
+                    company_name = ""
             else:
-                job_role = role_desc if (role_desc and len(role_desc) <= 80) else "Keynote Speaker"
+                job_role = role_desc if (role_desc and len(role_desc) <= 80) else ""
 
-            if not job_role or len(job_role) > 80:
-                job_role = "Keynote Speaker"
-            if not company_name or len(company_name) > 100:
-                company_name = organizer or "Industry Organization"
+            if len(job_role) > 80:
+                job_role = ""
+            if len(company_name) > 100:
+                company_name = ""
 
             job_role = re.sub(r'&\s*$', '', job_role).strip().rstrip(".,;")
-            if job_role.lower() in ["event host", "host"]:
-                job_role = "Event Host & Organizer"
+            if job_role.lower() in ["speaker", "keynote speaker", "featured guest", "event host & organizer", "tbd", "n/a", "none"]:
+                job_role = ""
             if "luma" in company_name.lower():
                 company_name = "Luma"
             company_name = company_name.strip().rstrip(".,;")
+            if company_name.lower() in ["tbd", "n/a", "none", "unknown", "industry organization", conf_title.lower()]:
+                company_name = ""
 
-            # Determine speaker location
             spk_location = f"{city}, {country}" if city and country else "USA"
             for known_loc, kw_list in [
                 ("San Francisco, CA, USA", ["modal", "openai", "pytorch", "san francisco", "amplify", "ollama", "trajectory", "crusoe", "lightfield"]),
@@ -1409,7 +1702,7 @@ class AIConferenceExtractor:
                 ("Denver, CO, USA", ["denver", "colorado", "cvent"]),
                 ("Los Angeles, CA, USA", ["sony pictures", "digital bedrock", "los angeles"]),
                 ("Atlanta, GA, USA", ["home depot", "atlanta"]),
-                ("Boston, MA, USA", ["takeda", "boston"]),
+                ("Boston, MA, USA", ["takeda", "boston", "harvard"]),
                 ("Princeton, NJ, USA", ["princeton"]),
                 ("Stanford, CA, USA", ["stanford", "cartesia"]),
                 ("Pittsburgh, PA, USA", ["carnegie mellon", "cmu"])
@@ -1418,21 +1711,19 @@ class AIConferenceExtractor:
                     spk_location = known_loc
                     break
 
-            # Clean and resolve role, company, company website, and LinkedIn URL
             clean_name, job_role, company_name, company_url, linkedin_url = clean_and_resolve_speaker(
                 clean_name, job_role, company_name, conf_title, official_url, location=spk_location
             )
             if not clean_name:
                 continue
 
-            # If explicit LinkedIn URL was found on the source page, prioritize it
             if cand.get("linkedin"):
                 linkedin_url = cand["linkedin"]
 
-            prev_speaking = f"Keynote and invited speaker: {talks_details}" if talks_details else f"Featured speaker at {conf_title} addressing key industry architectures, technologies, and executive insights."
+            prev_speaking = f"Keynote and invited speaker: {talks_details}" if talks_details else f"Speaker at {conf_title}"
 
             speakers.append(clean_name)
-            title_str = f"{job_role} at {company_name}"
+            title_str = f"{job_role} at {company_name}" if (job_role and company_name) else (job_role or company_name)
             titles.append(title_str)
             speaker_details.append(SpeakerDetailItem(
                 speaker_name=clean_name,

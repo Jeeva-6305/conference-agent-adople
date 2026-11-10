@@ -764,12 +764,12 @@ class OneDriveExcelService:
         item_id = self.resolve_item_id()
         existing_rows = self.get_existing_weekly_conference_rows_map()
 
-        existing_ids = {cid.lower() for cid in existing_rows.keys()}
+        existing_ids = {cid.lower(): cid for cid in existing_rows.keys()}
         existing_titles: Set[str] = set()
-        existing_title_dates: Set[Tuple[str, str]] = set()
-        existing_canonical_urls: Set[str] = set()
+        existing_title_dates: Dict[Tuple[str, str], str] = {}
+        existing_canonical_urls: Dict[str, str] = {}
 
-        for _, (_, vals) in existing_rows.items():
+        for cid, (_, vals) in existing_rows.items():
             if len(vals) > 1 and vals[1]:
                 t = normalize_title(vals[1])
                 if t:
@@ -777,11 +777,11 @@ class OneDriveExcelService:
                 if len(vals) > 2 and vals[2]:
                     d = str(vals[2]).strip()
                     if t and d:
-                        existing_title_dates.add((t, d))
+                        existing_title_dates[(t, d)] = cid
             if len(vals) > 8 and vals[8]:
                 canon_u = canonicalize_url(vals[8])
                 if canon_u and len(canon_u) > 10:
-                    existing_canonical_urls.add(canon_u)
+                    existing_canonical_urls[canon_u] = cid
 
         rows_to_insert = []
         skipped_count = 0
@@ -793,16 +793,42 @@ class OneDriveExcelService:
             start_date_str = conf.start_date.isoformat() if conf.start_date else ""
             canon_official_url = canonicalize_url(conf.official_event_url)
 
-            # Deduplication check
-            is_dup = False
+            # Deduplication check + safe metadata backfill for blank / placeholder city/state
+            matched_cid = None
             if conf_id_lower and conf_id_lower in existing_ids:
-                is_dup = True
+                matched_cid = existing_ids[conf_id_lower]
             elif conf_title_norm and start_date_str and (conf_title_norm, start_date_str) in existing_title_dates:
-                is_dup = True
+                matched_cid = existing_title_dates[(conf_title_norm, start_date_str)]
             elif canon_official_url and len(canon_official_url) > 10 and canon_official_url in existing_canonical_urls:
-                is_dup = True
+                matched_cid = existing_canonical_urls[canon_official_url]
 
-            if is_dup:
+            if matched_cid:
+                row_idx, vals = existing_rows[matched_cid]
+                updated_vals = list(vals)
+                changed = False
+                cur_city = str(updated_vals[4] if len(updated_vals) > 4 else "").strip()
+                cur_state = str(updated_vals[5] if len(updated_vals) > 5 else "").strip()
+                cur_ind = str(updated_vals[7] if len(updated_vals) > 7 else "").strip()
+                cur_spk = str(updated_vals[12] if len(updated_vals) > 12 else "").strip()
+                if len(updated_vals) > 12:
+                    if (not cur_city or cur_city.upper() == "USA") and (conf.city or "").strip():
+                        updated_vals[4] = conf.city.strip()
+                        changed = True
+                    if not cur_state and (conf.state or "").strip():
+                        updated_vals[5] = conf.state.strip()
+                        changed = True
+                    if not cur_ind and (conf.industry or "").strip():
+                        updated_vals[7] = conf.industry.strip()
+                        changed = True
+                    if cur_spk.lower() != "yes" and (conf.speaker_status or "").lower() == "yes":
+                        updated_vals[12] = "Yes"
+                        changed = True
+                if changed:
+                    try:
+                        ep = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/rows/itemAt(index={row_idx})"
+                        self._api_request("PATCH", ep, body={"values": [updated_vals]})
+                    except Exception:
+                        pass
                 logger.info(f"OneDrive Excel: Retaining existing weekly record for '{conf.conference_name}'. Skipping duplicate append.")
                 skipped_count += 1
                 continue
@@ -830,11 +856,11 @@ class OneDriveExcelService:
             ]
 
             rows_to_insert.append(new_row)
-            existing_ids.add(conf_id_lower)
+            existing_ids[conf_id_lower] = conf_id
             if conf_title_norm and start_date_str:
-                existing_title_dates.add((conf_title_norm, start_date_str))
+                existing_title_dates[(conf_title_norm, start_date_str)] = conf_id
             if canon_official_url and len(canon_official_url) > 10:
-                existing_canonical_urls.add(canon_official_url)
+                existing_canonical_urls[canon_official_url] = conf_id
 
         inserted_count = 0
         if rows_to_insert:

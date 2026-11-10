@@ -46,6 +46,7 @@ class TeamsWebhookService:
              (TeamsNotification.conference_id == conf.conference_id)) &
             (TeamsNotification.status == "sent")
         ).first()
+        return bool(existing)
 
     def build_consolidated_adaptive_card(
         self,

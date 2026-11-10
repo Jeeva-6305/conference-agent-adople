@@ -578,6 +578,90 @@ class SharePointExcelClient:
         except Exception:
             pass
 
+    def get_table_records(self, table_name: str, fallback_sheet_name: str = "") -> Tuple[List[str], List[List[Any]]]:
+        """Reads headers and rows from a named Excel table on SharePoint, falling back to worksheet usedRange."""
+        if table_name:
+            try:
+                cols_url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/{table_name}/columns"
+                c_res = requests.get(cols_url, headers=self.headers, timeout=20)
+                if c_res.status_code == 200:
+                    col_names = [str(c.get("name", "")) for c in c_res.json().get("value", [])]
+                    rows_url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/{table_name}/rows"
+                    r_res = requests.get(rows_url, headers=self.headers, timeout=25)
+                    if r_res.status_code == 200:
+                        rows = []
+                        for item in r_res.json().get("value", []):
+                            vals = item.get("values", [[]])[0]
+                            while len(vals) < len(col_names):
+                                vals.append("")
+                            rows.append(vals)
+                        return col_names, rows
+            except Exception:
+                pass
+        if fallback_sheet_name:
+            try:
+                vals = self.get_used_range(fallback_sheet_name)
+                if vals and len(vals) > 1:
+                    col_names = [str(c) for c in vals[0]]
+                    return col_names, [list(r) for r in vals[1:]]
+                elif vals:
+                    return [str(c) for c in vals[0]], []
+            except Exception:
+                pass
+        return [], []
+
+    def delete_sheet_tables(self, sheet_name: str, table_names: Optional[List[str]] = None) -> None:
+        """Deletes Excel tables on a worksheet before rewriting range & recreating named table."""
+        from urllib.parse import quote
+        ws_enc = quote(sheet_name)
+        url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/worksheets('{ws_enc}')/tables"
+        try:
+            res = requests.get(url, headers=self.headers, timeout=20)
+            if res.status_code != 200:
+                return
+            for tbl in res.json().get("value", []):
+                tname = tbl.get("name", "")
+                tid = tbl.get("id", "")
+                if table_names is None or tname in table_names:
+                    del_target = tid or tname
+                    if del_target:
+                        requests.delete(
+                            f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/{del_target}",
+                            headers=self.headers,
+                            timeout=20,
+                        )
+        except Exception as e:
+            print(f"⚠️ Notice deleting table(s) on '{sheet_name}': {e}")
+
+    def create_and_name_table(
+        self,
+        sheet_name: str,
+        range_address: str,
+        table_name: str,
+        style: str = "TableStyleMedium2",
+    ) -> None:
+        """Creates an Excel table over `'sheet_name'!range_address` and renames it cleanly."""
+        try:
+            add_url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/add"
+            res = requests.post(
+                add_url,
+                headers=self.headers,
+                json={"address": f"'{sheet_name}'!{range_address}", "hasHeaders": True},
+                timeout=20,
+            )
+            if res.status_code in (200, 201):
+                table_id = res.json().get("id")
+                if table_id:
+                    patch_url = f"https://graph.microsoft.com/v1.0/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/{table_id}"
+                    requests.patch(
+                        patch_url,
+                        headers=self.headers,
+                        json={"name": table_name, "style": style},
+                        timeout=20,
+                    )
+        except Exception as e:
+            print(f"⚠️ Notice creating table '{table_name}' on '{sheet_name}': {e}")
+
 def get_sharepoint_client() -> SharePointExcelClient:
     return SharePointExcelClient()
 
@@ -666,13 +750,11 @@ def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
         wb = load_workbook(local_path)
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Update latest_week_scoring
+        # 1. Update latest_week_scoring (strictly current cycle only)
         if "latest_week_scoring" in wb.sheetnames:
             ws_latest = wb["latest_week_scoring"]
-            # Clear existing data rows
-            for row in list(ws_latest.iter_rows(min_row=1, max_row=ws_latest.max_row, max_col=len(CURATED_SHEET_HEADERS))):
-                for cell in row:
-                    cell.value = None
+            if ws_latest.max_row >= 2:
+                ws_latest.delete_rows(2, ws_latest.max_row - 1)
             
             # Write headers
             for col_idx, h in enumerate(CURATED_SHEET_HEADERS, 1):
@@ -712,7 +794,7 @@ def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
                     c = ws_latest.cell(row=r_idx, column=c_idx, value=val)
                     c.fill = fill
 
-        # 2. Append to Companies scoring
+        # 2. Append to Companies scoring (deduplicated against existing rows)
         if "Companies scoring" in wb.sheetnames:
             ws_hist = wb["Companies scoring"]
             if ws_hist.max_row < 1 or not ws_hist.cell(row=1, column=1).value:
@@ -720,10 +802,34 @@ def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
                     cell = ws_hist.cell(row=1, column=col_idx, value=h)
                     cell.font = Font(bold=True)
                     cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            
-            start_row = ws_hist.max_row + 1
-            for r_offset, lead in enumerate(ranked_leads):
-                row_num = start_row + r_offset
+
+            existing_hist_keys: Set[Tuple[str, str, str]] = set()
+            existing_comp_conf: Set[Tuple[str, str]] = set()
+            last_non_empty = 1
+            for r_idx in range(2, ws_hist.max_row + 1):
+                row_vals_existing = [ws_hist.cell(row=r_idx, column=c).value for c in range(1, len(CURATED_SHEET_HEADERS) + 1)]
+                if any(v is not None and str(v).strip() != "" for v in row_vals_existing):
+                    last_non_empty = r_idx
+                    c_name = str(row_vals_existing[2] or "").strip().lower()
+                    cf_name = str(row_vals_existing[4] or "").strip().lower()
+                    s_id = str(row_vals_existing[19] or "").strip().lower()
+                    if c_name or cf_name:
+                        existing_hist_keys.add((c_name, cf_name, s_id))
+                        existing_comp_conf.add((c_name, cf_name))
+
+            start_row = last_non_empty + 1
+            appended_offset = 0
+            for lead in ranked_leads:
+                c_key = (lead.company_name or "").strip().lower()
+                cf_key = (lead.conference_name or "").strip().lower()
+                s_key = (lead.speaker_id or "").strip().lower()
+                if (c_key, cf_key, s_key) in existing_hist_keys or (cf_key and (c_key, cf_key) in existing_comp_conf):
+                    continue
+                existing_hist_keys.add((c_key, cf_key, s_key))
+                if cf_key:
+                    existing_comp_conf.add((c_key, cf_key))
+                row_num = start_row + appended_offset
+                appended_offset += 1
                 prof = lead.evaluated_lead.enriched_lead.profile
                 row_vals = [
                     lead.rank,
@@ -771,21 +877,11 @@ def sync_to_local_excel(ranked_leads: List[RankedLead]) -> None:
     except Exception as e:
         print(f"⚠️ Notice mirroring to Local Excel: {e}")
 
-def build_qualified_leads_rows(
-    ranked_leads: Optional[List[RankedLead]] = None,
-    min_score: float = 50.0
-) -> List[List[Any]]:
-    """
-    Extracts individual qualified lead contacts from scoring results for companies with ICP score strictly > min_score (50.0).
-    Adds all relevant lead details for Speakers, Attendees, and Exhibitors.
-    Deduplicates leads strictly by email.
-    Appends the 6 required Outreach Tracking Columns initialized to Pending/empty.
-    """
-    qualified_rows: List[List[Any]] = []
-    seen_emails: Set[str] = set()
-
+def _load_verified_data_index() -> Tuple[Dict[Tuple[str, str], List[List[Any]]], Dict[str, List[List[Any]]], Dict[str, int]]:
+    """Loads Local Excel 'Verified Data' rows indexed by (company, conference) and company."""
     local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
-    ver_by_comp: Dict[str, Any] = {}
+    ver_by_comp_conf: Dict[Tuple[str, str], List[List[Any]]] = {}
+    ver_by_comp: Dict[str, List[List[Any]]] = {}
     h_map: Dict[str, int] = {}
     if local_path.exists():
         try:
@@ -795,18 +891,69 @@ def build_qualified_leads_rows(
                 ws_ver = wb["Verified Data"]
                 raw_ver = list(ws_ver.iter_rows(values_only=True))
                 if raw_ver and len(raw_ver) > 1:
-                    headers = [str(h).strip().lower().replace(" ", "").replace("_", "") for h in raw_ver[0]]
+                    headers = [str(h or "").strip().lower().replace(" ", "").replace("_", "") for h in raw_ver[0]]
                     h_map = {name: idx for idx, name in enumerate(headers)}
                     c_col = h_map.get("companyname", 0)
+                    cf_col = h_map.get("conferencename", 2)
                     for r in raw_ver[1:]:
-                        cname = str(r[c_col] or "").strip().lower() if len(r) > c_col else ""
+                        r_list = list(r)
+                        cname = str(r_list[c_col] or "").strip().lower() if len(r_list) > c_col else ""
+                        cfname = str(r_list[cf_col] or "").strip().lower() if len(r_list) > cf_col else ""
                         if cname:
-                            ver_by_comp[cname] = r
+                            ver_by_comp.setdefault(cname, []).append(r_list)
+                            if cfname:
+                                ver_by_comp_conf.setdefault((cname, cfname), []).append(r_list)
             wb.close()
-        except Exception as e:
+        except Exception:
             pass
+    return ver_by_comp_conf, ver_by_comp, h_map
 
+
+def _is_valid_lead_email(em: str) -> bool:
+    clean = (em or "").strip().lower()
+    if not clean or "@" not in clean or "." not in clean:
+        return False
+    if clean in ("not available", "not publicly available", "n/a", "none"):
+        return False
+    return True
+
+
+def build_qualified_leads_rows(
+    ranked_leads: Optional[List[RankedLead]] = None,
+    min_score: float = 50.0
+) -> List[List[Any]]:
+    """
+    Extracts individual qualified lead contacts from scoring results for companies with ICP score strictly > min_score (50.0).
+    Adds all relevant lead details for Speakers, Attendees, and Exhibitors across all matching Verified Data rows.
+    Deduplicates leads strictly by email.
+    Appends the 6 required Outreach Tracking Columns initialized to Pending/empty.
+    """
+    qualified_rows: List[List[Any]] = []
+    seen_emails: Set[str] = set()
+
+    local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+    ver_by_comp_conf, ver_by_comp, h_map = _load_verified_data_index()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _append_contact(rank, score, qual, comp, dom, conf, cid, ctype, name, title, email, stat, li, ind, tier, eval_at):
+        if not _is_valid_lead_email(email):
+            return
+        clean_em = email.strip().lower()
+        if clean_em in seen_emails:
+            return
+        seen_emails.add(clean_em)
+        n_str = str(name or "").strip()
+        if n_str.lower() in ("not publicly available", "not available", "n/a"):
+            n_str = ""
+        t_str = str(title or "").strip()
+        if t_str.lower() in ("not publicly available", "not available", "n/a"):
+            t_str = ""
+        qualified_rows.append([
+            rank, score, qual, comp, dom, conf, cid,
+            ctype, n_str, t_str, clean_em, stat or "Verified", li,
+            ind, tier, eval_at,
+            "Pending", "", "", "", "", ""
+        ])
 
     if ranked_leads:
         for lead in ranked_leads:
@@ -824,62 +971,72 @@ def build_qualified_leads_rows(
             tier = prof.headcount_tier
             spk_id = lead.speaker_id
 
-            v_row = ver_by_comp.get(comp.lower(), [])
-            cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+            matched_rows = ver_by_comp_conf.get((comp.lower(), conf.lower())) or ver_by_comp.get(comp.lower(), [])
+            first_v = matched_rows[0] if matched_rows else []
+            cid = (first_v[h_map.get("conferenceid", 3)] if len(first_v) > h_map.get("conferenceid", 3) and first_v[h_map.get("conferenceid", 3)] else spk_id)
 
-            # 1. Speaker
-            spk_name = lead.speaker_name or (str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > 4 else "")
-            spk_title = lead.job_title or (str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > 5 else "")
-            spk_email = (lead.email if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > 7 else "")
-            spk_stat = (lead.email_status if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > 8 else "Verified")
-            spk_li = (lead.linkedin_url if lead.linkedin_url != "Not Available" else "") or (str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > 6 else "")
+            # 1. Contacts directly carried on RankedLead
+            spk_title_0 = str(first_v[h_map.get("speakerjobtitle", 5)] or "") if len(first_v) > h_map.get("speakerjobtitle", 5) else ""
+            spk_li_0 = str(first_v[h_map.get("speakerlinkedin", 6)] or "") if len(first_v) > h_map.get("speakerlinkedin", 6) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Speaker", lead.speaker_name, lead.job_title or spk_title_0,
+                lead.email if lead.email != "Not Available" else "",
+                lead.email_status if lead.email != "Not Available" else "Verified",
+                (lead.linkedin_url if lead.linkedin_url != "Not Available" else "") or spk_li_0,
+                ind, tier, now_str,
+            )
+            att_title_0 = str(first_v[h_map.get("attendeejobtitle", 16)] or "") if len(first_v) > h_map.get("attendeejobtitle", 16) else ""
+            att_li_0 = str(first_v[h_map.get("attendeelinkedin", 17)] or "") if len(first_v) > h_map.get("attendeelinkedin", 17) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Attendee", getattr(lead, "attendee_name", ""), att_title_0,
+                getattr(lead, "attendee_email", ""),
+                getattr(lead, "attendee_email_status", "") or "Verified",
+                att_li_0,
+                ind, tier, now_str,
+            )
+            exh_title_0 = str(first_v[h_map.get("exhibitorjobtitle", 27)] or "") if len(first_v) > h_map.get("exhibitorjobtitle", 27) else ""
+            exh_li_0 = str(first_v[h_map.get("exhibitorlinkedin", 28)] or "") if len(first_v) > h_map.get("exhibitorlinkedin", 28) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Exhibitor", getattr(lead, "exhibitor_name", ""), exh_title_0,
+                getattr(lead, "exhibitor_email", ""),
+                getattr(lead, "exhibitor_email_status", "") or "Verified",
+                exh_li_0,
+                ind, tier, now_str,
+            )
 
-            if spk_email and "@" in spk_email and "." in spk_email:
-                clean_em = spk_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    qualified_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Speaker", spk_name.strip(), spk_title.strip(), clean_em, spk_stat, spk_li,
-                        ind, tier, now_str,
-                        "Pending", "", "", "", "", ""
-                    ])
-
-            # 2. Attendee
-            att_name = getattr(lead, "attendee_name", "") or (str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > 15 else "")
-            att_title = (str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > 16 else "")
-            att_email = getattr(lead, "attendee_email", "") or (str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > 18 else "")
-            att_stat = getattr(lead, "attendee_email_status", "") or (str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > 19 else "Verified")
-            att_li = (str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > 17 else "")
-
-            if att_email and "@" in att_email and "." in att_email:
-                clean_em = att_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    qualified_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Attendee", att_name.strip(), att_title.strip(), clean_em, att_stat, att_li,
-                        ind, tier, now_str,
-                        "Pending", "", "", "", "", ""
-                    ])
-
-            # 3. Exhibitor
-            exh_name = getattr(lead, "exhibitor_name", "") or (str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > 26 else "")
-            exh_title = (str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > 27 else "")
-            exh_email = getattr(lead, "exhibitor_email", "") or (str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > 29 else "")
-            exh_stat = getattr(lead, "exhibitor_email_status", "") or (str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > 30 else "Verified")
-            exh_li = (str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > 28 else "")
-
-            if exh_email and "@" in exh_email and "." in exh_email:
-                clean_em = exh_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    qualified_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Exhibitor", exh_name.strip(), exh_title.strip(), clean_em, exh_stat, exh_li,
-                        ind, tier, now_str,
-                        "Pending", "", "", "", "", ""
-                    ])
+            # 2. All additional verified contacts in Verified Data for this company (+ conference)
+            for v_row in matched_rows:
+                row_cid = (v_row[h_map.get("conferenceid", 3)] if len(v_row) > h_map.get("conferenceid", 3) and v_row[h_map.get("conferenceid", 3)] else cid)
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Speaker",
+                    str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > h_map.get("speakername", 4) else "",
+                    str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > h_map.get("speakerjobtitle", 5) else "",
+                    str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > h_map.get("speakerprofessionalemail", 7) else "",
+                    str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > h_map.get("speakeremailstatus", 8) else "Verified",
+                    str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > h_map.get("speakerlinkedin", 6) else "",
+                    ind, tier, now_str,
+                )
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Attendee",
+                    str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > h_map.get("attendeename", 15) else "",
+                    str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > h_map.get("attendeejobtitle", 16) else "",
+                    str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > h_map.get("attendeeprofessionalemail", 18) else "",
+                    str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > h_map.get("attendeeemailstatus", 19) else "Verified",
+                    str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > h_map.get("attendeelinkedin", 17) else "",
+                    ind, tier, now_str,
+                )
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Exhibitor",
+                    str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > h_map.get("exhibitorname", 26) else "",
+                    str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > h_map.get("exhibitorjobtitle", 27) else "",
+                    str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > h_map.get("exhibitorprofessionalemail", 29) else "",
+                    str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > h_map.get("exhibitoremailstatus", 30) else "Verified",
+                    str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > h_map.get("exhibitorlinkedin", 28) else "",
+                    ind, tier, now_str,
+                )
 
     else:
         # Fallback: extract from local Excel latest_week_scoring
@@ -891,7 +1048,12 @@ def build_qualified_leads_rows(
                     ws_score = wb["latest_week_scoring"]
                     for r in range(2, ws_score.max_row + 1):
                         vals = [c.value for c in ws_score[r]]
-                        score = float(vals[1] or 0.0)
+                        if not any(vals):
+                            continue
+                        try:
+                            score = float(vals[1] or 0.0)
+                        except (ValueError, TypeError):
+                            continue
                         if score <= min_score:
                             continue
                         rank = vals[0]
@@ -904,67 +1066,201 @@ def build_qualified_leads_rows(
                         spk_id = str(vals[19] or "").strip()
                         eval_at = str(vals[20] or "").strip() or now_str
 
-                        v_row = ver_by_comp.get(comp.lower(), [])
-                        cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+                        matched_rows = ver_by_comp_conf.get((comp.lower(), conf.lower())) or ver_by_comp.get(comp.lower(), [])
+                        first_v = matched_rows[0] if matched_rows else []
+                        cid = first_v[h_map.get("conferenceid", 3)] if len(first_v) > h_map.get("conferenceid", 3) and first_v[h_map.get("conferenceid", 3)] else spk_id
 
-                        # Speaker
-                        spk_name = str(vals[8] or (v_row[h_map.get("speakername", 4)] if len(v_row) > 4 else "") or "").strip()
-                        spk_title = str(vals[9] or (v_row[h_map.get("speakerjobtitle", 5)] if len(v_row) > 5 else "") or "").strip()
-                        spk_email = str(vals[10] or (v_row[h_map.get("speakerprofessionalemail", 7)] if len(v_row) > 7 else "") or "").strip()
-                        spk_stat = str(vals[11] or (v_row[h_map.get("speakeremailstatus", 8)] if len(v_row) > 8 else "") or "Verified").strip()
-                        spk_li = str(vals[18] or (v_row[h_map.get("speakerlinkedin", 6)] if len(v_row) > 6 else "") or "").strip()
-
-                        if spk_email and "@" in spk_email and "." in spk_email:
-                            clean_em = spk_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                qualified_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Speaker", spk_name, spk_title, clean_em, spk_stat, spk_li,
-                                    ind, tier, eval_at,
-                                    "Pending", "", "", "", "", ""
-                                ])
-
-                        # Attendee
-                        att_name = str(vals[15] or (v_row[h_map.get("attendeename", 15)] if len(v_row) > 15 else "") or "").strip()
-                        att_title = str((v_row[h_map.get("attendeejobtitle", 16)] if len(v_row) > 16 else "") or "").strip()
-                        att_email = str(vals[16] or (v_row[h_map.get("attendeeprofessionalemail", 18)] if len(v_row) > 18 else "") or "").strip()
-                        att_stat = str(vals[17] or (v_row[h_map.get("attendeeemailstatus", 19)] if len(v_row) > 19 else "") or "Verified").strip()
-                        att_li = str((v_row[h_map.get("attendeelinkedin", 17)] if len(v_row) > 17 else "") or "").strip()
-
-                        if att_email and "@" in att_email and "." in att_email:
-                            clean_em = att_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                qualified_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Attendee", att_name, att_title, clean_em, att_stat, att_li,
-                                    ind, tier, eval_at,
-                                    "Pending", "", "", "", "", ""
-                                ])
-
-                        # Exhibitor
-                        exh_name = str(vals[12] or (v_row[h_map.get("exhibitorname", 26)] if len(v_row) > 26 else "") or "").strip()
-                        exh_title = str((v_row[h_map.get("exhibitorjobtitle", 27)] if len(v_row) > 27 else "") or "").strip()
-                        exh_email = str(vals[13] or (v_row[h_map.get("exhibitorprofessionalemail", 29)] if len(v_row) > 29 else "") or "").strip()
-                        exh_stat = str(vals[14] or (v_row[h_map.get("exhibitoremailstatus", 30)] if len(v_row) > 30 else "") or "Verified").strip()
-                        exh_li = str((v_row[h_map.get("exhibitorlinkedin", 28)] if len(v_row) > 28 else "") or "")
-
-                        if exh_email and "@" in exh_email and "." in exh_email:
-                            clean_em = exh_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                qualified_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Exhibitor", exh_name, exh_title, clean_em, exh_stat, exh_li,
-                                    ind, tier, eval_at,
-                                    "Pending", "", "", "", "", ""
-                                ])
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Speaker",
+                            vals[8], vals[9], vals[10], vals[11], vals[18], ind, tier, eval_at
+                        )
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Attendee",
+                            vals[15], "", vals[16], vals[17], "", ind, tier, eval_at
+                        )
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Exhibitor",
+                            vals[12], "", vals[13], vals[14], "", ind, tier, eval_at
+                        )
+                        for v_row in matched_rows:
+                            row_cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > h_map.get("conferenceid", 3) and v_row[h_map.get("conferenceid", 3)] else cid
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Speaker",
+                                str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > h_map.get("speakername", 4) else "",
+                                str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > h_map.get("speakerjobtitle", 5) else "",
+                                str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > h_map.get("speakerprofessionalemail", 7) else "",
+                                str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > h_map.get("speakeremailstatus", 8) else "Verified",
+                                str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > h_map.get("speakerlinkedin", 6) else "",
+                                ind, tier, eval_at,
+                            )
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Attendee",
+                                str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > h_map.get("attendeename", 15) else "",
+                                str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > h_map.get("attendeejobtitle", 16) else "",
+                                str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > h_map.get("attendeeprofessionalemail", 18) else "",
+                                str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > h_map.get("attendeeemailstatus", 19) else "Verified",
+                                str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > h_map.get("attendeelinkedin", 17) else "",
+                                ind, tier, eval_at,
+                            )
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Exhibitor",
+                                str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > h_map.get("exhibitorname", 26) else "",
+                                str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > h_map.get("exhibitorjobtitle", 27) else "",
+                                str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > h_map.get("exhibitorprofessionalemail", 29) else "",
+                                str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > h_map.get("exhibitoremailstatus", 30) else "Verified",
+                                str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > h_map.get("exhibitorlinkedin", 28) else "",
+                                ind, tier, eval_at,
+                            )
                 wb.close()
-            except Exception as e:
+            except Exception:
                 pass
 
     return qualified_rows
+
+
+def _align_lead_rows_to_headers(
+    raw_headers: List[str],
+    raw_rows: List[List[Any]],
+    target_headers: List[str],
+) -> List[List[Any]]:
+    """Aligns SharePoint table/range rows by normalized header name into target_headers order."""
+    if not raw_rows:
+        return []
+    if not raw_headers:
+        return [list(r)[:len(target_headers)] for r in raw_rows if any(r)]
+    h_map = {
+        str(h or "").strip().lower().replace(" ", "").replace("_", "").replace("replay", "reply"): idx
+        for idx, h in enumerate(raw_headers)
+    }
+    target_norm = [h.lower().replace(" ", "").replace("_", "") for h in target_headers]
+    aligned_rows: List[List[Any]] = []
+    for r in raw_rows:
+        if not any(r):
+            continue
+        aligned: List[Any] = []
+        for nh in target_norm:
+            src_idx = h_map.get(nh)
+            if src_idx is None and nh == "professionalemail":
+                src_idx = h_map.get("email")
+            elif src_idx is None and nh == "contactname":
+                src_idx = h_map.get("name")
+            elif src_idx is None and nh == "replysentiment":
+                src_idx = h_map.get("sentiment")
+            aligned.append(r[src_idx] if src_idx is not None and src_idx < len(r) else "")
+        aligned_rows.append(aligned)
+    return aligned_rows
+
+
+def _union_merge_sharepoint_lead_rows(
+    existing_rows: List[List[Any]],
+    incoming_rows: List[List[Any]],
+    headers: List[str],
+    default_status: str = "Pending",
+) -> List[List[Any]]:
+    """
+    Union-merges existing historical SharePoint lead rows with newly scored incoming rows
+    using lowercase Professional_Email (or Company+Contact+Conference fallback),
+    preserving outreach tracking states with precedence replied > bounced > sent > sending > failed > pending/disqualified.
+    Sorts descending by Overall_Score and reassigns Rank 1..N.
+    """
+    cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
+    em_col = cur_h_map.get("professionalemail", 10)
+    comp_col = cur_h_map.get("companyname", 3)
+    name_col = cur_h_map.get("contactname", 8)
+    conf_col = cur_h_map.get("conferencename", 5)
+    score_col = cur_h_map.get("overallscore", 1)
+    ost_col = cur_h_map.get("outreachstatus", 16)
+    rep_col = cur_h_map.get("replystatus", 17)
+    rec_col = cur_h_map.get("receivedreply", 18)
+    sent_col = cur_h_map.get("replysentiment", 19)
+    th_col = cur_h_map.get("threadid", 20)
+    snd_col = cur_h_map.get("sendmessage", 21)
+
+    precedence = {
+        "replied": 5,
+        "bounced": 4,
+        "do_not_contact": 4,
+        "sent": 3,
+        "sending": 2,
+        "failed": 1,
+        "pending": 0,
+        "disqualified": 0,
+        "": -1,
+    }
+
+    def _row_key(row_vals: List[Any]) -> str:
+        em = str(row_vals[em_col] or "").strip().lower()
+        if em and "@" in em:
+            return f"em:{em}"
+        comp = str(row_vals[comp_col] or "").strip().lower()
+        name = str(row_vals[name_col] or "").strip().lower()
+        conf = str(row_vals[conf_col] or "").strip().lower()
+        return f"alt:{comp}|{name}|{conf}"
+
+    merged_map: Dict[str, List[Any]] = {}
+    order_keys: List[str] = []
+
+    for r in existing_rows:
+        padded = list(r)
+        while len(padded) < len(headers):
+            padded.append("")
+        padded = padded[:len(headers)]
+        if not any(padded[1:]):
+            continue
+        k = _row_key(padded)
+        if not k or k == "alt:||":
+            continue
+        if k not in merged_map:
+            merged_map[k] = padded
+            order_keys.append(k)
+
+    for r in incoming_rows:
+        padded = list(r)
+        while len(padded) < len(headers):
+            padded.append("")
+        padded = padded[:len(headers)]
+        k = _row_key(padded)
+        if not k or k == "alt:||":
+            continue
+
+        if k not in merged_map:
+            merged_map[k] = padded
+            order_keys.append(k)
+        else:
+            prev = merged_map[k]
+            for idx in range(len(headers)):
+                if idx in (ost_col, rep_col, rec_col, sent_col, th_col, snd_col):
+                    continue
+                if (padded[idx] is None or str(padded[idx]).strip() == "") and prev[idx] not in (None, ""):
+                    padded[idx] = prev[idx]
+
+            prev_st = str(prev[ost_col] or "").strip()
+            new_st = str(padded[ost_col] or "").strip()
+            if precedence.get(prev_st.lower(), 0) >= precedence.get(new_st.lower(), 0):
+                if prev_st:
+                    padded[ost_col] = prev_st
+            if not padded[ost_col]:
+                padded[ost_col] = default_status
+
+            for track_idx in (rep_col, rec_col, sent_col, th_col, snd_col):
+                if str(prev[track_idx] or "").strip() and not str(padded[track_idx] or "").strip():
+                    padded[track_idx] = prev[track_idx]
+
+            merged_map[k] = padded
+
+    merged_list = [merged_map[k] for k in order_keys]
+
+    def _score_val(row_vals: List[Any]) -> float:
+        try:
+            return float(row_vals[score_col] or 0.0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    merged_list.sort(key=lambda row_vals: (-_score_val(row_vals), str(row_vals[comp_col] or "").lower()))
+    for rank_idx, row_vals in enumerate(merged_list, 1):
+        row_vals[0] = rank_idx
+    return merged_list
+
 
 def sync_qualified_leads_to_local_excel(ranked_leads: Optional[List[RankedLead]] = None) -> int:
     """Mirrors qualified leads (score > 50) to Local Excel 'Qualified Leads' worksheet with outreach tracking columns."""
@@ -974,31 +1270,58 @@ def sync_qualified_leads_to_local_excel(ranked_leads: Optional[List[RankedLead]]
     em.sync_qualified_leads_to_excel(qualified_rows, headers=QUALIFIED_LEADS_HEADERS)
     return len(qualified_rows)
 
+
 def export_qualified_leads_to_sharepoint(
     client: SharePointExcelClient,
     ranked_leads: Optional[List[RankedLead]] = None
 ) -> int:
-    """Exports only qualified leads (score > 50) to SharePoint 'Qualified Leads' worksheet with color highlights and outreach tracking columns."""
+    """Exports union-merged qualified leads (score > 50) to SharePoint 'Qualified Leads' preserving historical rows & outreach tracking."""
     sheet_name = os.getenv("SHAREPOINT_QUALIFIED_SHEET", SHAREPOINT_QUALIFIED_SHEET)
     client.ensure_worksheet_exists(sheet_name)
     qualified_rows = build_qualified_leads_rows(ranked_leads, min_score=50.0)
     if not qualified_rows:
         return 0
 
-    all_data = [QUALIFIED_LEADS_HEADERS] + qualified_rows
+    ex_headers, ex_rows = client.get_table_records("tbl_qualified_leads", fallback_sheet_name=sheet_name)
+    aligned_existing = _align_lead_rows_to_headers(ex_headers, ex_rows, QUALIFIED_LEADS_HEADERS)
+    merged_rows = _union_merge_sharepoint_lead_rows(
+        aligned_existing, qualified_rows, QUALIFIED_LEADS_HEADERS, default_status="Pending"
+    )
+
+    all_data = [QUALIFIED_LEADS_HEADERS] + merged_rows
     last_col = col_num_to_letter(len(QUALIFIED_LEADS_HEADERS))
-    sp_range = f"A1:{last_col}{len(all_data)}"
-    client.update_range(sheet_name, sp_range, all_data)
+    clear_end = max(500, len(all_data) + 50, len(ex_rows) + 50)
+
+    client.delete_sheet_tables(sheet_name, ["tbl_qualified_leads"])
+    client.clear_range(sheet_name, f"A1:{last_col}{clear_end}")
+    client.update_range(sheet_name, f"A1:{last_col}{len(all_data)}", all_data)
     client.format_range_fill(sheet_name, f"A1:{last_col}1", "#D9E1F2")
     client.format_range_font(sheet_name, f"A1:{last_col}1", bold=True)
     client.format_range_font(sheet_name, f"A2:{last_col}{len(all_data)}", bold=False)
 
-    for idx, q in enumerate(qualified_rows, 2):
-        row_color = "#D9EAD3" if q[2] == "HIGH_MATCH" or float(q[1]) >= 75.0 else "#FFF2CC"
-        client.format_range_fill(sheet_name, f"A{idx}:{last_col}{idx}", row_color)
+    # Chunk fill colors across contiguous runs to minimize Graph API PATCH calls
+    current_color = None
+    chunk_start = 2
+    for idx, q in enumerate(merged_rows, 2):
+        try:
+            q_score = float(q[1] or 0.0)
+        except (ValueError, TypeError):
+            q_score = 0.0
+        row_color = "#D9EAD3" if str(q[2]).upper() == "HIGH_MATCH" or q_score >= 75.0 else "#FFF2CC"
+        if current_color is None:
+            current_color = row_color
+            chunk_start = idx
+        elif row_color != current_color:
+            client.format_range_fill(sheet_name, f"A{chunk_start}:{last_col}{idx - 1}", current_color)
+            current_color = row_color
+            chunk_start = idx
+    if current_color is not None:
+        client.format_range_fill(sheet_name, f"A{chunk_start}:{last_col}{len(all_data)}", current_color)
 
-    print(f"🌟 [SharePoint] '{sheet_name}' tab successfully refreshed with {len(qualified_rows)} qualified leads (score > 50)!")
-    return len(qualified_rows)
+    client.create_and_name_table(sheet_name, f"A1:{last_col}{len(all_data)}", "tbl_qualified_leads", style="TableStyleMedium2")
+    print(f"🌟 [SharePoint] '{sheet_name}' union-synced {len(merged_rows)} total qualified leads ({len(qualified_rows)} incoming, score > 50)!")
+    return len(merged_rows)
+
 
 def build_and_sync_qualified_leads(ranked_leads: Optional[List[RankedLead]] = None) -> Dict[str, Any]:
     """Generates Qualified Leads (score > 50) and syncs both Local Excel and SharePoint."""
@@ -1007,13 +1330,14 @@ def build_and_sync_qualified_leads(ranked_leads: Optional[List[RankedLead]] = No
     sp_count = export_qualified_leads_to_sharepoint(client, ranked_leads)
     return {"status": "success", "local_count": local_count, "sharepoint_count": sp_count}
 
+
 def build_non_qualified_leads_rows(
     ranked_leads: Optional[List[RankedLead]] = None,
     max_score: float = 50.0
 ) -> List[List[Any]]:
     """
     Extracts individual non-qualified / disqualified lead contacts from scoring results with ICP score strictly < max_score (50.0).
-    Adds all relevant lead details for Speakers, Attendees, and Exhibitors.
+    Adds all relevant lead details for Speakers, Attendees, and Exhibitors across all matching Verified Data rows.
     Deduplicates leads strictly by email.
     Appends the 6 required Outreach Tracking Columns initialized to Disqualified/empty.
     """
@@ -1021,27 +1345,28 @@ def build_non_qualified_leads_rows(
     seen_emails: Set[str] = set()
 
     local_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
-    ver_by_comp: Dict[str, List[Any]] = {}
-    h_map: Dict[str, int] = {}
-    if local_path.exists():
-        try:
-            from openpyxl import load_workbook
-            wb = load_workbook(local_path, data_only=True)
-            if "Verified Data" in wb.sheetnames:
-                ws_ver = wb["Verified Data"]
-                headers = [str(c.value or "").strip().lower().replace(" ", "").replace("_", "") for c in ws_ver[1]]
-                h_map = {name: idx for idx, name in enumerate(headers)}
-                comp_idx = h_map.get("companyname", 0)
-                for r in range(2, ws_ver.max_row + 1):
-                    row_vals = [c.value for c in ws_ver[r]]
-                    c_name = str(row_vals[comp_idx] or "").strip().lower()
-                    if c_name and c_name not in ver_by_comp:
-                        ver_by_comp[c_name] = row_vals
-            wb.close()
-        except Exception:
-            pass
-
+    ver_by_comp_conf, ver_by_comp, h_map = _load_verified_data_index()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _append_contact(rank, score, qual, comp, dom, conf, cid, ctype, name, title, email, stat, li, ind, tier, eval_at):
+        if not _is_valid_lead_email(email):
+            return
+        clean_em = email.strip().lower()
+        if clean_em in seen_emails:
+            return
+        seen_emails.add(clean_em)
+        n_str = str(name or "").strip()
+        if n_str.lower() in ("not publicly available", "not available", "n/a"):
+            n_str = ""
+        t_str = str(title or "").strip()
+        if t_str.lower() in ("not publicly available", "not available", "n/a"):
+            t_str = ""
+        non_qual_rows.append([
+            rank, score, qual, comp, dom, conf, cid,
+            ctype, n_str, t_str, clean_em, stat or "Verified", li,
+            ind, tier, eval_at,
+            "Disqualified", "", "", "", "", ""
+        ])
 
     if ranked_leads:
         for lead in ranked_leads:
@@ -1059,62 +1384,72 @@ def build_non_qualified_leads_rows(
             tier = prof.headcount_tier
             spk_id = lead.speaker_id
 
-            v_row = ver_by_comp.get(comp.lower(), [])
-            cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+            matched_rows = ver_by_comp_conf.get((comp.lower(), conf.lower())) or ver_by_comp.get(comp.lower(), [])
+            first_v = matched_rows[0] if matched_rows else []
+            cid = first_v[h_map.get("conferenceid", 3)] if len(first_v) > h_map.get("conferenceid", 3) and first_v[h_map.get("conferenceid", 3)] else spk_id
 
-            # 1. Speaker
-            spk_name = lead.speaker_name or (str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > 4 else "")
-            spk_title = lead.job_title or (str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > 5 else "")
-            spk_email = (lead.email if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > 7 else "")
-            spk_stat = (lead.email_status if lead.email != "Not Available" else "") or (str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > 8 else "Verified")
-            spk_li = (lead.linkedin_url if lead.linkedin_url != "Not Available" else "") or (str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > 6 else "")
+            # 1. Contacts directly carried on RankedLead
+            spk_title_0 = str(first_v[h_map.get("speakerjobtitle", 5)] or "") if len(first_v) > h_map.get("speakerjobtitle", 5) else ""
+            spk_li_0 = str(first_v[h_map.get("speakerlinkedin", 6)] or "") if len(first_v) > h_map.get("speakerlinkedin", 6) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Speaker", lead.speaker_name, lead.job_title or spk_title_0,
+                lead.email if lead.email != "Not Available" else "",
+                lead.email_status if lead.email != "Not Available" else "Verified",
+                (lead.linkedin_url if lead.linkedin_url != "Not Available" else "") or spk_li_0,
+                ind, tier, now_str,
+            )
+            att_title_0 = str(first_v[h_map.get("attendeejobtitle", 16)] or "") if len(first_v) > h_map.get("attendeejobtitle", 16) else ""
+            att_li_0 = str(first_v[h_map.get("attendeelinkedin", 17)] or "") if len(first_v) > h_map.get("attendeelinkedin", 17) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Attendee", getattr(lead, "attendee_name", ""), att_title_0,
+                getattr(lead, "attendee_email", ""),
+                getattr(lead, "attendee_email_status", "") or "Verified",
+                att_li_0,
+                ind, tier, now_str,
+            )
+            exh_title_0 = str(first_v[h_map.get("exhibitorjobtitle", 27)] or "") if len(first_v) > h_map.get("exhibitorjobtitle", 27) else ""
+            exh_li_0 = str(first_v[h_map.get("exhibitorlinkedin", 28)] or "") if len(first_v) > h_map.get("exhibitorlinkedin", 28) else ""
+            _append_contact(
+                rank, score, qual, comp, dom, conf, cid,
+                "Exhibitor", getattr(lead, "exhibitor_name", ""), exh_title_0,
+                getattr(lead, "exhibitor_email", ""),
+                getattr(lead, "exhibitor_email_status", "") or "Verified",
+                exh_li_0,
+                ind, tier, now_str,
+            )
 
-            if spk_email and "@" in spk_email and "." in spk_email:
-                clean_em = spk_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    non_qual_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Speaker", spk_name.strip(), spk_title.strip(), clean_em, spk_stat, spk_li,
-                        ind, tier, now_str,
-                        "Disqualified", "", "", "", "", ""
-                    ])
-
-            # 2. Attendee
-            att_name = getattr(lead, "attendee_name", "") or (str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > 15 else "")
-            att_title = (str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > 16 else "")
-            att_email = getattr(lead, "attendee_email", "") or (str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > 18 else "")
-            att_stat = getattr(lead, "attendee_email_status", "") or (str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > 19 else "Verified")
-            att_li = (str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > 17 else "")
-
-            if att_email and "@" in att_email and "." in att_email:
-                clean_em = att_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    non_qual_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Attendee", att_name.strip(), att_title.strip(), clean_em, att_stat, att_li,
-                        ind, tier, now_str,
-                        "Disqualified", "", "", "", "", ""
-                    ])
-
-            # 3. Exhibitor
-            exh_name = getattr(lead, "exhibitor_name", "") or (str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > 26 else "")
-            exh_title = (str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > 27 else "")
-            exh_email = getattr(lead, "exhibitor_email", "") or (str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > 29 else "")
-            exh_stat = getattr(lead, "exhibitor_email_status", "") or (str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > 30 else "Verified")
-            exh_li = (str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > 28 else "")
-
-            if exh_email and "@" in exh_email and "." in exh_email:
-                clean_em = exh_email.strip().lower()
-                if clean_em not in seen_emails:
-                    seen_emails.add(clean_em)
-                    non_qual_rows.append([
-                        rank, score, qual, comp, dom, conf, cid,
-                        "Exhibitor", exh_name.strip(), exh_title.strip(), clean_em, exh_stat, exh_li,
-                        ind, tier, now_str,
-                        "Disqualified", "", "", "", "", ""
-                    ])
+            # 2. All additional verified contacts in Verified Data for this company (+ conference)
+            for v_row in matched_rows:
+                row_cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > h_map.get("conferenceid", 3) and v_row[h_map.get("conferenceid", 3)] else cid
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Speaker",
+                    str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > h_map.get("speakername", 4) else "",
+                    str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > h_map.get("speakerjobtitle", 5) else "",
+                    str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > h_map.get("speakerprofessionalemail", 7) else "",
+                    str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > h_map.get("speakeremailstatus", 8) else "Verified",
+                    str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > h_map.get("speakerlinkedin", 6) else "",
+                    ind, tier, now_str,
+                )
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Attendee",
+                    str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > h_map.get("attendeename", 15) else "",
+                    str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > h_map.get("attendeejobtitle", 16) else "",
+                    str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > h_map.get("attendeeprofessionalemail", 18) else "",
+                    str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > h_map.get("attendeeemailstatus", 19) else "Verified",
+                    str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > h_map.get("attendeelinkedin", 17) else "",
+                    ind, tier, now_str,
+                )
+                _append_contact(
+                    rank, score, qual, comp, dom, conf, row_cid, "Exhibitor",
+                    str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > h_map.get("exhibitorname", 26) else "",
+                    str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > h_map.get("exhibitorjobtitle", 27) else "",
+                    str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > h_map.get("exhibitorprofessionalemail", 29) else "",
+                    str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > h_map.get("exhibitoremailstatus", 30) else "Verified",
+                    str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > h_map.get("exhibitorlinkedin", 28) else "",
+                    ind, tier, now_str,
+                )
 
     else:
         if local_path.exists():
@@ -1125,6 +1460,8 @@ def build_non_qualified_leads_rows(
                     ws_score = wb["latest_week_scoring"]
                     for r in range(2, ws_score.max_row + 1):
                         vals = [c.value for c in ws_score[r]]
+                        if not any(vals):
+                            continue
                         try:
                             score = float(vals[1] or 0.0)
                         except (ValueError, TypeError):
@@ -1141,67 +1478,57 @@ def build_non_qualified_leads_rows(
                         spk_id = str(vals[19] or "").strip()
                         eval_at = str(vals[20] or "").strip() or now_str
 
-                        v_row = ver_by_comp.get(comp.lower(), [])
-                        cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > 3 and v_row[h_map.get("conferenceid", 3)] else spk_id
+                        matched_rows = ver_by_comp_conf.get((comp.lower(), conf.lower())) or ver_by_comp.get(comp.lower(), [])
+                        first_v = matched_rows[0] if matched_rows else []
+                        cid = first_v[h_map.get("conferenceid", 3)] if len(first_v) > h_map.get("conferenceid", 3) and first_v[h_map.get("conferenceid", 3)] else spk_id
 
-                        # Speaker
-                        spk_name = str(vals[8] or (v_row[h_map.get("speakername", 4)] if len(v_row) > 4 else "") or "").strip()
-                        spk_title = str(vals[9] or (v_row[h_map.get("speakerjobtitle", 5)] if len(v_row) > 5 else "") or "").strip()
-                        spk_email = str(vals[10] or (v_row[h_map.get("speakerprofessionalemail", 7)] if len(v_row) > 7 else "") or "").strip()
-                        spk_stat = str(vals[11] or (v_row[h_map.get("speakeremailstatus", 8)] if len(v_row) > 8 else "") or "Verified").strip()
-                        spk_li = str(vals[18] or (v_row[h_map.get("speakerlinkedin", 6)] if len(v_row) > 6 else "") or "").strip()
-
-                        if spk_email and "@" in spk_email and "." in spk_email:
-                            clean_em = spk_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                non_qual_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Speaker", spk_name, spk_title, clean_em, spk_stat, spk_li,
-                                    ind, tier, eval_at,
-                                    "Disqualified", "", "", "", "", ""
-                                ])
-
-                        # Attendee
-                        att_name = str(vals[15] or (v_row[h_map.get("attendeename", 15)] if len(v_row) > 15 else "") or "").strip()
-                        att_title = str((v_row[h_map.get("attendeejobtitle", 16)] if len(v_row) > 16 else "") or "").strip()
-                        att_email = str(vals[16] or (v_row[h_map.get("attendeeprofessionalemail", 18)] if len(v_row) > 18 else "") or "").strip()
-                        att_stat = str(vals[17] or (v_row[h_map.get("attendeeemailstatus", 19)] if len(v_row) > 19 else "") or "Verified").strip()
-                        att_li = str((v_row[h_map.get("attendeelinkedin", 17)] if len(v_row) > 17 else "") or "").strip()
-
-                        if att_email and "@" in att_email and "." in att_email:
-                            clean_em = att_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                non_qual_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Attendee", att_name, att_title, clean_em, att_stat, att_li,
-                                    ind, tier, eval_at,
-                                    "Disqualified", "", "", "", "", ""
-                                ])
-
-                        # Exhibitor
-                        exh_name = str(vals[12] or (v_row[h_map.get("exhibitorname", 26)] if len(v_row) > 26 else "") or "").strip()
-                        exh_title = str((v_row[h_map.get("exhibitorjobtitle", 27)] if len(v_row) > 27 else "") or "").strip()
-                        exh_email = str(vals[13] or (v_row[h_map.get("exhibitorprofessionalemail", 29)] if len(v_row) > 29 else "") or "").strip()
-                        exh_stat = str(vals[14] or (v_row[h_map.get("exhibitoremailstatus", 30)] if len(v_row) > 30 else "") or "Verified").strip()
-                        exh_li = str((v_row[h_map.get("exhibitorlinkedin", 28)] if len(v_row) > 28 else "") or "")
-
-                        if exh_email and "@" in exh_email and "." in exh_email:
-                            clean_em = exh_email.strip().lower()
-                            if clean_em not in seen_emails:
-                                seen_emails.add(clean_em)
-                                non_qual_rows.append([
-                                    rank, score, qual, comp, dom, conf, cid,
-                                    "Exhibitor", exh_name, exh_title, clean_em, exh_stat, exh_li,
-                                    ind, tier, eval_at,
-                                    "Disqualified", "", "", "", "", ""
-                                ])
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Speaker",
+                            vals[8], vals[9], vals[10], vals[11], vals[18], ind, tier, eval_at
+                        )
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Attendee",
+                            vals[15], "", vals[16], vals[17], "", ind, tier, eval_at
+                        )
+                        _append_contact(
+                            rank, score, qual, comp, dom, conf, cid, "Exhibitor",
+                            vals[12], "", vals[13], vals[14], "", ind, tier, eval_at
+                        )
+                        for v_row in matched_rows:
+                            row_cid = v_row[h_map.get("conferenceid", 3)] if len(v_row) > h_map.get("conferenceid", 3) and v_row[h_map.get("conferenceid", 3)] else cid
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Speaker",
+                                str(v_row[h_map.get("speakername", 4)] or "") if len(v_row) > h_map.get("speakername", 4) else "",
+                                str(v_row[h_map.get("speakerjobtitle", 5)] or "") if len(v_row) > h_map.get("speakerjobtitle", 5) else "",
+                                str(v_row[h_map.get("speakerprofessionalemail", 7)] or "") if len(v_row) > h_map.get("speakerprofessionalemail", 7) else "",
+                                str(v_row[h_map.get("speakeremailstatus", 8)] or "Verified") if len(v_row) > h_map.get("speakeremailstatus", 8) else "Verified",
+                                str(v_row[h_map.get("speakerlinkedin", 6)] or "") if len(v_row) > h_map.get("speakerlinkedin", 6) else "",
+                                ind, tier, eval_at,
+                            )
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Attendee",
+                                str(v_row[h_map.get("attendeename", 15)] or "") if len(v_row) > h_map.get("attendeename", 15) else "",
+                                str(v_row[h_map.get("attendeejobtitle", 16)] or "") if len(v_row) > h_map.get("attendeejobtitle", 16) else "",
+                                str(v_row[h_map.get("attendeeprofessionalemail", 18)] or "") if len(v_row) > h_map.get("attendeeprofessionalemail", 18) else "",
+                                str(v_row[h_map.get("attendeeemailstatus", 19)] or "Verified") if len(v_row) > h_map.get("attendeeemailstatus", 19) else "Verified",
+                                str(v_row[h_map.get("attendeelinkedin", 17)] or "") if len(v_row) > h_map.get("attendeelinkedin", 17) else "",
+                                ind, tier, eval_at,
+                            )
+                            _append_contact(
+                                rank, score, qual, comp, dom, conf, row_cid, "Exhibitor",
+                                str(v_row[h_map.get("exhibitorname", 26)] or "") if len(v_row) > h_map.get("exhibitorname", 26) else "",
+                                str(v_row[h_map.get("exhibitorjobtitle", 27)] or "") if len(v_row) > h_map.get("exhibitorjobtitle", 27) else "",
+                                str(v_row[h_map.get("exhibitorprofessionalemail", 29)] or "") if len(v_row) > h_map.get("exhibitorprofessionalemail", 29) else "",
+                                str(v_row[h_map.get("exhibitoremailstatus", 30)] or "Verified") if len(v_row) > h_map.get("exhibitoremailstatus", 30) else "Verified",
+                                str(v_row[h_map.get("exhibitorlinkedin", 28)] or "") if len(v_row) > h_map.get("exhibitorlinkedin", 28) else "",
+                                ind, tier, eval_at,
+                            )
                 wb.close()
             except Exception:
                 pass
 
     return non_qual_rows
+
 
 def sync_non_qualified_leads_to_local_excel(ranked_leads: Optional[List[RankedLead]] = None) -> int:
     """Mirrors non-qualified leads (score < 50) to Local Excel 'Non -Qualified Leads' worksheet with outreach tracking columns."""
@@ -1211,30 +1538,39 @@ def sync_non_qualified_leads_to_local_excel(ranked_leads: Optional[List[RankedLe
     em.sync_non_qualified_leads_to_excel(non_qual_rows, headers=QUALIFIED_LEADS_HEADERS)
     return len(non_qual_rows)
 
+
 def export_non_qualified_leads_to_sharepoint(
     client: SharePointExcelClient,
     ranked_leads: Optional[List[RankedLead]] = None
 ) -> int:
-    """Exports only non-qualified leads (score < 50) to SharePoint 'Non -Qualified Leads' worksheet with color highlights and outreach tracking columns."""
+    """Exports union-merged non-qualified leads (score < 50) to SharePoint 'Non -Qualified Leads' preserving historical rows & outreach tracking."""
     sheet_name = os.getenv("SHAREPOINT_NON_QUALIFIED_SHEET", SHAREPOINT_NON_QUALIFIED_SHEET)
     client.ensure_worksheet_exists(sheet_name)
     non_qual_rows = build_non_qualified_leads_rows(ranked_leads, max_score=50.0)
     if not non_qual_rows:
         return 0
 
-    all_data = [QUALIFIED_LEADS_HEADERS] + non_qual_rows
+    ex_headers, ex_rows = client.get_table_records("tbl_non_qualified_leads", fallback_sheet_name=sheet_name)
+    aligned_existing = _align_lead_rows_to_headers(ex_headers, ex_rows, QUALIFIED_LEADS_HEADERS)
+    merged_rows = _union_merge_sharepoint_lead_rows(
+        aligned_existing, non_qual_rows, QUALIFIED_LEADS_HEADERS, default_status="Disqualified"
+    )
+
+    all_data = [QUALIFIED_LEADS_HEADERS] + merged_rows
     last_col = col_num_to_letter(len(QUALIFIED_LEADS_HEADERS))
-    sp_range = f"A1:{last_col}{len(all_data)}"
-    client.update_range(sheet_name, sp_range, all_data)
+    clear_end = max(500, len(all_data) + 50, len(ex_rows) + 50)
+
+    client.delete_sheet_tables(sheet_name, ["tbl_non_qualified_leads"])
+    client.clear_range(sheet_name, f"A1:{last_col}{clear_end}")
+    client.update_range(sheet_name, f"A1:{last_col}{len(all_data)}", all_data)
     client.format_range_fill(sheet_name, f"A1:{last_col}1", "#D9E1F2")
     client.format_range_font(sheet_name, f"A1:{last_col}1", bold=True)
     client.format_range_font(sheet_name, f"A2:{last_col}{len(all_data)}", bold=False)
+    client.format_range_fill(sheet_name, f"A2:{last_col}{len(all_data)}", "#FCE5CD")
+    client.create_and_name_table(sheet_name, f"A1:{last_col}{len(all_data)}", "tbl_non_qualified_leads", style="TableStyleMedium2")
 
-    for idx, q in enumerate(non_qual_rows, 2):
-        client.format_range_fill(sheet_name, f"A{idx}:{last_col}{idx}", "#FCE5CD")
-
-    print(f"🌟 [SharePoint] '{sheet_name}' tab successfully refreshed with {len(non_qual_rows)} non-qualified leads (score < 50)!")
-    return len(non_qual_rows)
+    print(f"🌟 [SharePoint] '{sheet_name}' union-synced {len(merged_rows)} total non-qualified leads ({len(non_qual_rows)} incoming, score < 50)!")
+    return len(merged_rows)
 
 def build_and_sync_non_qualified_leads(ranked_leads: Optional[List[RankedLead]] = None) -> Dict[str, Any]:
     """Generates Non -Qualified Leads (score < 50) and syncs both Local Excel and SharePoint."""
@@ -1287,10 +1623,21 @@ def export_ranked_leads_to_sharepoint(
     last_col_letter = col_num_to_letter(len(CURATED_SHEET_HEADERS))  # 'U'
 
     # -----------------------------------------------------------------
-    # TAB 1: latest_week_scoring (Overwritten with all fresh weekly rankings + Color Highlights)
+    # TAB 1: latest_week_scoring (Cleared and overwritten with current weekly rankings only + Color Highlights)
     # -----------------------------------------------------------------
     print(f"📋 [SharePoint] Refreshing '{latest_sheet}' tab with ALL {len(all_rows_to_insert)} rankings (21 columns)...")
+    client.ensure_worksheet_exists(latest_sheet)
+    try:
+        existing_latest = client.get_used_range(latest_sheet)
+    except Exception:
+        existing_latest = []
     all_latest_data = [CURATED_SHEET_HEADERS] + all_rows_to_insert
+    latest_clear_end = max(500, len(all_latest_data) + 50, len(existing_latest) + 50)
+    try:
+        client.clear_range(latest_sheet, f"A1:{last_col_letter}{latest_clear_end}")
+    except Exception as e:
+        print(f"⚠️ Notice clearing '{latest_sheet}': {e}")
+
     latest_range = f"A1:{last_col_letter}{len(all_latest_data)}"
     client.update_range(latest_sheet, latest_range, all_latest_data)
     
@@ -1307,8 +1654,9 @@ def export_ranked_leads_to_sharepoint(
     print(f"📥 [SharePoint] '{latest_sheet}' tab successfully updated with all {len(all_rows_to_insert)} companies!")
 
     # -----------------------------------------------------------------
-    # TAB 2: Companies scoring (Permanent historical archive + Color Highlights)
+    # TAB 2: Companies scoring (Permanent historical archive, deduplicated + Color Highlights)
     # -----------------------------------------------------------------
+    client.ensure_worksheet_exists(history_sheet)
     try:
         existing_history = client.get_used_range(history_sheet)
     except Exception:
@@ -1319,16 +1667,45 @@ def export_ranked_leads_to_sharepoint(
         client.update_range(history_sheet, f"A1:{last_col_letter}{len(all_hist_data)}", all_hist_data)
         client.format_range_fill(history_sheet, f"A1:{last_col_letter}1", "#D9E1F2")
         client.format_range_font(history_sheet, f"A1:{last_col_letter}1", bold=True)
-        start_row = 2
+        apply_sharepoint_color_formatting(client, history_sheet, start_row=2, ranked_leads=ranked_leads)
+        print(f"🏛️ [SharePoint] '{history_sheet}' tab archived {len(all_rows_to_insert)} companies with status colors!")
     else:
-        start_row = len(existing_history) + 1
-        end_row = start_row + len(all_rows_to_insert) - 1
-        hist_range = f"A{start_row}:{last_col_letter}{end_row}"
-        client.update_range(history_sheet, hist_range, all_rows_to_insert)
+        existing_hist_keys: Set[Tuple[str, str, str]] = set()
+        existing_comp_conf: Set[Tuple[str, str]] = set()
+        last_non_empty = 1
+        for r_idx, row_vals_existing in enumerate(existing_history[1:], start=2):
+            if any(v is not None and str(v).strip() != "" for v in row_vals_existing[:len(CURATED_SHEET_HEADERS)]):
+                last_non_empty = r_idx
+                c_name = str(row_vals_existing[2] if len(row_vals_existing) > 2 else "").strip().lower()
+                cf_name = str(row_vals_existing[4] if len(row_vals_existing) > 4 else "").strip().lower()
+                s_id = str(row_vals_existing[19] if len(row_vals_existing) > 19 else "").strip().lower()
+                if c_name or cf_name:
+                    existing_hist_keys.add((c_name, cf_name, s_id))
+                    existing_comp_conf.add((c_name, cf_name))
 
-    # Format newly appended rows in history sheet
-    apply_sharepoint_color_formatting(client, history_sheet, start_row=start_row, ranked_leads=ranked_leads)
-    print(f"🏛️ [SharePoint] '{history_sheet}' tab archived {len(all_rows_to_insert)} companies with status colors!")
+        leads_to_append: List[RankedLead] = []
+        rows_to_append: List[List[Any]] = []
+        for lead_obj, row_vals in zip(ranked_leads, all_rows_to_insert):
+            c_key = (lead_obj.company_name or "").strip().lower()
+            cf_key = (lead_obj.conference_name or "").strip().lower()
+            s_key = (lead_obj.speaker_id or "").strip().lower()
+            if (c_key, cf_key, s_key) in existing_hist_keys or (cf_key and (c_key, cf_key) in existing_comp_conf):
+                continue
+            existing_hist_keys.add((c_key, cf_key, s_key))
+            if cf_key:
+                existing_comp_conf.add((c_key, cf_key))
+            leads_to_append.append(lead_obj)
+            rows_to_append.append(row_vals)
+
+        if rows_to_append:
+            start_row = last_non_empty + 1
+            end_row = start_row + len(rows_to_append) - 1
+            hist_range = f"A{start_row}:{last_col_letter}{end_row}"
+            client.update_range(history_sheet, hist_range, rows_to_append)
+            apply_sharepoint_color_formatting(client, history_sheet, start_row=start_row, ranked_leads=leads_to_append)
+            print(f"🏛️ [SharePoint] '{history_sheet}' tab appended {len(rows_to_append)} new companies with status colors!")
+        else:
+            print(f"🏛️ [SharePoint] '{history_sheet}' already contains all {len(all_rows_to_insert)} companies (0 duplicates appended).")
 
     # Mirror to local Excel (latest_week_scoring, Companies scoring, Qualified Leads)
     sync_to_local_excel(ranked_leads)
@@ -1377,6 +1754,8 @@ def mark_leads_evaluated_in_sharepoint(
 
     conf_col_idx = headers.index("Conference ID") if "Conference ID" in headers else (headers.index("Conference_ID") if "Conference_ID" in headers else -1)
     spk_col_idx = headers.index("Speaker Name") if "Speaker Name" in headers else (headers.index("Speaker_Name") if "Speaker_Name" in headers else -1)
+    exh_col_idx = headers.index("Exhibitor Name") if "Exhibitor Name" in headers else (headers.index("Exhibitor_Name") if "Exhibitor_Name" in headers else -1)
+    att_col_idx = headers.index("Attendee Name") if "Attendee Name" in headers else (headers.index("Attendee_Name") if "Attendee_Name" in headers else -1)
     comp_col_idx = headers.index("Company Name") if "Company Name" in headers else (headers.index("Company_Name") if "Company_Name" in headers else -1)
     explicit_id_col = headers.index("Speaker_ID") if "Speaker_ID" in headers else (headers.index("Speaker ID") if "Speaker ID" in headers else -1)
 
@@ -1391,10 +1770,14 @@ def mark_leads_evaluated_in_sharepoint(
         if explicit_id_col != -1 and explicit_id_col < len(row) and str(row[explicit_id_col]).strip():
             row_spk_id = clean_string(row[explicit_id_col])
         else:
-            conf_val = clean_token(row[conf_col_idx]) if conf_col_idx != -1 and conf_col_idx < len(row) else "CONF"
-            spk_val = clean_token(row[spk_col_idx]) if spk_col_idx != -1 and spk_col_idx < len(row) else ""
+            conf_raw = str(row[conf_col_idx]).strip() if conf_col_idx != -1 and conf_col_idx < len(row) and row[conf_col_idx] is not None else ""
+            conf_val = clean_token(conf_raw) if conf_raw else "CONF"
+            spk_raw = row[spk_col_idx] if spk_col_idx != -1 and spk_col_idx < len(row) else ""
+            exh_raw = row[exh_col_idx] if exh_col_idx != -1 and exh_col_idx < len(row) else ""
+            att_raw = row[att_col_idx] if att_col_idx != -1 and att_col_idx < len(row) else ""
+            participant_val = clean_token(spk_raw or exh_raw or att_raw or "LEAD")
             comp_val = clean_token(row[comp_col_idx]) if comp_col_idx != -1 and comp_col_idx < len(row) else ""
-            row_spk_id = f"{conf_val}_{spk_val}_{comp_val}"
+            row_spk_id = f"{conf_val}_{participant_val}_{comp_val}"
             
         comp_name_val = row[comp_col_idx] if comp_col_idx != -1 and comp_col_idx < len(row) else ""
         
@@ -1429,9 +1812,30 @@ def mark_leads_evaluated_in_sharepoint(
                     if not eval_col:
                         eval_col = len(header_cells) + 1
                         ws.cell(row=1, column=eval_col, value="Evaluation_Status")
-                    for row_idx, r_cells in enumerate(raw_rows[1:], start=2):
-                        if (row_idx - 2) < len(status_values):
+                    if len(raw_rows) - 1 == len(status_values):
+                        for row_idx, r_cells in enumerate(raw_rows[1:], start=2):
                             ws.cell(row=row_idx, column=eval_col, value=status_values[row_idx - 2][0])
+                    else:
+                        lh_map = {str(hv or "").strip(): ci - 1 for ci, hv in enumerate(header_cells, 1)}
+                        l_cid = lh_map.get("Conference ID", lh_map.get("Conference_ID", -1))
+                        l_spk = lh_map.get("Speaker Name", lh_map.get("Speaker_Name", -1))
+                        l_exh = lh_map.get("Exhibitor Name", lh_map.get("Exhibitor_Name", -1))
+                        l_att = lh_map.get("Attendee Name", lh_map.get("Attendee_Name", -1))
+                        l_cmp = lh_map.get("Company Name", lh_map.get("Company_Name", -1))
+                        for row_idx, r_cells in enumerate(raw_rows[1:], start=2):
+                            r_vals = [c.value for c in r_cells]
+                            c_raw = str(r_vals[l_cid]).strip() if l_cid != -1 and l_cid < len(r_vals) and r_vals[l_cid] else ""
+                            c_tok = clean_token(c_raw) if c_raw else "CONF"
+                            p_raw = (
+                                (r_vals[l_spk] if l_spk != -1 and l_spk < len(r_vals) else "")
+                                or (r_vals[l_exh] if l_exh != -1 and l_exh < len(r_vals) else "")
+                                or (r_vals[l_att] if l_att != -1 and l_att < len(r_vals) else "")
+                                or "LEAD"
+                            )
+                            cmp_tok = clean_token(r_vals[l_cmp]) if l_cmp != -1 and l_cmp < len(r_vals) else ""
+                            local_id = f"{c_tok}_{clean_token(p_raw)}_{cmp_tok}"
+                            if local_id in target_ids_set:
+                                ws.cell(row=row_idx, column=eval_col, value="EVALUATED")
                     wb.save(local_path)
                     print("💾 [Local Excel] Verified Data 'Evaluation_Status' synchronized.")
     except Exception as e:

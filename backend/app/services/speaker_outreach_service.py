@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import openpyxl
 import requests
@@ -175,25 +175,67 @@ class MSGraphOutreachClient:
 class GeminiOutreachAgent:
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY") or getattr(settings, "GEMINI_API_KEY", "")
-        self.model = getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-3.8-flash") or "gemini-3.8-flash"
+        self.model = getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        if self.model == "gemini-3.8-flash":
+            self.model = "gemini-2.5-flash"
         self.use_gemini = getattr(settings, "OUTREACH_USE_GEMINI", True)
         self.client = None
         if self.use_gemini and self.api_key:
             try:
                 from google import genai
-                self.client = genai.Client(api_key=self.api_key)
+                from google.genai import types as genai_types
+                self.client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=genai_types.HttpOptions(timeout=15000),
+                )
             except Exception as e:
-                logger.warning(f"[Gemini Agent] Init notice: {e}. Rule fallback enabled.")
+                logger.warning(f"[Gemini Agent] Init notice: {e}. Fallback enabled.")
+
+    def _analyze_with_azure(self, prompt: str, reply_text: str) -> Optional[Dict[str, Any]]:
+        api_key = os.getenv("AZURE_OPENAI_API_KEY") or getattr(settings, "AZURE_OPENAI_API_KEY", "")
+        base_url = (os.getenv("AZURE_OPENAI_BASE_URL") or getattr(settings, "AZURE_OPENAI_BASE_URL", "")).rstrip("/")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or getattr(settings, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+        if not api_key or not base_url:
+            return None
+        try:
+            url = f"{base_url}/chat/completions"
+            payload = {
+                "model": deployment,
+                "messages": [
+                    {"role": "system", "content": "Return strictly valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.0,
+                "response_format": {"type": "json_object"}
+            }
+            resp = requests.post(
+                url,
+                headers={"api-key": api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=15
+            )
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"]
+                data = json.loads(content)
+                intent = str(data.get("intent", "OTHER")).upper().strip()
+                sentiment = str(data.get("sentiment", "Neutral")).capitalize().strip()
+                if sentiment not in ("Positive", "Neutral", "Negative"):
+                    sentiment = "Neutral"
+                return {
+                    "intent": intent if intent in REPLY_INTENTS else "OTHER",
+                    "sentiment": sentiment,
+                    "summary": str(data.get("summary", "")).strip() or reply_text[:140]
+                }
+        except Exception as e:
+            logger.debug(f"[Azure Reply Agent] Fallback notice: {e}")
+        return None
 
     def analyze_reply(self, reply_text: str, name: str = "", company: str = "", conf: str = "") -> Dict[str, Any]:
-        """Analyzes incoming reply text. Uses Gemini if available, else rule-based fallback."""
+        """Analyzes incoming reply text. Uses Gemini -> Azure OpenAI -> rule-based fallback."""
         if not reply_text or not reply_text.strip():
             return fallback_reply_analysis(reply_text)
 
-        if self.client:
-            try:
-                from google.genai import types
-                prompt = f"""
+        prompt = f"""
 You classify a reply from a conference speaker to our short outreach email.
 Our email only said hello / nice to connect around {conf}.
 Speaker: {name} ({company}).
@@ -215,6 +257,10 @@ Note on sentiment: Any expression of interest or willingness to connect (even br
 Return ONLY valid JSON with exactly these keys:
 {{"intent": "<one of the above>", "sentiment": "Positive" | "Neutral" | "Negative", "summary": "<one short sentence>"}}
 """
+
+        if self.client:
+            try:
+                from google.genai import types
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                 resp = self.client.models.generate_content(model=self.model, contents=prompt, config=config)
                 data = json.loads(resp.text.strip())
@@ -229,6 +275,10 @@ Return ONLY valid JSON with exactly these keys:
                 }
             except Exception as e:
                 logger.debug(f"[Gemini Agent] AI analysis fallback: {e}")
+
+        azure_res = self._analyze_with_azure(prompt, reply_text)
+        if azure_res:
+            return azure_res
 
         return fallback_reply_analysis(reply_text)
 
@@ -944,8 +994,8 @@ class SpeakerOutreachService:
             "campaign_active": getattr(settings, "OUTREACH_ACTIVE", False),
             "dry_run": getattr(settings, "OUTREACH_DRY_RUN", True),
             "teams_card_notifications": getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
-            "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-3.8-flash"),
-            "scheduled_send_time": getattr(settings, "OUTREACH_SEND_TIME", "19:00"),
+            "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-2.5-flash"),
+            "scheduled_send_time": getattr(settings, "OUTREACH_SEND_TIME", "20:00"),
             "timezone": getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata"),
             "reply_watch_interval_minutes": getattr(settings, "OUTREACH_WATCH_INTERVAL_MINUTES", 1),
             "qualified_contacts_total": contacts_total,
@@ -976,9 +1026,9 @@ class SpeakerOutreachService:
             "campaign_active": getattr(settings, "NON_QUALIFIED_OUTREACH_ACTIVE", False),
             "dry_run": getattr(settings, "NON_QUALIFIED_DRY_RUN", False),
             "teams_card_notifications": getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
-            "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-3.8-flash"),
+            "gemini_model": getattr(settings, "OUTREACH_GEMINI_MODEL", "gemini-2.5-flash"),
             "scheduled_send_time": getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_TIME", "20:00"),
-            "scheduled_send_day": getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "thu"),
+            "scheduled_send_day": getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "fri"),
             "timezone": getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata"),
             "non_qualified_contacts_total": contacts_total,
             "non_qualified_contacts_pending": contacts_pending,
@@ -1701,8 +1751,14 @@ class SpeakerOutreachService:
                     skipped_count += 1
                     continue
 
-                # Check state sent_log to avoid duplicates
-                already_sent = any(s.get("email") == email and s.get("status") == "sent" for s in state.get("sent_log", []))
+                # Check state sent_log and threads to avoid duplicates
+                already_sent = any(
+                    (s.get("email") or "").strip().lower() == email and s.get("status") == "sent"
+                    for s in state.get("sent_log", [])
+                ) or any(
+                    (t.get("email") or k.split("|")[0]).strip().lower() == email
+                    for k, t in state.get("threads", {}).items()
+                )
                 if already_sent:
                     skipped_count += 1
                     continue
@@ -1845,6 +1901,16 @@ class SpeakerOutreachService:
             leads = self._load_non_qualified_leads()
             source_display = "Non -Qualified Leads sheet (score < 50)"
 
+            qualified_contacted_emails: Set[str] = set()
+            try:
+                for ql in self._load_qualified_leads():
+                    q_em = (ql.get("professional_email") or "").strip().lower()
+                    q_ost = (ql.get("outreach_status") or "").strip().lower()
+                    if q_em and q_ost in ("sent", "sending", "replied", "bounced", "do_not_contact"):
+                        qualified_contacted_emails.add(q_em)
+            except Exception as e:
+                logger.debug(f"Notice checking Qualified Leads overlap: {e}")
+
             logger.info(f"🚀 Starting Non-Qualified Outreach Send Pass from '{source_display}' (DRY_RUN={dry_run}, Leads={len(leads)})...")
 
             sent_count = 0
@@ -1867,8 +1933,14 @@ class SpeakerOutreachService:
                     skipped_count += 1
                     continue
 
-                already_sent = any(s.get("email") == email and s.get("status") == "sent" for s in state.get("sent_log", []))
-                if already_sent and not force:
+                already_sent = any(
+                    (s.get("email") or "").strip().lower() == email and s.get("status") == "sent"
+                    for s in state.get("sent_log", [])
+                ) or any(
+                    (t.get("email") or k.split("|")[0]).strip().lower() == email
+                    for k, t in state.get("threads", {}).items()
+                )
+                if (already_sent or email in qualified_contacted_emails) and not force:
                     skipped_count += 1
                     continue
 

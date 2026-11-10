@@ -372,18 +372,34 @@ class ExcelManager:
         else:
             ws_wconf = wb["weekly_conference"]
 
-        existing_wconfs = set()
-        for row in ws_wconf.iter_rows(min_row=2, max_col=3, values_only=True):
-            if row[0]:
-                existing_wconfs.add(str(row[0]).strip().lower())
-            if len(row) > 1 and row[1]:
-                existing_wconfs.add(str(row[1]).strip().lower())
+        existing_wconf_rows: Dict[str, int] = {}
+        for r_idx in range(2, ws_wconf.max_row + 1):
+            c_id_cell = str(ws_wconf.cell(row=r_idx, column=1).value or "").strip().lower()
+            c_name_cell = str(ws_wconf.cell(row=r_idx, column=2).value or "").strip().lower()
+            if c_id_cell and c_id_cell not in existing_wconf_rows:
+                existing_wconf_rows[c_id_cell] = r_idx
+            if c_name_cell and c_name_cell not in existing_wconf_rows:
+                existing_wconf_rows[c_name_cell] = r_idx
 
         added_confs = 0
         for c in conferences:
             c_id = (c.conference_id or "").strip().lower()
             c_name = (c.conference_name or "").strip().lower()
-            if c_id in existing_wconfs or c_name in existing_wconfs:
+            match_row = existing_wconf_rows.get(c_id) or existing_wconf_rows.get(c_name)
+            if match_row:
+                # Update speaker_status, last_checked_at, and backfill empty metadata in-place
+                if (c.speaker_status or "").strip().lower() == "yes":
+                    ws_wconf.cell(row=match_row, column=13).value = "Yes"
+                if c.last_checked_at:
+                    ws_wconf.cell(row=match_row, column=14).value = c.last_checked_at.isoformat()
+                if not str(ws_wconf.cell(row=match_row, column=5).value or "").strip() and c.city:
+                    ws_wconf.cell(row=match_row, column=5).value = c.city
+                if not str(ws_wconf.cell(row=match_row, column=6).value or "").strip() and c.state:
+                    ws_wconf.cell(row=match_row, column=6).value = c.state
+                if not str(ws_wconf.cell(row=match_row, column=8).value or "").strip() and c.industry:
+                    ws_wconf.cell(row=match_row, column=8).value = c.industry
+                if not str(ws_wconf.cell(row=match_row, column=9).value or "").strip() and c.official_event_url:
+                    ws_wconf.cell(row=match_row, column=9).value = c.official_event_url
                 continue
             ws_wconf.append([
                 c.conference_id,
@@ -402,8 +418,11 @@ class ExcelManager:
                 c.last_checked_at.isoformat() if c.last_checked_at else "",
                 c.weekly_run_id or ""
             ])
-            existing_wconfs.add(c_id)
-            existing_wconfs.add(c_name)
+            new_row_idx = ws_wconf.max_row
+            if c_id:
+                existing_wconf_rows[c_id] = new_row_idx
+            if c_name:
+                existing_wconf_rows[c_name] = new_row_idx
             added_confs += 1
 
         # 2. Weekly Speakers sheet
@@ -419,15 +438,35 @@ class ExcelManager:
         else:
             ws_wspk = wb["weekly_speakers"]
 
-        existing_wspks = set()
-        for row in ws_wspk.iter_rows(min_row=2, max_col=4, values_only=True):
-            if len(row) >= 4 and row[1] and row[3]:
-                existing_wspks.add((str(row[1]).strip().lower(), str(row[3]).strip().lower()))
+        existing_wspk_rows: Dict[tuple, int] = {}
+        for r_idx in range(2, ws_wspk.max_row + 1):
+            cid_val = str(ws_wspk.cell(row=r_idx, column=2).value or "").strip().lower()
+            sname_val = str(ws_wspk.cell(row=r_idx, column=4).value or "").strip().lower()
+            if cid_val and sname_val and (cid_val, sname_val) not in existing_wspk_rows:
+                existing_wspk_rows[(cid_val, sname_val)] = r_idx
 
         added_spks = 0
         for s in speakers:
             spk_key = ((s.conference_id or "").strip().lower(), (s.speaker_name or "").strip().lower())
-            if spk_key in existing_wspks:
+            match_spk_row = existing_wspk_rows.get(spk_key)
+            if match_spk_row:
+                # Backfill empty speaker enrichment/profile fields without overwriting outreach columns (cols 15+)
+                if not str(ws_wspk.cell(row=match_spk_row, column=5).value or "").strip() and s.job_title:
+                    ws_wspk.cell(row=match_spk_row, column=5).value = s.job_title
+                if not str(ws_wspk.cell(row=match_spk_row, column=6).value or "").strip() and s.company_name:
+                    ws_wspk.cell(row=match_spk_row, column=6).value = s.company_name
+                if not str(ws_wspk.cell(row=match_spk_row, column=7).value or "").strip() and s.personal_linkedin_url:
+                    ws_wspk.cell(row=match_spk_row, column=7).value = s.personal_linkedin_url
+                if s.linkedin_status and str(ws_wspk.cell(row=match_spk_row, column=8).value or "").strip().lower() != "verified":
+                    ws_wspk.cell(row=match_spk_row, column=8).value = s.linkedin_status
+                if not str(ws_wspk.cell(row=match_spk_row, column=9).value or "").strip() and s.professional_email:
+                    ws_wspk.cell(row=match_spk_row, column=9).value = s.professional_email
+                if not str(ws_wspk.cell(row=match_spk_row, column=10).value or "").strip() and s.email_source_url:
+                    ws_wspk.cell(row=match_spk_row, column=10).value = s.email_source_url
+                if (s.verification_status or "").strip().lower() == "verified":
+                    ws_wspk.cell(row=match_spk_row, column=12).value = "verified"
+                if s.last_checked_at:
+                    ws_wspk.cell(row=match_spk_row, column=13).value = s.last_checked_at.isoformat()
                 continue
             ws_wspk.append([
                 s.speaker_id,
@@ -445,7 +484,7 @@ class ExcelManager:
                 s.last_checked_at.isoformat() if s.last_checked_at else "",
                 s.weekly_run_id or ""
             ])
-            existing_wspks.add(spk_key)
+            existing_wspk_rows[spk_key] = ws_wspk.max_row
             added_spks += 1
 
         # 3. Weekly Source Run Log sheet
@@ -498,7 +537,9 @@ class ExcelManager:
         professional_email: Optional[str] = None,
         email_source_url: Optional[str] = None,
         verification_status: Optional[str] = None,
-        last_checked_at: Optional[str] = None
+        last_checked_at: Optional[str] = None,
+        job_title: Optional[str] = None,
+        company_name: Optional[str] = None,
     ) -> bool:
         """
         Updates an existing speaker row in-place on the local 'weekly_speakers' sheet.
@@ -528,6 +569,10 @@ class ExcelManager:
                 match = True
 
             if match:
+                if job_title and not str(ws.cell(row=row_idx, column=5).value or "").strip():
+                    ws.cell(row=row_idx, column=5).value = job_title
+                if company_name and not str(ws.cell(row=row_idx, column=6).value or "").strip():
+                    ws.cell(row=row_idx, column=6).value = company_name
                 if personal_linkedin_url:
                     ws.cell(row=row_idx, column=7).value = personal_linkedin_url
                 if linkedin_status:
@@ -554,9 +599,7 @@ class ExcelManager:
     ) -> Dict[str, Any]:
         """
         Appends or refreshes weekly attendees to the 'weekly_attendees' sheet in the local Excel workbook.
-        Headers: Conference Name, Conference Date, Attendee Name, Job Title, Company,
-                 Professional Email, LinkedIn URL, Source URL, Collection Date.
-        Never overwrites or disturbs existing conference, speaker, or source log records.
+        Preserves all 16 columns (including cols 11-16 outreach/reply tracking) and historical real records.
         """
         if not attendees and not replace_all:
             return {"status": "skipped", "inserted_count": 0}
@@ -567,20 +610,51 @@ class ExcelManager:
         sheet_name = "weekly_attendees"
         cols = [
             "Conference Name", "Conference Date", "Attendee Name", "Job Title", "Company",
-            "Professional Email", "LinkedIn URL", "Source URL", "Collection Date", "Email Status"
+            "Professional Email", "LinkedIn URL", "Source URL", "Collection Date", "Email Status",
+            "outreach status", "reply status", "reply sentiment", "received reply", "send message", "thread id"
         ]
 
-        if sheet_name not in wb.sheetnames:
-            ws = wb.create_sheet(sheet_name)
-            ws.append(cols)
-            self._apply_header_styles(ws)
-        else:
-            ws = wb[sheet_name]
+        cached_outreach_by_key: Dict[tuple, List[Any]] = {}
+        cached_outreach_by_email: Dict[str, List[Any]] = {}
+        cached_real_rows: List[List[Any]] = []
+        existing_headers: List[str] = list(cols)
+
+        if sheet_name in wb.sheetnames:
+            ws_old = wb[sheet_name]
+            old_rows = list(ws_old.iter_rows(values_only=True))
+            if old_rows:
+                raw_hdr = [str(h or "") for h in old_rows[0]]
+                if len(raw_hdr) >= 16:
+                    existing_headers = raw_hdr[:16]
+                for r in old_rows[1:]:
+                    if not r or not any(r):
+                        continue
+                    r_list = list(r)
+                    while len(r_list) < len(existing_headers):
+                        r_list.append("")
+                    c_name = str(r_list[0] or "").strip()
+                    a_name = str(r_list[2] or "").strip()
+                    if not c_name or not a_name or a_name.lower() == "not publicly available":
+                        continue
+                    tail = list(r_list[10:16])
+                    while len(tail) < 6:
+                        tail.append("")
+                    cached_outreach_by_key[(c_name.lower(), a_name.lower())] = tail
+                    em_v = str(r_list[5] or "").strip().lower()
+                    if em_v and "@" in em_v:
+                        cached_outreach_by_email[em_v] = tail
+                    cached_real_rows.append(r_list[:len(existing_headers)])
             if replace_all:
-                wb.remove(ws)
+                wb.remove(ws_old)
                 ws = wb.create_sheet(sheet_name)
-                ws.append(cols)
+                ws.append(existing_headers)
                 self._apply_header_styles(ws)
+            else:
+                ws = ws_old
+        else:
+            ws = wb.create_sheet(sheet_name)
+            ws.append(existing_headers)
+            self._apply_header_styles(ws)
 
         existing_keys = set()
         for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
@@ -594,6 +668,9 @@ class ExcelManager:
         for att in attendees:
             conf_name = (att.conference_name if hasattr(att, "conference_name") else att.get("conference_name", "")) or ""
             att_name = (att.attendee_name if hasattr(att, "attendee_name") else att.get("attendee_name", "")) or ""
+            if not conf_name.strip() or not att_name.strip() or att_name.strip().lower() == "not publicly available":
+                skipped_count += 1
+                continue
             key = (conf_name.strip().lower(), att_name.strip().lower())
             if key in existing_keys:
                 skipped_count += 1
@@ -613,20 +690,36 @@ class ExcelManager:
             else:
                 coll_date = _dt_date.today().isoformat()
 
-            ws.append([
+            prof_email = (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or ""
+            outreach_tail = (
+                cached_outreach_by_key.get(key)
+                or (cached_outreach_by_email.get(prof_email.strip().lower()) if prof_email else None)
+                or ["", "", "", "", "", ""]
+            )
+
+            row_vals = [
                 conf_name,
                 conf_date,
                 att_name,
                 (att.job_title if hasattr(att, "job_title") else att.get("job_title", "")) or "",
                 (att.company_name if hasattr(att, "company_name") else att.get("company_name", "")) or "",
-                (att.professional_email if hasattr(att, "professional_email") else att.get("professional_email", "")) or "",
+                prof_email,
                 (att.personal_linkedin_url if hasattr(att, "personal_linkedin_url") else att.get("personal_linkedin_url", "")) or "",
                 (att.source_url if hasattr(att, "source_url") else att.get("source_url", "")) or "",
                 coll_date,
                 (att.email_status if hasattr(att, "email_status") else att.get("email_status", "Not Found")) or "Not Found"
-            ])
+            ] + list(outreach_tail[:6])
+            ws.append(row_vals)
             existing_keys.add(key)
             added_count += 1
+
+        if replace_all and cached_real_rows:
+            for hist_row in cached_real_rows:
+                h_key = (str(hist_row[0] or "").strip().lower(), str(hist_row[2] or "").strip().lower())
+                if h_key not in existing_keys:
+                    ws.append(hist_row)
+                    existing_keys.add(h_key)
+                    added_count += 1
 
         self._safe_save(wb)
         logger.info(f"✅ Local Excel weekly_attendees sync: {added_count} appended, {skipped_count} skipped/duplicate.")
@@ -639,11 +732,7 @@ class ExcelManager:
     ) -> Dict[str, Any]:
         """
         Appends or refreshes weekly exhibitors in the 'weekly_exhibitors' sheet in the local Excel workbook.
-        Headers: Conference Name, Conference Date, Exhibitor Company Name, Company Website,
-                 Exhibitor Category / Industry, Company Description, Exhibitor Booth Number,
-                 Contact Person, Contact Person Designation, Professional Email,
-                 LinkedIn Company URL, Contact Person LinkedIn URL, Source URL, Collection Date.
-        Never overwrites or disturbs existing conference, speaker, or attendee records.
+        Preserves all 21 columns (including cols 16-21 outreach/reply tracking) and historical real records.
         """
         if not exhibitors and not replace_all:
             return {"status": "skipped", "inserted_count": 0}
@@ -656,20 +745,51 @@ class ExcelManager:
             "Conference Name", "Conference Date", "Exhibitor Company Name", "Company Website",
             "Exhibitor Category / Industry", "Company Description", "Exhibitor Booth Number",
             "Contact Person", "Contact Person Designation", "Professional Email",
-            "LinkedIn Company URL", "Contact Person LinkedIn URL", "Source URL", "Collection Date", "Email Status"
+            "LinkedIn Company URL", "Contact Person LinkedIn URL", "Source URL", "Collection Date", "Email Status",
+            "outreach status", "reply status", "reply sentiment", "received reply", "send message", "thread id"
         ]
 
-        if sheet_name not in wb.sheetnames:
-            ws = wb.create_sheet(sheet_name)
-            ws.append(cols)
-            self._apply_header_styles(ws)
-        else:
-            ws = wb[sheet_name]
+        cached_outreach_by_key: Dict[tuple, List[Any]] = {}
+        cached_outreach_by_email: Dict[str, List[Any]] = {}
+        cached_real_rows: List[List[Any]] = []
+        existing_headers: List[str] = list(cols)
+
+        if sheet_name in wb.sheetnames:
+            ws_old = wb[sheet_name]
+            old_rows = list(ws_old.iter_rows(values_only=True))
+            if old_rows:
+                raw_hdr = [str(h or "") for h in old_rows[0]]
+                if len(raw_hdr) >= 21:
+                    existing_headers = raw_hdr[:21]
+                for r in old_rows[1:]:
+                    if not r or not any(r):
+                        continue
+                    r_list = list(r)
+                    while len(r_list) < len(existing_headers):
+                        r_list.append("")
+                    c_name = str(r_list[0] or "").strip()
+                    comp_n = str(r_list[2] or "").strip()
+                    if not c_name or not comp_n or comp_n.lower() == "not publicly available":
+                        continue
+                    tail = list(r_list[15:21])
+                    while len(tail) < 6:
+                        tail.append("")
+                    cached_outreach_by_key[(c_name.lower(), comp_n.lower())] = tail
+                    em_v = str(r_list[9] or "").strip().lower()
+                    if em_v and "@" in em_v:
+                        cached_outreach_by_email[em_v] = tail
+                    cached_real_rows.append(r_list[:len(existing_headers)])
             if replace_all:
-                wb.remove(ws)
+                wb.remove(ws_old)
                 ws = wb.create_sheet(sheet_name)
-                ws.append(cols)
+                ws.append(existing_headers)
                 self._apply_header_styles(ws)
+            else:
+                ws = ws_old
+        else:
+            ws = wb.create_sheet(sheet_name)
+            ws.append(existing_headers)
+            self._apply_header_styles(ws)
 
         existing_keys = set()
         for row in ws.iter_rows(min_row=2, max_col=3, values_only=True):
@@ -683,6 +803,9 @@ class ExcelManager:
         for exh in exhibitors:
             conf_name = (exh.conference_name if hasattr(exh, "conference_name") else exh.get("conference_name", "")) or ""
             comp_name = (exh.company_name if hasattr(exh, "company_name") else exh.get("company_name", "")) or ""
+            if not conf_name.strip() or not comp_name.strip() or comp_name.strip().lower() == "not publicly available":
+                skipped_count += 1
+                continue
             key = (conf_name.strip().lower(), comp_name.strip().lower())
             if key in existing_keys:
                 skipped_count += 1
@@ -702,7 +825,14 @@ class ExcelManager:
             else:
                 coll_date = _dt_date.today().isoformat()
 
-            ws.append([
+            prof_email = (exh.professional_email if hasattr(exh, "professional_email") else exh.get("professional_email", "")) or ""
+            outreach_tail = (
+                cached_outreach_by_key.get(key)
+                or (cached_outreach_by_email.get(prof_email.strip().lower()) if prof_email else None)
+                or ["", "", "", "", "", ""]
+            )
+
+            row_vals = [
                 conf_name,
                 conf_date,
                 comp_name,
@@ -712,15 +842,24 @@ class ExcelManager:
                 (exh.booth_number if hasattr(exh, "booth_number") else exh.get("booth_number", "")) or "",
                 (exh.contact_person if hasattr(exh, "contact_person") else exh.get("contact_person", "")) or "",
                 (exh.contact_designation if hasattr(exh, "contact_designation") else exh.get("contact_designation", "")) or "",
-                (exh.professional_email if hasattr(exh, "professional_email") else exh.get("professional_email", "")) or "",
+                prof_email,
                 (exh.company_linkedin_url if hasattr(exh, "company_linkedin_url") else exh.get("company_linkedin_url", "")) or "",
                 (exh.contact_person_linkedin_url if hasattr(exh, "contact_person_linkedin_url") else exh.get("contact_person_linkedin_url", "")) or "",
                 (exh.source_url if hasattr(exh, "source_url") else exh.get("source_url", "")) or "",
                 coll_date,
                 (exh.email_status if hasattr(exh, "email_status") else exh.get("email_status", "Not Found")) or "Not Found"
-            ])
+            ] + list(outreach_tail[:6])
+            ws.append(row_vals)
             existing_keys.add(key)
             added_count += 1
+
+        if replace_all and cached_real_rows:
+            for hist_row in cached_real_rows:
+                h_key = (str(hist_row[0] or "").strip().lower(), str(hist_row[2] or "").strip().lower())
+                if h_key not in existing_keys:
+                    ws.append(hist_row)
+                    existing_keys.add(h_key)
+                    added_count += 1
 
         self._safe_save(wb)
         logger.info(f"✅ Local Excel weekly_exhibitors sync: {added_count} appended, {skipped_count} skipped/duplicate.")
@@ -871,10 +1010,123 @@ class ExcelManager:
             result[s] = pd.read_excel(xls, sheet_name=s).fillna("").to_dict(orient="records")
         return result
 
+    @staticmethod
+    def _union_merge_lead_rows(
+        existing_rows: List[List[Any]],
+        incoming_rows: List[List[Any]],
+        headers: List[str],
+        default_status: str = "Pending",
+    ) -> List[List[Any]]:
+        """
+        Union-merges existing historical lead rows with newly scored incoming rows
+        using lowercase Professional_Email (or Company+Contact+Conference fallback),
+        preserving outreach tracking states with precedence replied > bounced > sent > sending > failed > pending.
+        Sorts descending by Overall_Score and reassigns Rank 1..N.
+        """
+        cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
+        em_col = cur_h_map.get("professionalemail", 10)
+        comp_col = cur_h_map.get("companyname", 3)
+        name_col = cur_h_map.get("contactname", 8)
+        conf_col = cur_h_map.get("conferencename", 5)
+        score_col = cur_h_map.get("overallscore", 1)
+        ost_col = cur_h_map.get("outreachstatus", 16)
+        rep_col = cur_h_map.get("replystatus", 17)
+        rec_col = cur_h_map.get("receivedreply", 18)
+        sent_col = cur_h_map.get("replysentiment", 19)
+        th_col = cur_h_map.get("threadid", 20)
+        snd_col = cur_h_map.get("sendmessage", 21)
+
+        precedence = {
+            "replied": 5,
+            "bounced": 4,
+            "do_not_contact": 4,
+            "sent": 3,
+            "sending": 2,
+            "failed": 1,
+            "pending": 0,
+            "disqualified": 0,
+            "": -1,
+        }
+
+        def _row_key(row_vals: List[Any]) -> str:
+            em = str(row_vals[em_col] or "").strip().lower()
+            if em and "@" in em:
+                return f"em:{em}"
+            comp = str(row_vals[comp_col] or "").strip().lower()
+            name = str(row_vals[name_col] or "").strip().lower()
+            conf = str(row_vals[conf_col] or "").strip().lower()
+            return f"alt:{comp}|{name}|{conf}"
+
+        merged_map: Dict[str, List[Any]] = {}
+        order_keys: List[str] = []
+
+        for r in existing_rows:
+            padded = list(r)
+            while len(padded) < len(headers):
+                padded.append("")
+            padded = padded[:len(headers)]
+            if not any(padded[1:]):
+                continue
+            k = _row_key(padded)
+            if not k or k == "alt:||":
+                continue
+            if k not in merged_map:
+                merged_map[k] = padded
+                order_keys.append(k)
+
+        for r in incoming_rows:
+            padded = list(r)
+            while len(padded) < len(headers):
+                padded.append("")
+            padded = padded[:len(headers)]
+            k = _row_key(padded)
+            if not k or k == "alt:||":
+                continue
+
+            if k not in merged_map:
+                merged_map[k] = padded
+                order_keys.append(k)
+            else:
+                prev = merged_map[k]
+                # Keep non-empty profile fields, preferring incoming updates when present
+                for idx in range(len(headers)):
+                    if idx in (ost_col, rep_col, rec_col, sent_col, th_col, snd_col):
+                        continue
+                    if (padded[idx] is None or str(padded[idx]).strip() == "") and prev[idx] not in (None, ""):
+                        padded[idx] = prev[idx]
+
+                # Merge outreach tracking preserving higher precedence
+                prev_st = str(prev[ost_col] or "").strip()
+                new_st = str(padded[ost_col] or "").strip()
+                if precedence.get(prev_st.lower(), 0) >= precedence.get(new_st.lower(), 0):
+                    if prev_st:
+                        padded[ost_col] = prev_st
+                if not padded[ost_col]:
+                    padded[ost_col] = default_status
+
+                for track_idx in (rep_col, rec_col, sent_col, th_col, snd_col):
+                    if str(prev[track_idx] or "").strip() and not str(padded[track_idx] or "").strip():
+                        padded[track_idx] = prev[track_idx]
+
+                merged_map[k] = padded
+
+        merged_list = [merged_map[k] for k in order_keys]
+
+        def _score_val(row_vals: List[Any]) -> float:
+            try:
+                return float(row_vals[score_col] or 0.0)
+            except (ValueError, TypeError):
+                return 0.0
+
+        merged_list.sort(key=lambda row_vals: (-_score_val(row_vals), str(row_vals[comp_col] or "").lower()))
+        for rank_idx, row_vals in enumerate(merged_list, 1):
+            row_vals[0] = rank_idx
+        return merged_list
+
     def sync_qualified_leads_to_excel(self, qualified_rows: List[List[Any]], headers: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Synchronizes qualified leads (score > 50) with 6 outreach tracking columns to 'Qualified Leads' worksheet in Local Excel.
-        Preserves existing outreach tracking states across syncs.
+        Union-merges incoming rows with existing historical rows and preserves all outreach tracking states.
         """
         self._ensure_file_exists()
         wb = load_workbook(self.file_path)
@@ -892,76 +1144,45 @@ class ExcelManager:
                 "Reply Sentiment", "Thread ID", "Send Message"
             ]
 
-        # Read existing outreach history if sheet exists to avoid overwriting sent/replied statuses
-        existing_history: Dict[str, Dict[str, Any]] = {}
+        existing_rows_aligned: List[List[Any]] = []
         if sheet_name in wb.sheetnames:
             ws_exist = wb[sheet_name]
-            h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "") for cell in ws_exist[1]]
+            h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "").replace("replay", "reply") for cell in ws_exist[1]]
             h_map = {name: idx for idx, name in enumerate(h_row)}
-            em_idx = h_map.get("professionalemail") or h_map.get("email")
-            ost_idx = h_map.get("outreachstatus")
-            rep_idx = h_map.get("replystatus") or h_map.get("replaystatus")
-            rec_idx = h_map.get("receivedreply") or h_map.get("receivedreplay")
-            sent_idx = h_map.get("replysentiment") or h_map.get("sentiment")
-            th_idx = h_map.get("threadid")
-            snd_idx = h_map.get("sendmessage")
+            cur_norm_headers = [h.lower().replace(" ", "").replace("_", "") for h in headers]
 
-            if em_idx is not None:
-                for r in range(2, ws_exist.max_row + 1):
-                    em_val = str(ws_exist.cell(row=r, column=em_idx + 1).value or "").strip().lower()
-                    if em_val and "@" in em_val:
-                        existing_history[em_val] = {
-                            "outreach_status": ws_exist.cell(row=r, column=ost_idx + 1).value if ost_idx is not None else "",
-                            "reply_status": ws_exist.cell(row=r, column=rep_idx + 1).value if rep_idx is not None else "",
-                            "received_reply": ws_exist.cell(row=r, column=rec_idx + 1).value if rec_idx is not None else "",
-                            "reply_sentiment": ws_exist.cell(row=r, column=sent_idx + 1).value if sent_idx is not None else "",
-                            "thread_id": ws_exist.cell(row=r, column=th_idx + 1).value if th_idx is not None else "",
-                            "send_message": ws_exist.cell(row=r, column=snd_idx + 1).value if snd_idx is not None else ""
-                        }
+            for r in range(2, ws_exist.max_row + 1):
+                raw_vals = [ws_exist.cell(row=r, column=c).value for c in range(1, ws_exist.max_column + 1)]
+                if not any(raw_vals):
+                    continue
+                aligned = []
+                for nh in cur_norm_headers:
+                    src_idx = h_map.get(nh)
+                    if src_idx is None and nh == "professionalemail":
+                        src_idx = h_map.get("email")
+                    elif src_idx is None and nh == "contactname":
+                        src_idx = h_map.get("name")
+                    elif src_idx is None and nh == "replysentiment":
+                        src_idx = h_map.get("sentiment")
+                    aligned.append(raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else "")
+                existing_rows_aligned.append(aligned)
             del wb[sheet_name]
 
+        merged_rows = self._union_merge_lead_rows(existing_rows_aligned, qualified_rows, headers, default_status="Pending")
+
         ws = wb.create_sheet(title=sheet_name)
-        # Write Header
         for col_idx, h in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_idx, value=h)
             cell.font = Font(name="Calibri", size=11, bold=True, color="1B365D")
             cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Map header indices
-        cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
-        em_col_idx = cur_h_map.get("professionalemail", 10)
-        ost_col_idx = cur_h_map.get("outreachstatus", 16)
-        rep_col_idx = cur_h_map.get("replystatus", 17)
-        rec_col_idx = cur_h_map.get("receivedreply", 18)
-        sent_col_idx = cur_h_map.get("replysentiment", 19)
-        th_col_idx = cur_h_map.get("threadid", 20)
-        snd_col_idx = cur_h_map.get("sendmessage", 21)
-
-        for row_idx, row_data in enumerate(qualified_rows, 2):
-            padded = list(row_data)
-            while len(padded) < len(headers):
-                padded.append("")
-
-            # Restore existing outreach data if previously tracked
-            email_val = str(padded[em_col_idx] or "").strip().lower()
-            if email_val in existing_history:
-                hist = existing_history[email_val]
-                if hist.get("outreach_status"):
-                    padded[ost_col_idx] = hist["outreach_status"]
-                if hist.get("reply_status"):
-                    padded[rep_col_idx] = hist["reply_status"]
-                if hist.get("received_reply"):
-                    padded[rec_col_idx] = hist["received_reply"]
-                if hist.get("reply_sentiment"):
-                    padded[sent_col_idx] = hist["reply_sentiment"]
-                if hist.get("thread_id"):
-                    padded[th_col_idx] = hist["thread_id"]
-                if hist.get("send_message"):
-                    padded[snd_col_idx] = hist["send_message"]
-
+        for row_idx, padded in enumerate(merged_rows, 2):
             qual_val = str(padded[2] or "").upper()
-            score_val = float(padded[1] or 0)
+            try:
+                score_val = float(padded[1] or 0)
+            except (ValueError, TypeError):
+                score_val = 0.0
             fill_color = "D9EAD3" if (qual_val == "HIGH_MATCH" or score_val >= 75.0) else "FFF2CC"
             row_fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
 
@@ -971,8 +1192,8 @@ class ExcelManager:
                 cell.font = Font(name="Calibri", size=10)
 
         self._safe_save(wb)
-        logger.info(f"✅ Local Excel: Successfully synced {len(qualified_rows)} leads to '{sheet_name}'.")
-        return {"status": "success", "count": len(qualified_rows)}
+        logger.info(f"✅ Local Excel: Successfully union-synced {len(merged_rows)} qualified leads ({len(qualified_rows)} incoming) to '{sheet_name}'.")
+        return {"status": "success", "count": len(merged_rows)}
 
     def update_qualified_leads_row_in_excel(
         self,
@@ -1033,7 +1254,7 @@ class ExcelManager:
     def sync_non_qualified_leads_to_excel(self, non_qualified_rows: List[List[Any]], headers: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Synchronizes non-qualified leads (score < 50) with 6 outreach tracking columns to 'Non -Qualified Leads' worksheet in Local Excel.
-        Preserves existing outreach tracking states across syncs.
+        Union-merges incoming rows with existing historical rows and preserves all outreach tracking states.
         """
         self._ensure_file_exists()
         wb = load_workbook(self.file_path)
@@ -1051,7 +1272,7 @@ class ExcelManager:
                 "Reply Sentiment", "Thread ID", "Send Message"
             ]
 
-        existing_history: Dict[str, Dict[str, Any]] = {}
+        existing_rows_aligned: List[List[Any]] = []
         target_ws_name = None
         for s in [sheet_name, "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:
             if s in wb.sheetnames:
@@ -1060,78 +1281,47 @@ class ExcelManager:
 
         if target_ws_name and target_ws_name in wb.sheetnames:
             ws_exist = wb[target_ws_name]
-            h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "") for cell in ws_exist[1]]
+            h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "").replace("replay", "reply") for cell in ws_exist[1]]
             h_map = {name: idx for idx, name in enumerate(h_row)}
-            em_idx = h_map.get("professionalemail") or h_map.get("email")
-            ost_idx = h_map.get("outreachstatus")
-            rep_idx = h_map.get("replystatus") or h_map.get("replaystatus")
-            rec_idx = h_map.get("receivedreply") or h_map.get("receivedreplay")
-            sent_idx = h_map.get("replysentiment") or h_map.get("sentiment")
-            th_idx = h_map.get("threadid")
-            snd_idx = h_map.get("sendmessage")
+            cur_norm_headers = [h.lower().replace(" ", "").replace("_", "") for h in headers]
 
-            if em_idx is not None:
-                for r in range(2, ws_exist.max_row + 1):
-                    em_val = str(ws_exist.cell(row=r, column=em_idx + 1).value or "").strip().lower()
-                    if em_val and "@" in em_val:
-                        existing_history[em_val] = {
-                            "outreach_status": ws_exist.cell(row=r, column=ost_idx + 1).value if ost_idx is not None else "",
-                            "reply_status": ws_exist.cell(row=r, column=rep_idx + 1).value if rep_idx is not None else "",
-                            "received_reply": ws_exist.cell(row=r, column=rec_idx + 1).value if rec_idx is not None else "",
-                            "reply_sentiment": ws_exist.cell(row=r, column=sent_idx + 1).value if sent_idx is not None else "",
-                            "thread_id": ws_exist.cell(row=r, column=th_idx + 1).value if th_idx is not None else "",
-                            "send_message": ws_exist.cell(row=r, column=snd_idx + 1).value if snd_idx is not None else ""
-                        }
+            for r in range(2, ws_exist.max_row + 1):
+                raw_vals = [ws_exist.cell(row=r, column=c).value for c in range(1, ws_exist.max_column + 1)]
+                if not any(raw_vals):
+                    continue
+                aligned = []
+                for nh in cur_norm_headers:
+                    src_idx = h_map.get(nh)
+                    if src_idx is None and nh == "professionalemail":
+                        src_idx = h_map.get("email")
+                    elif src_idx is None and nh == "contactname":
+                        src_idx = h_map.get("name")
+                    elif src_idx is None and nh == "replysentiment":
+                        src_idx = h_map.get("sentiment")
+                    aligned.append(raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else "")
+                existing_rows_aligned.append(aligned)
             del wb[target_ws_name]
 
+        merged_rows = self._union_merge_lead_rows(existing_rows_aligned, non_qualified_rows, headers, default_status="Disqualified")
+
         ws = wb.create_sheet(title=sheet_name)
-        # Write Header
         for col_idx, h in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_idx, value=h)
             cell.font = Font(name="Calibri", size=11, bold=True, color="5B2C05")
             cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
-        em_col_idx = cur_h_map.get("professionalemail", 10)
-        ost_col_idx = cur_h_map.get("outreachstatus", 16)
-        rep_col_idx = cur_h_map.get("replystatus", 17)
-        rec_col_idx = cur_h_map.get("receivedreply", 18)
-        sent_col_idx = cur_h_map.get("replysentiment", 19)
-        th_col_idx = cur_h_map.get("threadid", 20)
-        snd_col_idx = cur_h_map.get("sendmessage", 21)
-
         row_fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
 
-        for row_idx, row_data in enumerate(non_qualified_rows, 2):
-            padded = list(row_data)
-            while len(padded) < len(headers):
-                padded.append("")
-
-            email_val = str(padded[em_col_idx] or "").strip().lower()
-            if email_val in existing_history:
-                hist = existing_history[email_val]
-                if hist.get("outreach_status"):
-                    padded[ost_col_idx] = hist["outreach_status"]
-                if hist.get("reply_status"):
-                    padded[rep_col_idx] = hist["reply_status"]
-                if hist.get("received_reply"):
-                    padded[rec_col_idx] = hist["received_reply"]
-                if hist.get("reply_sentiment"):
-                    padded[sent_col_idx] = hist["reply_sentiment"]
-                if hist.get("thread_id"):
-                    padded[th_col_idx] = hist["thread_id"]
-                if hist.get("send_message"):
-                    padded[snd_col_idx] = hist["send_message"]
-
+        for row_idx, padded in enumerate(merged_rows, 2):
             for col_idx, val in enumerate(padded[:len(headers)], 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=val)
                 cell.fill = row_fill
                 cell.font = Font(name="Calibri", size=10)
 
         self._safe_save(wb)
-        logger.info(f"✅ Local Excel: Successfully synced {len(non_qualified_rows)} leads to '{sheet_name}'.")
-        return {"status": "success", "count": len(non_qualified_rows)}
+        logger.info(f"✅ Local Excel: Successfully union-synced {len(merged_rows)} non-qualified leads ({len(non_qualified_rows)} incoming) to '{sheet_name}'.")
+        return {"status": "success", "count": len(merged_rows)}
 
     def update_non_qualified_leads_row_in_excel(
         self,
