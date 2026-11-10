@@ -175,6 +175,44 @@ def weekly_non_qualified_scheduled_send_job():
             svc.close()
 
 
+def reporting_live_refresh_job():
+    """
+    Isolated 24/7 Automated Reporting Sync Job:
+    Syncs Outlook mailbox telemetry, PostgreSQL, Excel sheets, and outreach_state.json
+    every 5 minutes to keep current-week analytics and downloadable latest reports fresh
+    without ever modifying or interrupting existing workflows or overwriting sealed archives.
+    """
+    svc = None
+    try:
+        from ..services.reporting_service import ReportingService
+        svc = ReportingService()
+        svc.ensure_weekly_archives_and_refresh(refresh_graph=True, force_export=False)
+    except Exception as e:
+        logger.warning(f"⚠️ [Reporting 24/7 Sync] Refresh notice: {e}")
+    finally:
+        if svc:
+            svc.close()
+
+
+def weekly_report_generation_job():
+    """
+    Isolated Automated Weekly Report Generation Job:
+    Runs automatically every Sunday at 00:15 to seal the completed Sunday–Saturday week
+    into an immutable versioned snapshot (.xlsx, .pdf, and PostgreSQL archive) without overwriting past reports.
+    """
+    svc = None
+    try:
+        from ..services.reporting_service import ReportingService
+        svc = ReportingService()
+        res = svc.ensure_weekly_archives_and_refresh(refresh_graph=True, force_export=False)
+        logger.info(f"📊 [Weekly Report Archiver] Automated weekly report check completed: {res.get('weeks_processed')} weeks processed.")
+    except Exception as e:
+        logger.error(f"❌ [Weekly Report Archiver] Error in automated weekly report job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
 def start_scheduler():
     """Starts the 24/7 background scheduler to run scraping automatically every hour."""
     if not scheduler.running:
@@ -264,6 +302,27 @@ def start_scheduler():
             name=f"Scheduled Non-Qualified Outreach Sender ({nq_outreach_day.upper()} {nq_send_time_str})",
             replace_existing=True
         )
+
+        # 7. Isolated 24/7 Automated Reporting Refresh (every 5 minutes) & Weekly Archive Seal (every Sunday 00:15)
+        try:
+            scheduler.add_job(
+                reporting_live_refresh_job,
+                trigger=IntervalTrigger(minutes=5),
+                id="reporting_live_refresh_job",
+                name="24/7 Automated Reporting Telemetry Sync",
+                replace_existing=True,
+                next_run_time=datetime.now() + timedelta(seconds=20),
+            )
+            scheduler.add_job(
+                weekly_report_generation_job,
+                trigger=CronTrigger(day_of_week="sun", hour=0, minute=15, timezone=outreach_tz),
+                id="weekly_report_generation_job",
+                name=f"Automated Weekly Report Generation & Archival (SUN 00:15 {outreach_tz})",
+                replace_existing=True,
+            )
+            logger.info("✅ [Scheduler] 24/7 Automated Reporting refresh & weekly archive jobs scheduled.")
+        except Exception as _rpt_sched_err:
+            logger.warning(f"⚠️ [Scheduler] Could not schedule reporting jobs: {_rpt_sched_err}")
         
         scheduler.start()
         scheduler_state["is_running"] = True

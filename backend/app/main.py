@@ -22,6 +22,7 @@ from .tasks.celery_app import (
 )
 
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+from .routers.reporting_router import router as reporting_router
 
 
 
@@ -46,6 +47,11 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     init_db()
+    try:
+        from .services.reporting_service import ReportingService
+        ReportingService.ensure_initialized()
+    except Exception as _rpt_err:
+        logger.warning(f"[Startup] Reporting table init notice: {_rpt_err}")
     start_scheduler()
     db = SessionLocal()
     try:
@@ -888,6 +894,13 @@ def get_outreach_templates():
         "template_path": template_path,
         "status": "pending_user_approval"
     }
+
+
+# ==========================================
+# Automated Weekly Outreach & Conference Reporting System (24/7 Isolated Module)
+# ==========================================
+app.include_router(reporting_router)
+
 
 
 
