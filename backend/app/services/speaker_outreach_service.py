@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import WeeklySpeaker
+from ..models import WeeklyAttendee, WeeklyCompany, WeeklyExhibitor, WeeklySpeaker
 from .onedrive_excel_service import OneDriveExcelService
 
 logger = logging.getLogger("speaker_outreach")
@@ -54,17 +54,50 @@ def get_first_name(raw_name: str) -> str:
 class SafeDict(dict):
     def __missing__(self, key):
         clean_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
+        compact_key = clean_key.replace("_", "")
         if clean_key in self:
             return self[clean_key]
-        if clean_key in ("company", "company_name"):
+        if clean_key in ("company", "company_name") or compact_key in ("company", "companyname"):
             return self.get("company_name", "") or self.get("company", "")
-        if clean_key in ("first_name", "name"):
+        if clean_key in ("first_name", "name") or compact_key in ("firstname", "name"):
             return self.get("first_name", "") or self.get("name", "")
-        if clean_key in ("speaker_name", "attendee_name", "exhibitor_name", "full_name"):
+        if (
+            clean_key in ("speaker_name", "attendee_name", "exhibitor_name", "full_name")
+            or compact_key in ("speakername", "attendeename", "exhibitorname", "fullname")
+        ):
             return self.get("full_name", "") or self.get("speaker_name", "") or self.get("name", "")
-        if clean_key in ("conference", "conference_name"):
+        if clean_key in ("conference", "conference_name") or compact_key in ("conference", "conferencename"):
             return self.get("conference_name", "")
+        if clean_key in ("job_title", "title", "role") or compact_key in ("jobtitle", "title", "role"):
+            return self.get("job_title", "")
+        if clean_key in ("industry", "primary_industry") or compact_key in ("industry", "primaryindustry"):
+            return self.get("industry", "")
         return ""
+
+
+class StrictSafeDict(SafeDict):
+    """Strict placeholder dictionary that preserves unknown placeholders so validation can block sending."""
+    def __missing__(self, key):
+        clean_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
+        compact_key = clean_key.replace("_", "")
+        if clean_key in self:
+            return self[clean_key]
+        if clean_key in ("company", "company_name") or compact_key in ("company", "companyname"):
+            return self.get("company_name", "") or self.get("company", "")
+        if clean_key in ("first_name", "name") or compact_key in ("firstname", "name"):
+            return self.get("first_name", "") or self.get("name", "")
+        if (
+            clean_key in ("speaker_name", "attendee_name", "exhibitor_name", "full_name")
+            or compact_key in ("speakername", "attendeename", "exhibitorname", "fullname")
+        ):
+            return self.get("full_name", "") or self.get("speaker_name", "") or self.get("name", "")
+        if clean_key in ("conference", "conference_name") or compact_key in ("conference", "conferencename"):
+            return self.get("conference_name", "")
+        if clean_key in ("job_title", "title", "role") or compact_key in ("jobtitle", "title", "role"):
+            return self.get("job_title", "")
+        if clean_key in ("industry", "primary_industry") or compact_key in ("industry", "primaryindustry"):
+            return self.get("industry", "")
+        return f"{{{key}}}"
 
 
 # ==============================================================================
@@ -512,108 +545,331 @@ def get_sent_today(state: Dict[str, Any]) -> int:
     )
 
 
-def normalize_category(category: Optional[str]) -> str:
-    """Normalizes category/contact_type string to 'speaker', 'attendee', or 'exhibitor'."""
-    clean = str(category or "").strip().lower()
-    if "attendee" in clean:
-        return "attendee"
-    if "exhibitor" in clean:
-        return "exhibitor"
-    return "speaker"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_TEMPLATES_DIR = PROJECT_ROOT / "templates"
+DEFAULT_OUTREACH_SUBJECT = "Akash from Adople AI – Referred by {Conference Name}"
+
+INDUSTRY_TEMPLATE_FILES: Dict[str, str] = {
+    "ai": "ai_template.txt",
+    "healthcare": "healthcare_template.txt",
+    "finance": "finance_template.txt",
+}
+
+_INDUSTRY_EXACT_MAP: Dict[str, str] = {
+    # Healthcare Industry (checked with exact priority over AI for "Healthcare AI")
+    "healthcare": "healthcare",
+    "health care": "healthcare",
+    "healthcare technology": "healthcare",
+    "healthcare tech": "healthcare",
+    "healthtech": "healthcare",
+    "health tech": "healthcare",
+    "healthcare ai": "healthcare",
+    "healthcare services": "healthcare",
+    "healthcare solutions": "healthcare",
+    # Financial Services Industry
+    "finance": "finance",
+    "financial": "finance",
+    "financial services": "finance",
+    "financial technology": "finance",
+    "financial tech": "finance",
+    "fintech": "finance",
+    "fin tech": "finance",
+    "banking": "finance",
+    "financial solutions": "finance",
+    # AI Industry
+    "ai": "ai",
+    "ai industry": "ai",
+    "enterprise ai": "ai",
+    "artificial intelligence": "ai",
+    "ai solutions": "ai",
+    "ai solution": "ai",
+    "ai technology": "ai",
+    "ai technologies": "ai",
+    "ai tech": "ai",
+    "ai automation": "ai",
+}
 
 
-def parse_template_content(content: str) -> Dict[str, Tuple[str, str]]:
+def resolve_templates_dir() -> Path:
+    """Locates the existing project templates/ directory without creating or overwriting files."""
+    candidates = [
+        Path(getattr(settings, "OUTREACH_TEMPLATES_DIR", "") or "") if getattr(settings, "OUTREACH_TEMPLATES_DIR", "") else None,
+        DEFAULT_TEMPLATES_DIR,
+        Path("templates"),
+    ]
+    for cand in candidates:
+        if cand and str(cand) and cand.is_dir():
+            return cand
+    return DEFAULT_TEMPLATES_DIR
+
+
+def normalize_industry_value(raw_industry: Optional[str]) -> str:
+    """Normalizes industry labels (case, punctuation, dashes, slashes, and whitespace)."""
+    if not raw_industry:
+        return ""
+    text = str(raw_industry).strip().lower()
+    text = re.sub(r'[–—\-_/&|,.:;()]+', ' ', text)
+    return " ".join(text.split())
+
+
+def _match_single_industry_value(raw_val: Optional[str]) -> Optional[str]:
+    """Maps a single normalized industry string strictly to 'ai', 'healthcare', or 'finance', else None."""
+    norm = normalize_industry_value(raw_val)
+    if not norm:
+        return None
+
+    if norm in _INDUSTRY_EXACT_MAP:
+        return _INDUSTRY_EXACT_MAP[norm]
+
+    # Check Healthcare first so compound labels like 'Healthcare AI' stay Healthcare
+    if re.search(
+        r'(?<!non[\s\-])\b(healthcare(?:\s+(?:technology|tech|ai|services|solutions))?|health\s+care(?:\s+(?:technology|ai|services|solutions))?|healthtech)\b',
+        norm,
+    ):
+        return "healthcare"
+
+    # Check Financial Services next
+    if re.search(
+        r'(?<!non[\s\-])\b(financial\s+(?:services|technology|tech|solutions|advisory|sector)|fintech|fin\s+tech|finance|banking)\b',
+        norm,
+    ):
+        return "finance"
+
+    # Check AI next with strict word boundaries (avoids substring hits inside e.g. 'retail')
+    if re.search(
+        r'(?<!non[\s\-])\b(enterprise\s+ai|artificial\s+intelligence|ai\s+(?:solutions?|technolog(?:y|ies)|tech|automation|services?)|ai)\b',
+        norm,
+    ):
+        return "ai"
+
+    return None
+
+
+def resolve_industry_key(
+    industry: Optional[str] = None,
+    primary_industry: Optional[str] = None
+) -> Tuple[Optional[str], str]:
     """
-    Parses multi-section template content into role-specific templates.
-    Expected sections in template.txt:
+    Resolves a lead's industry strictly into ('ai' | 'healthcare' | 'finance') without guessing.
+    - When 'industry' column is populated, validates it strictly (unsupported values like 'Medical' are NOT guessed).
+    - When 'industry' is blank/missing, checks 'primary_industry' against recognized variations.
+    Returns: (industry_key_or_None, reason_if_unmatched)
+    """
+    raw_ind = str(industry or "").strip()
+    raw_prim = str(primary_industry or "").strip()
+
+    if raw_ind:
+        matched = _match_single_industry_value(raw_ind)
+        if matched:
+            return matched, ""
+        return None, f"unsupported_industry:{raw_ind}"
+
+    if raw_prim:
+        matched = _match_single_industry_value(raw_prim)
+        if matched:
+            return matched, ""
+        return None, f"unsupported_primary_industry:{raw_prim}"
+
+    return None, "missing_industry"
+
+
+def resolve_industry_template_path(industry_key: str) -> Path:
+    """Returns the existing path inside templates/ for a normalized industry key."""
+    filename = INDUSTRY_TEMPLATE_FILES.get(industry_key)
+    if not filename:
+        raise ValueError(f"Unsupported industry key for template lookup: '{industry_key}'")
+    tpl_dir = resolve_templates_dir()
+    path = tpl_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"Required industry template file '{filename}' was not found at '{path}'")
+    return path
+
+
+def resolve_contact_type(category: Optional[str]) -> Optional[str]:
+    """
+    Strictly resolves contact type to 'speaker', 'attendee', or 'exhibitor'.
+    Returns None if missing or unsupported (never guesses a default role).
+    """
+    clean = str(category or "").strip().lower()
+    if not clean:
+        return None
+    if re.search(r'\battendees?\b', clean):
+        return "attendee"
+    if re.search(r'\bexhibitors?\b', clean):
+        return "exhibitor"
+    if re.search(r'\bspeakers?\b', clean):
+        return "speaker"
+    return None
+
+
+def normalize_category(category: Optional[str]) -> str:
+    """Normalizes category/contact_type string to 'speaker', 'attendee', or 'exhibitor' (legacy helper)."""
+    return resolve_contact_type(category) or "speaker"
+
+
+def parse_template_content(content: str, include_default: bool = True) -> Dict[str, Tuple[str, str]]:
+    """
+    Parses multi-section template content into role-specific templates ('speaker', 'attendee', 'exhibitor').
+    Supports both industry template headers:
+        1. AI – Speakers : Template
+        2. Healthcare Attendees : Template
+        3. Financial  – Exhibitors : Template
+    And legacy template.txt headers:
         Speakers templates :
-        Sub : ...
-        Hi {Name}, ...
-
         Attendees Templates :
-        Sub : ...
-        Hi {Name}, ...
-
         Exhibitors Template :
-        Sub : ...
-        Hi {Name}, ...
+    Supports explicit 'Sub:'/'Subject:' lines, unprefixed subject lines before the greeting ('Hi {Name},'),
+    or greeting-first blocks (falling back to DEFAULT_OUTREACH_SUBJECT).
     """
     section_pattern = re.compile(
-        r'(?im)^\s*(?:\[|\b)?(speaker|attendee|exhibitor)s?\s*(?:template|templates)?\s*(?:\])?\s*:\s*$'
+        r'(?im)^\s*(?:\[?\s*(?:(?:\d+[\.\)\s\-–—]+)?[^\n:\[\]]{0,60}?)?\b(speaker|attendee|exhibitor)s?\b\s*\]?\s*(?::\s*templates?\s*|(?:\s+templates?)?\s*:))\s*$'
     )
+    greeting_pattern = re.compile(r'(?i)^\s*(?:hi|hello|dear|greetings)\b')
     matches = list(section_pattern.finditer(content))
     templates: Dict[str, Tuple[str, str]] = {}
 
     def extract_subj_and_body(block: str) -> Tuple[str, str]:
-        # Strip trailing horizontal divider lines like --- or ===
-        block = re.sub(r'[\r\n]+\s*[-=]{3,}\s*$', '', block).strip()
         lines = block.splitlines()
+        # Drop leading/trailing blank lines and horizontal separator lines (--- / === / ___)
+        while lines and (not lines[0].strip() or re.match(r'^\s*[-=_]{5,}\s*$', lines[0])):
+            lines.pop(0)
+        while lines and (not lines[-1].strip() or re.match(r'^\s*[-=_]{5,}\s*$', lines[-1])):
+            lines.pop()
+
+        if not lines:
+            return "", ""
+
+        # Locate first non-empty line
+        first_idx = 0
+        while first_idx < len(lines) and not lines[first_idx].strip():
+            first_idx += 1
+        if first_idx >= len(lines):
+            return "", ""
+
+        first_line = lines[first_idx].strip()
         subj = ""
-        body_lines = []
-        in_body = False
-        for line in lines:
-            sub_m = re.match(r'(?i)^\s*(?:sub|subject)\s*:\s*(.+)$', line)
-            if sub_m and not in_body and not subj:
-                subj = sub_m.group(1).strip()
-            elif not in_body and not line.strip():
-                continue
+        body_start_idx = first_idx
+
+        sub_m = re.match(r'(?i)^\s*(?:sub|subject)\s*:\s*(.+)$', first_line)
+        if sub_m:
+            subj = sub_m.group(1).strip()
+            body_start_idx = first_idx + 1
+        elif greeting_pattern.match(first_line):
+            # Section begins straight at greeting (e.g., ai_template.txt)
+            subj = DEFAULT_OUTREACH_SUBJECT
+            body_start_idx = first_idx
+        else:
+            # Check if an unprefixed subject line precedes a greeting line (e.g., healthcare_template.txt / finance_template.txt)
+            next_idx = first_idx + 1
+            while next_idx < len(lines) and not lines[next_idx].strip():
+                next_idx += 1
+            if next_idx < len(lines) and (
+                greeting_pattern.match(lines[next_idx].strip())
+                or (
+                    len(first_line) <= 180
+                    and not first_line.endswith((".", "!", "?"))
+                    and next_idx > first_idx + 1
+                )
+            ):
+                subj = first_line
+                body_start_idx = next_idx
             else:
-                in_body = True
-                body_lines.append(line)
-        body = "\n".join(body_lines).strip()
+                subj = DEFAULT_OUTREACH_SUBJECT
+                body_start_idx = first_idx
+
+        while body_start_idx < len(lines) and not lines[body_start_idx].strip():
+            body_start_idx += 1
+
+        body = "\n".join(lines[body_start_idx:]).strip()
         if not subj:
-            subj = "Akash from Adople AI – Referred by {Conference Name}"
+            subj = DEFAULT_OUTREACH_SUBJECT
         return subj, body
 
     if not matches:
-        # Fallback for single-template files
         subj, body = extract_subj_and_body(content)
-        templates["default"] = (subj, body)
-        templates["speaker"] = (subj, body)
-        templates["attendee"] = (subj, body)
-        templates["exhibitor"] = (subj, body)
+        if include_default:
+            templates["default"] = (subj, body)
+            templates["speaker"] = (subj, body)
+            templates["attendee"] = (subj, body)
+            templates["exhibitor"] = (subj, body)
         return templates
 
     for i, match in enumerate(matches):
         role_raw = match.group(1).lower()
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
-        block = content[start:end].strip()
+        block = content[start:end]
         subj, body = extract_subj_and_body(block)
         templates[role_raw] = (subj, body)
 
-    if "speaker" in templates:
-        templates["default"] = templates["speaker"]
-    elif templates:
-        templates["default"] = next(iter(templates.values()))
+    if include_default:
+        if "speaker" in templates:
+            templates["default"] = templates["speaker"]
+        elif templates:
+            templates["default"] = next(iter(templates.values()))
 
     return templates
 
 
+def load_industry_template(industry_key: str, contact_type: str) -> Tuple[str, str, Path]:
+    """
+    Strictly reads the latest saved content from the matching industry TXT file in templates/
+    and extracts the exact section for the lead's contact type (Speaker, Attendee, or Exhibitor).
+    Never guesses missing files or sections and never caches stale disk content.
+    """
+    role = resolve_contact_type(contact_type)
+    if not role:
+        raise ValueError(f"Missing or unsupported contact type: '{contact_type}'")
+
+    file_path = resolve_industry_template_path(industry_key)
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if not content.strip():
+        raise ValueError(f"Template file '{file_path}' is empty.")
+
+    sections = parse_template_content(content, include_default=False)
+    if role not in sections:
+        raise ValueError(
+            f"Template section for '{role}' was not found in '{file_path.name}'."
+        )
+
+    subj, body = sections[role]
+    if not body or not body.strip():
+        raise ValueError(
+            f"Template section for '{role}' in '{file_path.name}' has an empty body."
+        )
+    if not subj or not subj.strip():
+        raise ValueError(
+            f"Template section for '{role}' in '{file_path.name}' has an empty subject."
+        )
+
+    return subj, body, file_path
+
+
 def load_templates(template_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
-    """Loads all role-specific templates from template.txt."""
+    """Loads all role-specific templates from legacy template.txt (read fresh from disk)."""
     path = template_path or getattr(settings, "OUTREACH_TEMPLATE_FILE", "template.txt")
     candidates = [
         path,
         "template.txt",
         "backend/app/templates/template.txt",
-        "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/template.txt"
+        str(PROJECT_ROOT / "template.txt"),
     ]
     for p in candidates:
-        if os.path.exists(p):
+        if p and os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                 if content:
-                    templates = parse_template_content(content)
+                    templates = parse_template_content(content, include_default=True)
                     if templates:
                         return templates
             except Exception as e:
                 logger.debug(f"Could not read template from {p}: {e}")
 
-    # Fallback template
     fallback = (
-        "Akash from Adople AI – Referred by {Conference Name}",
+        DEFAULT_OUTREACH_SUBJECT,
         "Hi {Name},\n\nI hope this finds you well. I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology."
     )
     return {
@@ -628,7 +884,103 @@ def load_template(template_path: Optional[str] = None, category: str = "Speaker"
     """Loads Subject and Body for a specific category (Speaker, Attendee, or Exhibitor)."""
     templates = load_templates(template_path)
     role = normalize_category(category)
-    return templates.get(role) or templates.get("default", ("Akash from Adople AI – Referred by {Conference Name}", "Hi {Name},"))
+    return templates.get(role) or templates.get("default", (DEFAULT_OUTREACH_SUBJECT, "Hi {Name},"))
+
+
+def render_template_placeholders(
+    subj_tmpl: str,
+    body_tmpl: str,
+    speaker_name: str,
+    job_title: str,
+    company: str,
+    conf_name: str,
+    pitch_hook: str = "",
+    industry: str = "",
+    strict: bool = True
+) -> Tuple[str, str]:
+    """Performs dynamic placeholder substitution and ensures zero unresolved placeholders remain."""
+    first_name = get_first_name(speaker_name)
+    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Akash")
+    sender_comp = getattr(settings, "OUTREACH_COMPANY", "Adople AI")
+
+    dict_cls = StrictSafeDict if strict else SafeDict
+    ctx = dict_cls({
+        "first_name": first_name,
+        "name": first_name,
+        "full_name": speaker_name or "there",
+        "speaker_name": speaker_name or "there",
+        "attendee_name": speaker_name or "there",
+        "exhibitor_name": speaker_name or "there",
+        "job_title": job_title or "Professional",
+        "title": job_title or "Professional",
+        "role": job_title or "Professional",
+        "company": company or "your organization",
+        "company_name": company or "your organization",
+        "conference": conf_name or "the conference",
+        "conference_name": conf_name or "the conference",
+        "industry": industry or "",
+        "pitch_hook": pitch_hook or "",
+        "sender": sender,
+        "sender_company": sender_comp,
+    })
+
+    rendered_subj = subj_tmpl.format_map(ctx)
+    rendered_body = body_tmpl.format_map(ctx)
+
+    if strict:
+        unresolved_subj = re.findall(r'\{[^{}]+\}', rendered_subj)
+        unresolved_body = re.findall(r'\{[^{}]+\}', rendered_body)
+        if unresolved_subj or unresolved_body or re.search(r'[{}]', rendered_subj + rendered_body):
+            bad = unresolved_subj + unresolved_body
+            raise ValueError(f"Unresolved placeholders remaining after rendering: {bad or 'stray braces'}")
+
+    return rendered_subj, rendered_body
+
+
+def build_industry_email_content(
+    speaker_name: str,
+    job_title: str,
+    company: str,
+    conf_name: str,
+    category: str,
+    industry: Optional[str] = None,
+    primary_industry: Optional[str] = None,
+    pitch_hook: str = ""
+) -> Tuple[str, str, Dict[str, str]]:
+    """
+    Strictly resolves industry -> templates/*.txt file and contact type -> section,
+    renders dynamic placeholders cleanly, and returns (subject, body, metadata).
+    """
+    role = resolve_contact_type(category)
+    if not role:
+        raise ValueError(f"Missing or unsupported contact type: '{category}'")
+
+    industry_key, ind_reason = resolve_industry_key(
+        industry=industry,
+        primary_industry=primary_industry
+    )
+    if not industry_key:
+        raise ValueError(ind_reason or "Missing or unsupported industry")
+
+    subj_tmpl, body_tmpl, tpl_path = load_industry_template(industry_key, role)
+    subj, body = render_template_placeholders(
+        subj_tmpl=subj_tmpl,
+        body_tmpl=body_tmpl,
+        speaker_name=speaker_name,
+        job_title=job_title,
+        company=company,
+        conf_name=conf_name,
+        pitch_hook=pitch_hook,
+        industry=industry or primary_industry or industry_key,
+        strict=True
+    )
+    meta = {
+        "industry_key": industry_key,
+        "contact_type": role,
+        "template_file": tpl_path.name,
+        "template_path": str(tpl_path),
+    }
+    return subj, body, meta
 
 
 def build_email_content(
@@ -638,27 +990,40 @@ def build_email_content(
     conf_name: str,
     pitch_hook: str = "",
     category: str = "Speaker",
-    template_path: Optional[str] = None
+    template_path: Optional[str] = None,
+    industry: Optional[str] = None,
+    primary_industry: Optional[str] = None
 ) -> Tuple[str, str]:
-    subj_tmpl, body_tmpl = load_template(template_path=template_path, category=category)
-    first_name = get_first_name(speaker_name)
-    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Akash")
-    sender_comp = getattr(settings, "OUTREACH_COMPANY", "Adople AI")
+    """
+    Generates personalized email subject and body.
+    When industry or primary_industry is provided (and no custom template_path override is given),
+    routes strictly through the industry-specific template files in templates/.
+    """
+    if not template_path and (industry is not None or primary_industry is not None):
+        subj, body, _ = build_industry_email_content(
+            speaker_name=speaker_name,
+            job_title=job_title,
+            company=company,
+            conf_name=conf_name,
+            category=category,
+            industry=industry,
+            primary_industry=primary_industry,
+            pitch_hook=pitch_hook,
+        )
+        return subj, body
 
-    ctx = SafeDict({
-        "first_name": first_name,
-        "name": first_name,
-        "full_name": speaker_name or "there",
-        "speaker_name": speaker_name or "there",
-        "job_title": job_title or "Professional",
-        "company": company or "your organization",
-        "company_name": company or "your organization",
-        "conference_name": conf_name or "the conference",
-        "pitch_hook": pitch_hook or "",
-        "sender": sender,
-        "sender_company": sender_comp
-    })
-    return subj_tmpl.format_map(ctx), body_tmpl.format_map(ctx)
+    subj_tmpl, body_tmpl = load_template(template_path=template_path, category=category)
+    return render_template_placeholders(
+        subj_tmpl=subj_tmpl,
+        body_tmpl=body_tmpl,
+        speaker_name=speaker_name,
+        job_title=job_title,
+        company=company,
+        conf_name=conf_name,
+        pitch_hook=pitch_hook,
+        industry=industry or primary_industry or "",
+        strict=False,
+    )
 
 
 def build_conversation_transcript_ms(messages: List[Dict[str, Any]], my_email: str, speaker_name: str) -> str:
@@ -791,6 +1156,7 @@ class SpeakerOutreachService:
         from ..storage.excel_manager import ExcelManager
         self.excel_mgr = ExcelManager()
         self.local_excel_path = Path("/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/data/excel/usa_conferences_published.xlsx")
+        self._industry_lookup_cache: Optional[Dict[str, Dict[str, Tuple[str, str]]]] = None
 
     def close(self):
         """Closes database session if owned by this service instance."""
@@ -813,11 +1179,12 @@ class SpeakerOutreachService:
         company_name: str = "Adople Test Co",
         conference_name: str = "AI Innovation Summit 2026",
         conference_id: str = "CONF-TEST-OUTREACH",
-        category: str = "Speaker"
+        category: str = "Speaker",
+        industry: Optional[str] = "AI"
     ) -> Dict[str, Any]:
         """
         Sends a single test outreach email to a specified personal email address:
-        - Renders email strictly using the role-specific pitch in template.txt.
+        - Renders email strictly using the industry & role-specific template in templates/ (or template.txt if industry is None).
         - Ensures an isolated test record in PostgreSQL and local/OneDrive Excel exists.
         - Dispatches via Microsoft Graph API (akash@adople.ai).
         - Tracks the conversation thread in outreach_state.json for reply monitoring.
@@ -832,7 +1199,8 @@ class SpeakerOutreachService:
             job_title="Keynote Speaker" if "speaker" in category.lower() else "Professional",
             company=company_name,
             conf_name=conference_name,
-            category=category
+            category=category,
+            industry=industry
         )
 
         logger.info(f"🧪 [Manual Test] Dispatching test outreach email to {recipient_email}...")
@@ -1081,8 +1449,9 @@ class SpeakerOutreachService:
                     continue
 
                 c_type_idx = col_map.get("contacttype")
-                cat_raw = str(vals[c_type_idx] or "Speaker").strip() if c_type_idx is not None and len(vals) > c_type_idx else "Speaker"
-                cat_clean = normalize_category(cat_raw).capitalize()
+                cat_raw = str(vals[c_type_idx] or "").strip() if c_type_idx is not None and len(vals) > c_type_idx else ""
+                resolved_role = resolve_contact_type(cat_raw)
+                cat_clean = resolved_role.capitalize() if resolved_role else ""
 
                 rank_idx = col_map.get("rank")
                 qual_idx = col_map.get("qualificationstatus")
@@ -1095,6 +1464,7 @@ class SpeakerOutreachService:
                 estat_idx = col_map.get("emailstatus")
                 li_idx = col_map.get("personallinkedinurl")
                 ind_idx = col_map.get("primaryindustry")
+                outreach_ind_idx = col_map.get("industry")
                 tier_idx = col_map.get("headcounttier")
 
                 ost_idx = col_map.get("outreachstatus")
@@ -1107,7 +1477,8 @@ class SpeakerOutreachService:
                 parsed.append({
                     "row_index": row_idx,
                     "category": cat_clean,
-                    "contact_type": f"Qualified {cat_clean}",
+                    "contact_type": f"Qualified {cat_clean}" if cat_clean else "",
+                    "contact_type_raw": cat_raw,
                     "rank": vals[rank_idx] if rank_idx is not None and len(vals) > rank_idx else 0,
                     "overall_score": score_val,
                     "qualification_status": str(vals[qual_idx] or "").strip() if qual_idx is not None and len(vals) > qual_idx else "MODERATE",
@@ -1120,6 +1491,7 @@ class SpeakerOutreachService:
                     "professional_email": email,
                     "email_status": str(vals[estat_idx] or "Verified").strip() if estat_idx is not None and len(vals) > estat_idx else "Verified",
                     "personal_linkedin_url": str(vals[li_idx] or "").strip() if li_idx is not None and len(vals) > li_idx else "",
+                    "industry": str(vals[outreach_ind_idx] or "").strip() if outreach_ind_idx is not None and len(vals) > outreach_ind_idx else "",
                     "primary_industry": str(vals[ind_idx] or "").strip() if ind_idx is not None and len(vals) > ind_idx else "",
                     "headcount_tier": str(vals[tier_idx] or "").strip() if tier_idx is not None and len(vals) > tier_idx else "",
                     "outreach_status": str(vals[ost_idx] or "Pending").strip() if ost_idx is not None and len(vals) > ost_idx else "Pending",
@@ -1200,8 +1572,9 @@ class SpeakerOutreachService:
                         score_val = 0.0
 
                 c_type_idx = col_map.get("contacttype")
-                cat_raw = str(vals[c_type_idx] or "Speaker").strip() if c_type_idx is not None and len(vals) > c_type_idx else "Speaker"
-                cat_clean = normalize_category(cat_raw).capitalize()
+                cat_raw = str(vals[c_type_idx] or "").strip() if c_type_idx is not None and len(vals) > c_type_idx else ""
+                resolved_role = resolve_contact_type(cat_raw)
+                cat_clean = resolved_role.capitalize() if resolved_role else ""
 
                 rank_idx = col_map.get("rank")
                 qual_idx = col_map.get("qualificationstatus")
@@ -1214,6 +1587,7 @@ class SpeakerOutreachService:
                 estat_idx = col_map.get("emailstatus")
                 li_idx = col_map.get("personallinkedinurl")
                 ind_idx = col_map.get("primaryindustry")
+                outreach_ind_idx = col_map.get("industry")
                 tier_idx = col_map.get("headcounttier")
 
                 ost_idx = col_map.get("outreachstatus")
@@ -1226,7 +1600,8 @@ class SpeakerOutreachService:
                 parsed.append({
                     "row_index": row_idx,
                     "category": cat_clean,
-                    "contact_type": f"Disqualified {cat_clean}",
+                    "contact_type": f"Disqualified {cat_clean}" if cat_clean else "",
+                    "contact_type_raw": cat_raw,
                     "rank": vals[rank_idx] if rank_idx is not None and len(vals) > rank_idx else 0,
                     "overall_score": score_val,
                     "qualification_status": str(vals[qual_idx] or "DISQUALIFIED").strip() if qual_idx is not None and len(vals) > qual_idx else "DISQUALIFIED",
@@ -1239,6 +1614,7 @@ class SpeakerOutreachService:
                     "professional_email": email,
                     "email_status": str(vals[estat_idx] or "Verified").strip() if estat_idx is not None and len(vals) > estat_idx else "Verified",
                     "personal_linkedin_url": str(vals[li_idx] or "").strip() if li_idx is not None and len(vals) > li_idx else "",
+                    "industry": str(vals[outreach_ind_idx] or "").strip() if outreach_ind_idx is not None and len(vals) > outreach_ind_idx else "",
                     "primary_industry": str(vals[ind_idx] or "").strip() if ind_idx is not None and len(vals) > ind_idx else "",
                     "headcount_tier": str(vals[tier_idx] or "").strip() if tier_idx is not None and len(vals) > tier_idx else "",
                     "outreach_status": str(vals[ost_idx] or "Disqualified").strip() if ost_idx is not None and len(vals) > ost_idx else "Disqualified",
@@ -1527,6 +1903,10 @@ class SpeakerOutreachService:
                     dom = str(vals[col_map.get("companydomain", 1)] or "").strip() if len(vals) > col_map.get("companydomain", 1) else ""
                     conf = str(vals[col_map.get("conferencename", 2)] or "").strip() if len(vals) > col_map.get("conferencename", 2) else ""
                     cid = str(vals[col_map.get("conferenceid", 3)] or "").strip() if len(vals) > col_map.get("conferenceid", 3) else ""
+                    ind_col = col_map.get("industry")
+                    prim_ind_col = col_map.get("primaryindustry")
+                    ind_val = str(vals[ind_col] or "").strip() if ind_col is not None and len(vals) > ind_col else ""
+                    prim_ind_val = str(vals[prim_ind_col] or "").strip() if prim_ind_col is not None and len(vals) > prim_ind_col else ""
 
                     categories = [
                         ("Speaker", "speakername", "speakerjobtitle", "speakerlinkedin", "speakerprofessionalemail", "speakeremailstatus", "speakeroutreachstatus", "speakerreplystatus", "speakerreceivedreply", "speakersentiment", "speakersentmessage", "speakerthreadid"),
@@ -1556,10 +1936,13 @@ class SpeakerOutreachService:
                                     "row_index": row_idx,
                                     "category": cat_name,
                                     "contact_type": f"Verified {cat_name}",
+                                    "contact_type_raw": cat_name,
                                     "company_name": comp,
                                     "company_domain": dom,
                                     "conference_name": conf,
                                     "conference_id": cid,
+                                    "industry": ind_val,
+                                    "primary_industry": prim_ind_val,
                                     "name": str(vals[n_col] or "").strip() if n_col is not None and len(vals) > n_col else "",
                                     "job_title": str(vals[t_col] or "").strip() if t_col is not None and len(vals) > t_col else "",
                                     "personal_linkedin_url": str(vals[li_col] or "").strip() if li_col is not None and len(vals) > li_col else "",
@@ -1571,6 +1954,7 @@ class SpeakerOutreachService:
                                     "reply_sentiment": str(vals[sent_col] or "").strip() if sent_col is not None and len(vals) > sent_col else "",
                                     "send_message": str(vals[snd_col] or "").strip() if snd_col is not None and len(vals) > snd_col else "",
                                     "thread_id": str(vals[th_col] or "").strip() if th_col is not None and len(vals) > th_col else "",
+                                    "source": "verified_data",
                                     "raw_values": vals
                                 })
                 else:
@@ -1591,15 +1975,24 @@ class SpeakerOutreachService:
                             rec_idx = col_map.get("receivedreplay", 13)
                             snd_idx = col_map.get("sendmessage", 14)
                             th_idx = col_map.get("threadid", 15)
+                            ind_idx = col_map.get("industry")
+                            prim_ind_idx = col_map.get("primaryindustry")
+
+                            cat_raw = str(vals[c_type_idx] or "").strip() if c_type_idx is not None and len(vals) > c_type_idx else ""
+                            resolved_role = resolve_contact_type(cat_raw)
+                            cat_clean = resolved_role.capitalize() if resolved_role else ""
 
                             parsed.append({
                                 "row_index": row_idx,
-                                "category": "Speaker",
-                                "contact_type": str(vals[c_type_idx] or "").strip() if len(vals) > c_type_idx else "Speaker",
+                                "category": cat_clean,
+                                "contact_type": f"Verified {cat_clean}" if cat_clean else "",
+                                "contact_type_raw": cat_raw,
                                 "company_name": str(vals[comp_idx] or "").strip() if len(vals) > comp_idx else "",
                                 "company_domain": "",
                                 "conference_name": str(vals[conf_idx] or "").strip() if len(vals) > conf_idx else "",
                                 "conference_id": "",
+                                "industry": str(vals[ind_idx] or "").strip() if ind_idx is not None and len(vals) > ind_idx else "",
+                                "primary_industry": str(vals[prim_ind_idx] or "").strip() if prim_ind_idx is not None and len(vals) > prim_ind_idx else "",
                                 "name": str(vals[name_idx] or "").strip() if len(vals) > name_idx else "",
                                 "job_title": str(vals[title_idx] or "").strip() if len(vals) > title_idx else "",
                                 "professional_email": email,
@@ -1610,6 +2003,7 @@ class SpeakerOutreachService:
                                 "reply_sentiment": str(vals[sent_idx] or "").strip() if len(vals) > sent_idx else "",
                                 "send_message": str(vals[snd_idx] or "").strip() if len(vals) > snd_idx else "",
                                 "thread_id": str(vals[th_idx] or "").strip() if len(vals) > th_idx else "",
+                                "source": "verified_data",
                                 "raw_values": vals
                             })
 
@@ -1689,19 +2083,268 @@ class SpeakerOutreachService:
         except Exception as e:
             logger.debug(f"DB entity sync notice for {email}: {e}")
 
+    @staticmethod
+    def _normalize_company_key(company_name: Optional[str]) -> str:
+        text = str(company_name or "").strip().lower()
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        return " ".join(text.split())
+
+    @staticmethod
+    def _extract_domain(raw_val: Optional[str], from_email: bool = False) -> str:
+        val = str(raw_val or "").strip().lower()
+        if not val:
+            return ""
+        if from_email:
+            if "@" not in val:
+                return ""
+            val = val.split("@", 1)[1].strip()
+            free_domains = {
+                "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
+                "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"
+            }
+            if val in free_domains:
+                return ""
+        val = re.sub(r'^https?://', '', val)
+        val = val.split("/", 1)[0].split("?", 1)[0].strip()
+        if val.startswith("www."):
+            val = val[4:]
+        return val
+
+    def _build_industry_lookup_index(self) -> Dict[str, Dict[str, Tuple[str, str]]]:
+        """
+        Builds a read-only company/lead industry index from existing lead & company sources
+        (Qualified Leads, Non -Qualified Leads, Companies scoring, latest_week_scoring,
+        weekly_exhibitors, and PostgreSQL WeeklyCompany/WeeklyExhibitor).
+        Used only when a lead record lacks both Industry and Primary_Industry (e.g. Verified Data).
+        """
+        if self._industry_lookup_cache is not None:
+            return self._industry_lookup_cache
+
+        by_email: Dict[str, Tuple[str, str]] = {}
+        by_domain: Dict[str, Tuple[str, str]] = {}
+        by_company: Dict[str, Tuple[str, str]] = {}
+
+        def record_entry(email_val: str = "", domain_val: str = "", comp_val: str = "", ind_val: str = "", prim_val: str = ""):
+            ind_c = str(ind_val or "").strip()
+            prim_c = str(prim_val or "").strip()
+            if not ind_c and not prim_c:
+                return
+            em_c = str(email_val or "").strip().lower()
+            if em_c and "@" in em_c:
+                prev = by_email.get(em_c)
+                if not prev or (not prev[0] and ind_c):
+                    by_email[em_c] = (ind_c or (prev[0] if prev else ""), prim_c or (prev[1] if prev else ""))
+            dom_c = self._extract_domain(domain_val)
+            if dom_c:
+                prev = by_domain.get(dom_c)
+                if not prev or (not prev[0] and ind_c):
+                    by_domain[dom_c] = (ind_c or (prev[0] if prev else ""), prim_c or (prev[1] if prev else ""))
+            comp_k = self._normalize_company_key(comp_val)
+            if comp_k:
+                prev = by_company.get(comp_k)
+                if not prev or (not prev[0] and ind_c):
+                    by_company[comp_k] = (ind_c or (prev[0] if prev else ""), prim_c or (prev[1] if prev else ""))
+
+        # 1. Local Excel existing lead/company sheets (read-only)
+        if self.local_excel_path.exists():
+            wb = None
+            try:
+                wb = openpyxl.load_workbook(self.local_excel_path, read_only=True, data_only=True)
+                sheet_candidates = [
+                    getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads"),
+                    getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads"),
+                    "Companies scoring",
+                    "latest_week_scoring",
+                    "weekly_exhibitors",
+                ]
+                for sname in sheet_candidates:
+                    if sname not in wb.sheetnames:
+                        continue
+                    ws = wb[sname]
+                    rows_iter = ws.iter_rows(values_only=True)
+                    header_row = next(rows_iter, None)
+                    if not header_row:
+                        continue
+                    hdrs = [str(h or "").strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in header_row]
+                    cmap = {h: i for i, h in enumerate(hdrs)}
+
+                    ind_i = cmap.get("industry")
+                    prim_i = cmap.get("primaryindustry") or cmap.get("exhibitorcategoryindustry") or cmap.get("categoryindustry")
+                    comp_i = cmap.get("companyname") or cmap.get("exhibitorcompanyname") or cmap.get("company")
+                    dom_i = cmap.get("companydomain") or cmap.get("companywebsite")
+                    em_cols = [c for c in (cmap.get("professionalemail"), cmap.get("email"), cmap.get("exhibitoremail"), cmap.get("attendeeemail")) if c is not None]
+
+                    for row in rows_iter:
+                        ind_v = str(row[ind_i] or "").strip() if ind_i is not None and len(row) > ind_i else ""
+                        prim_v = str(row[prim_i] or "").strip() if prim_i is not None and len(row) > prim_i else ""
+                        if not ind_v and not prim_v:
+                            continue
+                        comp_v = str(row[comp_i] or "").strip() if comp_i is not None and len(row) > comp_i else ""
+                        dom_v = str(row[dom_i] or "").strip() if dom_i is not None and len(row) > dom_i else ""
+                        if em_cols:
+                            for ei in em_cols:
+                                em_v = str(row[ei] or "").strip() if len(row) > ei else ""
+                                record_entry(em_v, dom_v, comp_v, ind_v, prim_v)
+                        else:
+                            record_entry("", dom_v, comp_v, ind_v, prim_v)
+            except Exception as e:
+                logger.debug(f"Notice building Excel industry lookup index: {e}")
+            finally:
+                if wb:
+                    try:
+                        wb.close()
+                    except Exception:
+                        pass
+
+        # 2. PostgreSQL WeeklyCompany & WeeklyExhibitor fallback
+        try:
+            for wc in self.db.query(WeeklyCompany).all():
+                if wc.primary_industry:
+                    record_entry("", wc.company_domain or wc.official_website or "", wc.company_name or "", "", wc.primary_industry or "")
+            for we in self.db.query(WeeklyExhibitor).all():
+                if we.category_industry:
+                    record_entry(we.professional_email or "", we.company_website or "", we.company_name or "", "", we.category_industry or "")
+        except Exception as e:
+            logger.debug(f"Notice building DB industry lookup index: {e}")
+
+        self._industry_lookup_cache = {
+            "by_email": by_email,
+            "by_domain": by_domain,
+            "by_company": by_company,
+        }
+        return self._industry_lookup_cache
+
+    def _lookup_lead_industry_from_sources(self, lead: Dict[str, Any]) -> Tuple[str, str]:
+        """Looks up industry/primary_industry from existing lead/company sources only when missing on the lead."""
+        ind = str(lead.get("industry") or "").strip()
+        prim = str(lead.get("primary_industry") or "").strip()
+        if ind or prim:
+            return ind, prim
+
+        index = self._build_industry_lookup_index()
+        em = str(lead.get("professional_email") or "").strip().lower()
+        if em and em in index["by_email"]:
+            return index["by_email"][em]
+
+        dom = self._extract_domain(lead.get("company_domain") or "") or self._extract_domain(em, from_email=True)
+        if dom and dom in index["by_domain"]:
+            return index["by_domain"][dom]
+
+        comp_k = self._normalize_company_key(lead.get("company_name") or "")
+        if comp_k and comp_k in index["by_company"]:
+            return index["by_company"][comp_k]
+
+        return "", ""
+
+    def _prepare_outreach_email_for_lead(self, lead: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Strictly resolves contact type and industry for a lead, reads the latest matching TXT template section,
+        personalizes placeholders without leaving unresolved tags, and validates before sending.
+        Never guesses missing/unsupported industry or contact type.
+        """
+        cat_input = lead.get("category") or lead.get("contact_type_raw") or lead.get("contact_type") or ""
+        role = resolve_contact_type(cat_input)
+        if not role:
+            raw_disp = str(lead.get("contact_type_raw") or lead.get("contact_type") or "").strip()
+            reason = f"unsupported_contact_type:{raw_disp}" if raw_disp else "missing_contact_type"
+            return {
+                "ok": False,
+                "error_kind": "manual_review",
+                "reason": reason,
+                "message": f"Missing or unsupported contact type ('{raw_disp}'); flagged for manual review."
+            }
+
+        ind = str(lead.get("industry") or "").strip()
+        prim_ind = str(lead.get("primary_industry") or "").strip()
+        if not ind and not prim_ind:
+            ind, prim_ind = self._lookup_lead_industry_from_sources(lead)
+
+        industry_key, ind_reason = resolve_industry_key(industry=ind, primary_industry=prim_ind)
+        if not industry_key:
+            return {
+                "ok": False,
+                "error_kind": "manual_review",
+                "reason": ind_reason or "missing_industry",
+                "message": f"Missing or unsupported industry ({ind_reason or 'empty'}); flagged for manual review."
+            }
+
+        name = str(lead.get("name") or "").strip() or "there"
+        job_title = str(lead.get("job_title") or "").strip() or "Professional"
+        company = str(lead.get("company_name") or "").strip() or "your organization"
+        conf_name = str(lead.get("conference_name") or "").strip() or "the upcoming conference"
+
+        try:
+            subj, body, meta = build_industry_email_content(
+                speaker_name=name,
+                job_title=job_title,
+                company=company,
+                conf_name=conf_name,
+                category=role,
+                industry=ind,
+                primary_industry=prim_ind,
+            )
+        except Exception as e:
+            return {
+                "ok": False,
+                "error_kind": "template_error",
+                "reason": str(e),
+                "industry_key": industry_key,
+                "contact_type": role,
+                "message": str(e),
+            }
+
+        return {
+            "ok": True,
+            "subject": subj,
+            "body": body,
+            "full_message": f"Subject: {subj}\n\n{body}",
+            "category": role.capitalize(),
+            "role": role,
+            "industry_key": meta["industry_key"],
+            "template_file": meta["template_file"],
+            "template_path": meta["template_path"],
+        }
+
+    def _flag_lead_for_manual_review(self, lead: Dict[str, Any], reason: str, dry_run: bool = False) -> None:
+        """
+        Flags a lead for manual review without sending an email or modifying unrelated historical records.
+        Never mutates Excel/OneDrive/DB during dry_run, and never overwrites sent/replied/bounced statuses.
+        """
+        email = (lead.get("professional_email") or "").strip().lower()
+        name = lead.get("name") or "Unknown"
+        company = lead.get("company_name") or ""
+        logger.warning(f"🚩 [Manual Review Required] Skipping {name} <{email}> ({company}): {reason}")
+
+        if dry_run or not email:
+            return
+
+        current_status = str(lead.get("outreach_status") or "").strip().lower()
+        if current_status in ("sent", "sending", "replied", "bounced", "do_not_contact", "manual_review", "needs_review"):
+            return
+
+        cat_for_sync = resolve_contact_type(lead.get("category") or lead.get("contact_type_raw") or "") or ""
+        try:
+            self._update_qualified_leads_outreach(
+                email=email,
+                updates={"Outreach Status": "manual_review"},
+                category=cat_for_sync.capitalize() if cat_for_sync else ""
+            )
+        except Exception as e:
+            logger.warning(f"Notice flagging manual_review for {email}: {e}")
+
     def run_outreach_send_pass(self, force: bool = False, dry_run_override: Optional[bool] = None) -> Dict[str, Any]:
         """
         Executes outreach email campaign exclusively using records from the Qualified Leads sheet (ICP score > 50).
         - Strictly filters out any leads with ICP score <= 50.
         - Enforces deliverability (email_status == Verified).
-        - Selects template from template.txt based on contact type:
-          * Speakers -> Speakers template
-          * Attendees -> Attendees template
-          * Exhibitors -> Exhibitors template
+        - Selects the industry TXT file from templates/ based on normalized industry and extracts the
+          contact-type section (Speakers, Attendees, Exhibitors).
+        - Validates all dynamic placeholders and flags missing/unsupported industry or contact types for manual review.
         - Dispatches email via Microsoft Graph (akash@adople.ai).
         - Tracks Outreach Status, Send Message, and Thread ID in Qualified Leads (and syncs Verified Data).
         """
         with outreach_lock:
+            self._industry_lookup_cache = None
             if dry_run_override is not None:
                 dry_run = dry_run_override
             else:
@@ -1728,6 +2371,8 @@ class SpeakerOutreachService:
             sent_count = 0
             skipped_count = 0
             preview_list = []
+            manual_review_leads = []
+            template_error_leads = []
 
             for lead in leads:
                 email = (lead.get("professional_email") or "").strip().lower()
@@ -1747,7 +2392,7 @@ class SpeakerOutreachService:
                     continue
 
                 outreach_st = (lead.get("outreach_status") or "").strip().lower()
-                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed"):
+                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed", "manual_review", "needs_review"):
                     skipped_count += 1
                     continue
 
@@ -1768,24 +2413,43 @@ class SpeakerOutreachService:
                     break
 
                 name = lead.get("name") or "there"
-                job_title = lead.get("job_title") or "Professional"
                 company = lead.get("company_name") or "your organization"
                 conf_name = lead.get("conference_name") or "the upcoming conference"
-                cat_lead = lead.get("category", "Speaker")
-                c_type = lead.get("contact_type") or f"Qualified {cat_lead}"
 
-                subject, body = build_email_content(
-                    speaker_name=name,
-                    job_title=job_title,
-                    company=company,
-                    conf_name=conf_name,
-                    category=cat_lead
-                )
-                full_message = f"Subject: {subject}\n\n{body}"
+                prep = self._prepare_outreach_email_for_lead(lead)
+                if not prep["ok"]:
+                    skipped_count += 1
+                    if prep["error_kind"] == "manual_review":
+                        self._flag_lead_for_manual_review(lead, prep["reason"], dry_run=dry_run)
+                        manual_review_leads.append({
+                            "email": email,
+                            "name": name,
+                            "company": company,
+                            "reason": prep["reason"],
+                        })
+                    else:
+                        logger.error(f"❌ [Template Error] Skipping {name} <{email}> ({company}): {prep['message']}")
+                        template_error_leads.append({
+                            "email": email,
+                            "name": name,
+                            "company": company,
+                            "reason": prep["message"],
+                        })
+                    continue
+
+                cat_lead = prep["category"]
+                c_type = lead.get("contact_type") or f"Qualified {cat_lead}"
+                industry_key = prep["industry_key"]
+                template_file = prep["template_file"]
+                subject = prep["subject"]
+                body = prep["body"]
+                full_message = prep["full_message"]
 
                 if dry_run:
                     preview_list.append({
                         "contact_type": c_type,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "name": name,
                         "email": email,
                         "company": company,
@@ -1796,13 +2460,12 @@ class SpeakerOutreachService:
                     })
                     sent_count += 1
                     sent_today += 1
-                    logger.info(f"[DRY RUN PREVIEW] Would send to [{c_type}] (Score {score_val}): {name} <{email}> ({company})")
+                    logger.info(f"[DRY RUN PREVIEW] Would send [{industry_key}/{cat_lead} -> {template_file}] (Score {score_val}): {name} <{email}> ({company})")
                     continue
 
                 # Live Sending Logic
                 try:
-                    cat_lead = lead.get("category", "Speaker")
-                    logger.info(f"📤 Dispatching outreach email to [{c_type}] {name} <{email}>...")
+                    logger.info(f"📤 Dispatching outreach email [{industry_key}/{c_type} -> {template_file}] to {name} <{email}>...")
                     # Update status to sending in Qualified Leads (and sync Verified Data)
                     self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "sending", "Send Message": full_message}, category=cat_lead)
 
@@ -1825,6 +2488,8 @@ class SpeakerOutreachService:
                         "name": name,
                         "contact_type": c_type,
                         "category": cat_lead,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "score": score_val,
                         "sent_at": now_iso(),
                         "status": "sent"
@@ -1838,6 +2503,8 @@ class SpeakerOutreachService:
                         "conference": conf_name,
                         "contact_type": c_type,
                         "category": cat_lead,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "score": score_val,
                         "source": "qualified_leads",
                         "sent_at": now_iso()
@@ -1864,6 +2531,10 @@ class SpeakerOutreachService:
                 "dry_run": dry_run,
                 "sent_count": sent_count,
                 "skipped_count": skipped_count,
+                "manual_review_count": len(manual_review_leads),
+                "manual_review_leads": manual_review_leads,
+                "template_error_count": len(template_error_leads),
+                "template_error_leads": template_error_leads,
                 "previews": preview_list
             }
 
@@ -1875,7 +2546,8 @@ class SpeakerOutreachService:
         """
         Executes weekly outreach exclusively targeting Non-Qualified Leads from the 'Non -Qualified Leads' sheet (ICP score < 50).
         - Independent workflow controlled by NON_QUALIFIED_OUTREACH_ACTIVE and NON_QUALIFIED_DRY_RUN in .env.
-        - Uses role-specific templates from template.txt (Speaker, Attendee, Exhibitor).
+        - Uses industry-specific TXT files from templates/ and role-specific sections (Speaker, Attendee, Exhibitor).
+        - Validates placeholders and flags missing/unsupported industry or contact types for manual review.
         - Dispatches emails via Microsoft Graph API.
         - Updates outreach tracking columns across:
           * 'Non -Qualified Leads' sheet / tbl_non_qualified_leads
@@ -1894,6 +2566,7 @@ class SpeakerOutreachService:
         dry_run = getattr(settings, "NON_QUALIFIED_DRY_RUN", False) if dry_run_override is None else dry_run_override
 
         with outreach_lock:
+            self._industry_lookup_cache = None
             state = load_state()
             sent_today = get_sent_today(state)
             daily_cap = getattr(settings, "NON_QUALIFIED_OUTREACH_DAILY_CAP", 0)
@@ -1916,6 +2589,8 @@ class SpeakerOutreachService:
             sent_count = 0
             skipped_count = 0
             preview_list = []
+            manual_review_leads = []
+            template_error_leads = []
 
             for lead in leads:
                 email = (lead.get("professional_email") or "").strip().lower()
@@ -1929,7 +2604,7 @@ class SpeakerOutreachService:
                     continue
 
                 outreach_st = (lead.get("outreach_status") or "").strip().lower()
-                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed") and not force:
+                if outreach_st in ("sent", "sending", "replied", "bounced", "do_not_contact", "failed", "manual_review", "needs_review") and not force:
                     skipped_count += 1
                     continue
 
@@ -1949,25 +2624,44 @@ class SpeakerOutreachService:
                     break
 
                 name = lead.get("name") or "there"
-                job_title = lead.get("job_title") or "Professional"
                 company = lead.get("company_name") or "your organization"
                 conf_name = lead.get("conference_name") or "the upcoming conference"
-                cat_lead = lead.get("category", "Speaker")
-                c_type = lead.get("contact_type") or f"Disqualified {cat_lead}"
                 score_val = float(lead.get("overall_score") or 0.0)
 
-                subject, body = build_email_content(
-                    speaker_name=name,
-                    job_title=job_title,
-                    company=company,
-                    conf_name=conf_name,
-                    category=cat_lead
-                )
-                full_message = f"Subject: {subject}\n\n{body}"
+                prep = self._prepare_outreach_email_for_lead(lead)
+                if not prep["ok"]:
+                    skipped_count += 1
+                    if prep["error_kind"] == "manual_review":
+                        self._flag_lead_for_manual_review(lead, prep["reason"], dry_run=dry_run)
+                        manual_review_leads.append({
+                            "email": email,
+                            "name": name,
+                            "company": company,
+                            "reason": prep["reason"],
+                        })
+                    else:
+                        logger.error(f"❌ [Template Error] Skipping Non-Qualified Lead {name} <{email}> ({company}): {prep['message']}")
+                        template_error_leads.append({
+                            "email": email,
+                            "name": name,
+                            "company": company,
+                            "reason": prep["message"],
+                        })
+                    continue
+
+                cat_lead = prep["category"]
+                c_type = lead.get("contact_type") or f"Disqualified {cat_lead}"
+                industry_key = prep["industry_key"]
+                template_file = prep["template_file"]
+                subject = prep["subject"]
+                body = prep["body"]
+                full_message = prep["full_message"]
 
                 if dry_run:
                     preview_list.append({
                         "contact_type": c_type,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "name": name,
                         "email": email,
                         "company": company,
@@ -1978,12 +2672,12 @@ class SpeakerOutreachService:
                     })
                     sent_count += 1
                     sent_today += 1
-                    logger.info(f"[DRY RUN PREVIEW] Non-Qualified Lead [{c_type}] (Score {score_val}): {name} <{email}> ({company})")
+                    logger.info(f"[DRY RUN PREVIEW] Non-Qualified Lead [{industry_key}/{c_type} -> {template_file}] (Score {score_val}): {name} <{email}> ({company})")
                     continue
 
                 # Live Sending Logic
                 try:
-                    logger.info(f"📤 Dispatching outreach email to Non-Qualified Lead [{c_type}] {name} <{email}>...")
+                    logger.info(f"📤 Dispatching outreach email to Non-Qualified Lead [{industry_key}/{c_type} -> {template_file}] {name} <{email}>...")
                     self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "sending", "Send Message": full_message}, category=cat_lead)
 
                     msg_id, conversation_id = self.graph.send_mail(email, subject, body)
@@ -2004,6 +2698,8 @@ class SpeakerOutreachService:
                         "name": name,
                         "contact_type": c_type,
                         "category": cat_lead,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "score": score_val,
                         "sent_at": now_iso(),
                         "status": "sent",
@@ -2018,6 +2714,8 @@ class SpeakerOutreachService:
                         "conference": conf_name,
                         "contact_type": c_type,
                         "category": cat_lead,
+                        "industry": industry_key,
+                        "template_file": template_file,
                         "score": score_val,
                         "source": "non_qualified_leads",
                         "sent_at": now_iso()
@@ -2043,6 +2741,10 @@ class SpeakerOutreachService:
                 "dry_run": dry_run,
                 "sent_count": sent_count,
                 "skipped_count": skipped_count,
+                "manual_review_count": len(manual_review_leads),
+                "manual_review_leads": manual_review_leads,
+                "template_error_count": len(template_error_leads),
+                "template_error_leads": template_error_leads,
                 "previews": preview_list
             }
 
@@ -2377,10 +3079,8 @@ class SpeakerOutreachService:
     ) -> Dict[str, Any]:
         """
         Manually triggers outreach for any lead (including disqualified leads in 'Non -Qualified Leads'):
-        - Selects the appropriate category template from template.txt based on contact type:
-          * Speakers -> Speakers template
-          * Attendees -> Attendees template
-          * Exhibitors -> Exhibitors template
+        - Selects the industry TXT file from templates/ and extracts the role-specific section
+          (Speaker, Attendee, Exhibitor) without guessing missing/unsupported data.
         - Dispatches the email via Microsoft Graph API
         - Updates outreach tracking columns across:
           * Non -Qualified Leads / Qualified Leads
@@ -2388,6 +3088,7 @@ class SpeakerOutreachService:
           * Verified Data
         - Registers thread in outreach_state.json for reply monitoring
         """
+        self._industry_lookup_cache = None
         clean_email = (email or "").strip().lower()
         if not clean_email or "@" not in clean_email or "." not in clean_email:
             return {"status": "error", "error": f"Invalid email: {email}"}
@@ -2417,31 +3118,48 @@ class SpeakerOutreachService:
         if not target_lead:
             return {"status": "error", "error": f"Lead with email '{email}' not found in any leads sheet"}
 
+        dry_run = getattr(settings, "OUTREACH_DRY_RUN", True) if dry_run_override is None else dry_run_override
         name = target_lead.get("name") or "there"
-        job_title = target_lead.get("job_title") or "Professional"
         company = target_lead.get("company_name") or "your organization"
         conf_name = target_lead.get("conference_name") or "the upcoming conference"
-        cat_lead = target_lead.get("category", "Speaker")
-        c_type = target_lead.get("contact_type") or cat_lead
         score_val = float(target_lead.get("overall_score") or 0.0)
 
-        # Build email content using category template from template.txt
-        subject, body = build_email_content(
-            speaker_name=name,
-            job_title=job_title,
-            company=company,
-            conf_name=conf_name,
-            category=cat_lead
-        )
-        full_message = f"Subject: {subject}\n\n{body}"
+        prep = self._prepare_outreach_email_for_lead(target_lead)
+        if not prep["ok"]:
+            if prep["error_kind"] == "manual_review":
+                self._flag_lead_for_manual_review(target_lead, prep["reason"], dry_run=dry_run)
+                return {
+                    "status": "manual_review",
+                    "email": clean_email,
+                    "name": name,
+                    "reason": prep["reason"],
+                    "error": prep["message"],
+                }
+            logger.error(f"❌ [Template Error] Manual outreach blocked for {clean_email}: {prep['message']}")
+            return {
+                "status": "template_error",
+                "email": clean_email,
+                "name": name,
+                "reason": prep["reason"],
+                "error": prep["message"],
+            }
 
-        dry_run = getattr(settings, "OUTREACH_DRY_RUN", True) if dry_run_override is None else dry_run_override
+        cat_lead = prep["category"]
+        c_type = target_lead.get("contact_type") or cat_lead
+        industry_key = prep["industry_key"]
+        template_file = prep["template_file"]
+        subject = prep["subject"]
+        body = prep["body"]
+        full_message = prep["full_message"]
+
         if dry_run:
             return {
                 "status": "dry_run_preview",
                 "email": clean_email,
                 "name": name,
                 "category": cat_lead,
+                "industry": industry_key,
+                "template_file": template_file,
                 "score": score_val,
                 "subject": subject,
                 "message": full_message,
@@ -2478,6 +3196,8 @@ class SpeakerOutreachService:
                 "name": name,
                 "contact_type": c_type,
                 "category": cat_lead,
+                "industry": industry_key,
+                "template_file": template_file,
                 "score": score_val,
                 "sent_at": now_iso(),
                 "status": "sent",
@@ -2492,6 +3212,8 @@ class SpeakerOutreachService:
                 "conference": conf_name,
                 "contact_type": c_type,
                 "category": cat_lead,
+                "industry": industry_key,
+                "template_file": template_file,
                 "score": score_val,
                 "source": target_lead.get("source", "manual"),
                 "sent_at": now_iso()
@@ -2505,6 +3227,8 @@ class SpeakerOutreachService:
                 "email": clean_email,
                 "name": name,
                 "category": cat_lead,
+                "industry": industry_key,
+                "template_file": template_file,
                 "score": score_val,
                 "message_id": msg_id,
                 "conversation_id": conversation_id
