@@ -8,9 +8,10 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
 import openpyxl
 import requests
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import WeeklyAttendee, WeeklyCompany, WeeklyExhibitor, WeeklySpeaker
+from ..models import WeeklyAttendee, WeeklyCompany, WeeklyConference, WeeklyExhibitor, WeeklySpeaker
 from .onedrive_excel_service import OneDriveExcelService
 
 logger = logging.getLogger("speaker_outreach")
@@ -27,9 +28,13 @@ logger = logging.getLogger("speaker_outreach")
 # Safety locks for concurrent threads
 state_lock = threading.Lock()
 outreach_lock = threading.Lock()
+inbox_poll_lock = threading.Lock()
+teams_card_lock = threading.Lock()
 
-# Persistent in-memory cache to guarantee zero duplicate Teams notifications across threads
+# Persistent in-memory caches to guarantee zero duplicate processing or Teams notifications across threads
 PROCESSED_REPLY_IDS_GLOBAL = set()
+PROCESSED_BOUNCE_IDS_GLOBAL = set()
+TEAMS_NOTIFIED_IDS_GLOBAL = set()
 
 REPLY_INTENTS = {
     "INTERESTED", "MEETING_REQUESTED", "OUT_OF_OFFICE", "REFERRAL",
@@ -443,15 +448,124 @@ def is_bounce_email(msg: Dict[str, Any], body_text: str = "") -> bool:
     return False
 
 
+def extract_bounce_candidates(msg: Dict[str, Any], body_text: str = "") -> List[str]:
+    """Extracts candidate recipient email addresses from an NDR/bounce message body."""
+    combined = f"{msg.get('subject', '')} {msg.get('bodyPreview', '')} {body_text}"
+    raw_candidates = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined)
+    cleaned: List[str] = []
+    seen: Set[str] = set()
+    skip_prefixes = ("mailer-daemon@", "postmaster@", "noreply@", "no-reply@", "daemon@", "microsoftexchange")
+    for c in raw_candidates:
+        c_clean = c.strip().strip("<>():;,.").lower()
+        if (
+            not c_clean
+            or c_clean in seen
+            or c_clean.endswith("@adople.ai")
+            or c_clean.endswith(".prod.outlook.com")
+            or "protection.outlook.com" in c_clean
+            or any(c_clean.startswith(p) for p in skip_prefixes)
+        ):
+            continue
+        seen.add(c_clean)
+        cleaned.append(c_clean)
+    return cleaned
+
+
 def extract_bounce_recipient(msg: Dict[str, Any], body_text: str = "") -> Optional[str]:
     """Extracts the intended recipient's email from an NDR/bounce message body."""
+    candidates = extract_bounce_candidates(msg, body_text)
+    if candidates:
+        return candidates[0]
     combined = f"{msg.get('bodyPreview', '')} {body_text}"
-    candidates = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined)
-    for c in candidates:
+    raw_candidates = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined)
+    for c in raw_candidates:
         c_clean = c.strip().strip("<>():;,.").lower()
-        if not c_clean.endswith("adople.ai") and "exchange" not in c_clean and "outlook" not in c_clean:
+        if (
+            not c_clean.endswith("@adople.ai")
+            and not c_clean.startswith("microsoftexchange")
+            and ".prod.outlook.com" not in c_clean
+        ):
             return c_clean
     return None
+
+
+def extract_bounce_reason(msg: Dict[str, Any], body_text: str = "") -> str:
+    """Extracts a concise diagnostic reason from an SMTP/Exchange NDR bounce email."""
+    txt = str(body_text or msg.get("bodyPreview", "") or "").strip()
+    subj = str(msg.get("subject", "") or "").strip()
+    if not txt:
+        return subj or "Undeliverable (NDR returned)"
+
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    keep: List[str] = []
+    stop_markers = (
+        "diagnostic information for administrators",
+        "how to fix it",
+        "more info for email admins",
+        "original message headers",
+    )
+    reason_markers = (
+        "rejected your message",
+        "couldn't be delivered",
+        "could not be delivered",
+        "was undeliverable",
+        "reason for the problem",
+        "5.1.",
+        "5.4.",
+        "5.7.",
+        "550",
+        "554",
+        "wasn't found",
+        "does not exist",
+        "not found",
+        "message blocked",
+        "access denied",
+        "delivery has failed",
+        "problem with the recipient",
+        "unknown address",
+        "user unknown",
+        "mailbox unavailable",
+        "dns",
+    )
+    for ln in lines:
+        low = ln.lower()
+        if any(m in low for m in stop_markers):
+            if keep:
+                break
+            continue
+        if any(k in low for k in reason_markers):
+            keep.append(ln)
+        if len(" | ".join(keep)) > 360:
+            break
+
+    if not keep:
+        keep = lines[:3]
+    summary = " | ".join(keep).strip() or subj or "Undeliverable (NDR returned)"
+    if len(summary) > 500:
+        summary = summary[:497] + "..."
+    return summary
+
+
+def format_teams_timestamp(raw_ts: Optional[str] = None) -> str:
+    """Formats an ISO/Graph timestamp cleanly in the configured outreach timezone."""
+    tz_name = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata") or "Asia/Kolkata"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+
+    if raw_ts:
+        s = str(raw_ts).strip()
+        try:
+            dt_obj = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt_obj.tzinfo is None:
+                dt_obj = dt_obj.replace(tzinfo=tz)
+            dt_local = dt_obj.astimezone(tz)
+            return dt_local.strftime("%Y-%m-%d %H:%M:%S %Z")
+        except Exception:
+            return s[:19].replace("T", " ")
+
+    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def get_state_file_path() -> str:
@@ -461,20 +575,46 @@ def get_state_file_path() -> str:
     return "/home/ubuntu/Deploy/conference agent/conference-agent-adople-feat-jeeva/outreach_state.json"
 
 
+def _read_state_file_unlocked(state_file: str) -> Dict[str, Any]:
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        data.setdefault("threads", {})
+                        data.setdefault("sent_log", [])
+                        data.setdefault("processed_reply_ids", [])
+                        data.setdefault("processed_bounce_ids", [])
+                        data.setdefault("teams_notified_ids", [])
+                        return data
+        except Exception as e:
+            logger.warning(f"Could not read {state_file}: {e}")
+    return {
+        "threads": {},
+        "sent_log": [],
+        "processed_reply_ids": [],
+        "processed_bounce_ids": [],
+        "teams_notified_ids": [],
+    }
+
+
+def _write_state_file_unlocked(state_file: str, data: Dict[str, Any]):
+    tmp_file = f"{state_file}.tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_file, state_file)
+
+
 def load_state() -> Dict[str, Any]:
     state_file = get_state_file_path()
     with state_lock:
-        if os.path.exists(state_file):
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content:
-                        data = json.loads(content)
-                        PROCESSED_REPLY_IDS_GLOBAL.update(data.get("processed_reply_ids", []))
-                        return data
-            except Exception as e:
-                logger.warning(f"Could not read {state_file}: {e}")
-        return {"threads": {}, "sent_log": [], "processed_reply_ids": list(PROCESSED_REPLY_IDS_GLOBAL)}
+        data = _read_state_file_unlocked(state_file)
+        PROCESSED_REPLY_IDS_GLOBAL.update(data.get("processed_reply_ids", []))
+        PROCESSED_BOUNCE_IDS_GLOBAL.update(data.get("processed_bounce_ids", []))
+        TEAMS_NOTIFIED_IDS_GLOBAL.update(data.get("teams_notified_ids", []))
+        return data
 
 
 def save_state(state: Dict[str, Any]):
@@ -482,13 +622,7 @@ def save_state(state: Dict[str, Any]):
     with state_lock:
         try:
             # Read latest from disk to avoid wiping out concurrent entries
-            current_on_disk = {}
-            if os.path.exists(state_file):
-                try:
-                    with open(state_file, "r", encoding="utf-8") as f:
-                        current_on_disk = json.loads(f.read().strip() or "{}")
-                except Exception:
-                    pass
+            current_on_disk = _read_state_file_unlocked(state_file)
 
             # Merge processed_reply_ids
             pids = set(current_on_disk.get("processed_reply_ids", []))
@@ -497,44 +631,96 @@ def save_state(state: Dict[str, Any]):
             state["processed_reply_ids"] = list(pids)
             PROCESSED_REPLY_IDS_GLOBAL.update(pids)
 
+            # Merge processed_bounce_ids
+            bids = set(current_on_disk.get("processed_bounce_ids", []))
+            bids.update(state.get("processed_bounce_ids", []))
+            bids.update(PROCESSED_BOUNCE_IDS_GLOBAL)
+            state["processed_bounce_ids"] = list(bids)
+            PROCESSED_BOUNCE_IDS_GLOBAL.update(bids)
+
+            # Merge teams_notified_ids
+            tids = set(current_on_disk.get("teams_notified_ids", []))
+            tids.update(state.get("teams_notified_ids", []))
+            tids.update(TEAMS_NOTIFIED_IDS_GLOBAL)
+            state["teams_notified_ids"] = list(tids)
+            TEAMS_NOTIFIED_IDS_GLOBAL.update(tids)
+
             # Merge threads
             merged_threads = current_on_disk.get("threads", {})
             merged_threads.update(state.get("threads", {}))
             state["threads"] = merged_threads
 
-            tmp_file = f"{state_file}.tmp"
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp_file, state_file)
+            _write_state_file_unlocked(state_file, state)
         except Exception as e:
             logger.warning(f"Could not save {state_file}: {e}")
 
 
 def mark_reply_processed(msg_id: str):
-    """Atomically commits a message ID to in-memory set and disk immediately."""
+    """Atomically commits a reply message ID to in-memory set and disk immediately."""
     if not msg_id:
         return
     PROCESSED_REPLY_IDS_GLOBAL.add(msg_id)
     state_file = get_state_file_path()
     with state_lock:
-        current = {"threads": {}, "sent_log": [], "processed_reply_ids": []}
-        if os.path.exists(state_file):
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    current = json.loads(f.read().strip() or "{}")
-            except Exception:
-                pass
+        current = _read_state_file_unlocked(state_file)
         pids = set(current.get("processed_reply_ids", []))
         pids.add(msg_id)
         pids.update(PROCESSED_REPLY_IDS_GLOBAL)
         current["processed_reply_ids"] = list(pids)
         try:
-            tmp_file = f"{state_file}.tmp"
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(current, f, indent=2)
-            os.replace(tmp_file, state_file)
+            _write_state_file_unlocked(state_file, current)
         except Exception as e:
             logger.warning(f"Could not atomically mark reply processed: {e}")
+
+
+def mark_bounce_processed(msg_id: str):
+    """Atomically commits a bounce message ID to bounce/reply sets and disk immediately."""
+    if not msg_id:
+        return
+    PROCESSED_BOUNCE_IDS_GLOBAL.add(msg_id)
+    PROCESSED_REPLY_IDS_GLOBAL.add(msg_id)
+    state_file = get_state_file_path()
+    with state_lock:
+        current = _read_state_file_unlocked(state_file)
+        bids = set(current.get("processed_bounce_ids", []))
+        bids.add(msg_id)
+        bids.update(PROCESSED_BOUNCE_IDS_GLOBAL)
+        current["processed_bounce_ids"] = list(bids)
+
+        pids = set(current.get("processed_reply_ids", []))
+        pids.add(msg_id)
+        pids.update(PROCESSED_REPLY_IDS_GLOBAL)
+        current["processed_reply_ids"] = list(pids)
+        try:
+            _write_state_file_unlocked(state_file, current)
+        except Exception as e:
+            logger.warning(f"Could not atomically mark bounce processed: {e}")
+
+
+def claim_teams_notification_id(dedupe_key: Optional[str]) -> bool:
+    """
+    Atomically checks and claims a Teams card notification key.
+    Returns True if this caller won the claim (may send 1 Teams card),
+    or False if a card was already triggered for this message.
+    """
+    if not dedupe_key:
+        return True
+    state_file = get_state_file_path()
+    with teams_card_lock:
+        with state_lock:
+            current = _read_state_file_unlocked(state_file)
+            notified = set(current.get("teams_notified_ids", []))
+            if dedupe_key in TEAMS_NOTIFIED_IDS_GLOBAL or dedupe_key in notified:
+                return False
+            TEAMS_NOTIFIED_IDS_GLOBAL.add(dedupe_key)
+            notified.add(dedupe_key)
+            notified.update(TEAMS_NOTIFIED_IDS_GLOBAL)
+            current["teams_notified_ids"] = list(notified)
+            try:
+                _write_state_file_unlocked(state_file, current)
+            except Exception as e:
+                logger.warning(f"Could not persist teams_notified_ids: {e}")
+            return True
 
 
 def get_sent_today(state: Dict[str, Any]) -> int:
@@ -1057,19 +1243,55 @@ def build_conversation_transcript_ms(messages: List[Dict[str, Any]], my_email: s
 # ==============================================================================
 # Microsoft Teams Notification Dispatcher
 # ==============================================================================
-def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str, intent: str, sentiment: str, reply_text: str, contact_type: str = "Weekly Speaker"):
-    """Sends an inbound Teams card when EMAIL_TEAMS_CARD_ENABLED is true."""
+def send_teams_reply_notification(
+    speaker_name: str,
+    email: str,
+    conf_name: str,
+    intent: str,
+    sentiment: str,
+    reply_text: str,
+    contact_type: str = "Weekly Speaker",
+    company_name: str = "",
+    industry: str = "",
+    timestamp: str = "",
+    message_id: str = "",
+) -> Dict[str, Any]:
+    """Sends an inbound Teams card for email replies (Positive, Negative, Neutral, Other) strictly once per message."""
     enabled = getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True)
     if not enabled:
         logger.info("Teams reply card is disabled (EMAIL_TEAMS_CARD_ENABLED=false).")
-        return
+        return {"status": "disabled", "reason": "EMAIL_TEAMS_CARD_ENABLED=false"}
 
     webhook_url = getattr(settings, "TEAMS_WEBHOOK_URL", "") or os.getenv("TEAMS_REPLY_WEBHOOK_URL", "")
     if not webhook_url:
         logger.warning("TEAMS_WEBHOOK_URL is not configured.")
-        return
+        return {"status": "skipped", "reason": "TEAMS_WEBHOOK_URL not configured"}
 
-    badge_color = "Good" if sentiment.upper() == "POSITIVE" else ("Attention" if sentiment.upper() == "NEGATIVE" else "Default")
+    if message_id and not claim_teams_notification_id(message_id):
+        logger.info(f"⏭️ Duplicate Teams reply card prevented for message_id={message_id} ({email}).")
+        return {"status": "skipped", "reason": "duplicate_prevented", "message_id": message_id}
+
+    sent_norm = (sentiment or "Neutral").strip().capitalize()
+    if sent_norm not in ("Positive", "Negative", "Neutral"):
+        sent_norm = "Neutral"
+    intent_norm = (intent or "OTHER").strip().upper()
+    intent_display = intent_norm.replace("_", " ").title() if intent_norm else "Other"
+    ts_display = format_teams_timestamp(timestamp)
+
+    if sent_norm == "Positive":
+        badge_color = "Good"
+        emoji = "✅"
+    elif sent_norm == "Negative":
+        badge_color = "Attention"
+        emoji = "⚠️"
+    else:
+        badge_color = "Default"
+        emoji = "📬"
+
+    if intent_norm == "OTHER":
+        card_title = f"{emoji} {contact_type} Other Reply ({sent_norm})"
+    else:
+        card_title = f"{emoji} {contact_type} {sent_norm} Reply: {intent_display}"
 
     card = {
         "type": "AdaptiveCard",
@@ -1082,18 +1304,20 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": f"📬 {contact_type} Email Reply: {intent.title()}",
+                        "text": card_title,
                         "weight": "Bolder",
                         "size": "Large",
-                        "color": badge_color
+                        "color": badge_color,
+                        "wrap": True,
                     },
                     {
                         "type": "TextBlock",
-                        "text": f"Captured from {speaker_name} ({email}) at {now_iso()[:16]}",
+                        "text": f"Captured from {speaker_name or email} ({email}) at {ts_display}",
                         "isSubtle": True,
-                        "spacing": "None"
-                    }
-                ]
+                        "spacing": "None",
+                        "wrap": True,
+                    },
+                ],
             },
             {
                 "type": "Container",
@@ -1102,15 +1326,18 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
                     {
                         "type": "FactSet",
                         "facts": [
-                            {"title": f"{contact_type}:", "value": speaker_name or "-"},
-                            {"title": "Email:", "value": email or "-"},
-                            {"title": "Conference:", "value": conf_name or "-"},
-                            {"title": "Sentiment:", "value": sentiment or "Neutral"},
-                            {"title": "Intent:", "value": intent or "OTHER"},
-                            {"title": "Captured At:", "value": now_iso()[:16]}
-                        ]
+                            {"title": "Lead Name:", "value": speaker_name or "-"},
+                            {"title": "Email Address:", "value": email or "-"},
+                            {"title": "Company Name:", "value": company_name or "Not available"},
+                            {"title": "Industry:", "value": industry or "Not available"},
+                            {"title": "Email Status:", "value": "Replied"},
+                            {"title": "Reply Sentiment:", "value": sent_norm},
+                            {"title": "Classification:", "value": intent_display},
+                            {"title": "Conference:", "value": conf_name or "Not available"},
+                            {"title": "Timestamp:", "value": ts_display},
+                        ],
                     }
-                ]
+                ],
             },
             {
                 "type": "Container",
@@ -1118,25 +1345,134 @@ def send_teams_reply_notification(speaker_name: str, email: str, conf_name: str,
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": "💬 Reply Content:",
+                        "text": "💬 Reply Reason / Content:",
                         "weight": "Bolder",
-                        "size": "Medium"
+                        "size": "Medium",
                     },
                     {
                         "type": "TextBlock",
                         "text": reply_text[:1000] if reply_text else "(No body text)",
-                        "wrap": True
-                    }
-                ]
-            }
-        ]
+                        "wrap": True,
+                    },
+                ],
+            },
+        ],
     }
 
     try:
         r = requests.post(webhook_url, json=card, headers={"Content-Type": "application/json"}, timeout=15)
         logger.info(f"Teams reply card response: {r.status_code}")
+        return {"status": "sent", "http_code": r.status_code, "message_id": message_id}
     except Exception as e:
         logger.warning(f"Failed to post Teams reply card: {e}")
+        return {"status": "failed", "error": str(e), "message_id": message_id}
+
+
+def send_teams_bounce_notification(
+    lead_name: str,
+    email: str,
+    conf_name: str = "",
+    bounce_reason: str = "",
+    contact_type: str = "Weekly Speaker",
+    company_name: str = "",
+    industry: str = "",
+    timestamp: str = "",
+    message_id: str = "",
+) -> Dict[str, Any]:
+    """Sends an independent Teams alert card when an outreach email bounces or fails delivery, strictly once per message."""
+    enabled = getattr(
+        settings,
+        "BOUNCE_TEAMS_CARD_ENABLED",
+        getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
+    )
+    if not enabled:
+        logger.info("Teams bounce card is disabled.")
+        return {"status": "disabled", "reason": "Teams bounce card disabled"}
+
+    webhook_url = getattr(settings, "TEAMS_WEBHOOK_URL", "") or os.getenv("TEAMS_REPLY_WEBHOOK_URL", "")
+    if not webhook_url:
+        logger.warning("TEAMS_WEBHOOK_URL is not configured.")
+        return {"status": "skipped", "reason": "TEAMS_WEBHOOK_URL not configured"}
+
+    if message_id and not claim_teams_notification_id(message_id):
+        logger.info(f"⏭️ Duplicate Teams bounce card prevented for message_id={message_id} ({email}).")
+        return {"status": "skipped", "reason": "duplicate_prevented", "message_id": message_id}
+
+    ts_display = format_teams_timestamp(timestamp)
+    reason_clean = (bounce_reason or "").strip() or "Undeliverable (NDR returned)"
+
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "Container",
+                "style": "emphasis",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": f"🚫 {contact_type} Email Bounce Alert",
+                        "weight": "Bolder",
+                        "size": "Large",
+                        "color": "Attention",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"Delivery failed for {lead_name or email} ({email}) at {ts_display}",
+                        "isSubtle": True,
+                        "spacing": "None",
+                        "wrap": True,
+                    },
+                ],
+            },
+            {
+                "type": "Container",
+                "spacing": "Medium",
+                "items": [
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "Lead Name:", "value": lead_name or "-"},
+                            {"title": "Email Address:", "value": email or "-"},
+                            {"title": "Company Name:", "value": company_name or "Not available"},
+                            {"title": "Industry:", "value": industry or "Not available"},
+                            {"title": "Email Status:", "value": "Bounced"},
+                            {"title": "Reply Sentiment:", "value": "Not Applicable (Bounced)"},
+                            {"title": "Conference:", "value": conf_name or "Not available"},
+                            {"title": "Timestamp:", "value": ts_display},
+                        ],
+                    }
+                ],
+            },
+            {
+                "type": "Container",
+                "spacing": "Medium",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ Bounce Reason:",
+                        "weight": "Bolder",
+                        "size": "Medium",
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": reason_clean[:1000],
+                        "wrap": True,
+                    },
+                ],
+            },
+        ],
+    }
+
+    try:
+        r = requests.post(webhook_url, json=card, headers={"Content-Type": "application/json"}, timeout=15)
+        logger.info(f"Teams bounce card response: {r.status_code}")
+        return {"status": "sent", "http_code": r.status_code, "message_id": message_id}
+    except Exception as e:
+        logger.warning(f"Failed to post Teams bounce card: {e}")
+        return {"status": "failed", "error": str(e), "message_id": message_id}
 
 
 # ==============================================================================
@@ -2524,6 +2860,23 @@ class SpeakerOutreachService:
                 except Exception as e:
                     logger.error(f"❌ Failed to send to {email}: {e}")
                     self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "failed"}, category=cat_lead)
+                    try:
+                        ind_disp = lead.get("industry") or lead.get("primary_industry") or industry_key
+                        if str(ind_disp).strip().lower() in ("ai", "healthcare", "finance"):
+                            ind_disp = {"ai": "AI", "healthcare": "Healthcare", "finance": "Finance"}[str(ind_disp).strip().lower()]
+                        send_teams_bounce_notification(
+                            lead_name=name,
+                            email=email,
+                            conf_name=conf_name,
+                            bounce_reason=f"Outreach email failed to reach recipient: {e}",
+                            contact_type=c_type,
+                            company_name=company,
+                            industry=ind_disp,
+                            timestamp=now_iso(),
+                            message_id=f"send_failure:{email}:{conf_name.lower()}",
+                        )
+                    except Exception as te:
+                        logger.warning(f"Notice triggering Teams alert on send failure for {email}: {te}")
 
             return {
                 "status": "completed",
@@ -2734,6 +3087,23 @@ class SpeakerOutreachService:
                 except Exception as e:
                     logger.error(f"❌ Failed to send non-qualified outreach to {email}: {e}")
                     self._update_qualified_leads_outreach(email=email, updates={"Outreach Status": "failed"}, category=cat_lead)
+                    try:
+                        ind_disp = lead.get("industry") or lead.get("primary_industry") or industry_key
+                        if str(ind_disp).strip().lower() in ("ai", "healthcare", "finance"):
+                            ind_disp = {"ai": "AI", "healthcare": "Healthcare", "finance": "Finance"}[str(ind_disp).strip().lower()]
+                        send_teams_bounce_notification(
+                            lead_name=name,
+                            email=email,
+                            conf_name=conf_name,
+                            bounce_reason=f"Outreach email failed to reach recipient: {e}",
+                            contact_type=c_type,
+                            company_name=company,
+                            industry=ind_disp,
+                            timestamp=now_iso(),
+                            message_id=f"send_failure:{email}:{conf_name.lower()}",
+                        )
+                    except Exception as te:
+                        logger.warning(f"Notice triggering Teams alert on non-qualified send failure for {email}: {te}")
 
             return {
                 "status": "completed",
@@ -2748,32 +3118,81 @@ class SpeakerOutreachService:
                 "previews": preview_list
             }
 
-    def poll_replies(self) -> Dict[str, Any]:
-        """
-        Polls mailbox akash@adople.ai for new incoming replies:
-        - Runs 24/7 every 60s without interrupting existing workflows.
-        - Identifies whether incoming messages belong to:
-          1. Previously contacted Weekly Speakers (routes to Weekly Speakers & Speakers Replies).
-          2. Contacts reached out via Qualified Leads sheet (routes to Qualified Leads & Verified Data).
-          3. Contacts reached out via Verified Data sheet (routes to Verified Data).
-        - Captures full back-and-forth transcript into 'Received Reply'.
-        - Performs Gemini sentiment & intent analysis.
-        - Sends exactly ONE Microsoft Teams Adaptive Card per new reply.
-        - Prevents duplicate Teams cards using message ID tracking.
-        - Updates Qualified Leads and original sheets in-place.
-        """
-        state = load_state()
-        threads = state.get("threads", {})
-        processed_ids = set(state.get("processed_reply_ids", []))
-        new_replies_count = 0
-        bounces_count = 0
+    def _resolve_lead_industry_for_card(
+        self,
+        target_speaker: Any = None,
+        qualified_target: Optional[Dict[str, Any]] = None,
+        non_qualified_target: Optional[Dict[str, Any]] = None,
+        verified_target: Optional[Dict[str, Any]] = None,
+        contact_email: str = "",
+        company_name: str = "",
+        conf_name: str = "",
+        conf_id: str = "",
+    ) -> str:
+        """Resolves a human-readable industry string for Teams reply & bounce cards without mutating sheet data."""
+        display_map = {"ai": "AI", "healthcare": "Healthcare", "finance": "Finance"}
 
+        def fmt_ind(val: Any) -> str:
+            if not isinstance(val, str):
+                return ""
+            s = val.strip()
+            if not s:
+                return ""
+            return display_map.get(s.lower(), s)
+
+        for tgt in (qualified_target, non_qualified_target, verified_target):
+            if isinstance(tgt, dict):
+                cand = fmt_ind(tgt.get("industry")) or fmt_ind(tgt.get("primary_industry"))
+                if cand:
+                    return cand
+
+        try:
+            ind_lu, prim_lu = self._lookup_lead_industry_from_sources({
+                "professional_email": contact_email,
+                "company_name": company_name,
+            })
+            cand = fmt_ind(ind_lu) or fmt_ind(prim_lu)
+            if cand:
+                return cand
+        except Exception as e:
+            logger.debug(f"Notice looking up lead industry for Teams card ({contact_email}): {e}")
+
+        effective_conf_id = conf_id or (
+            getattr(target_speaker, "conference_id", "") if target_speaker else ""
+        )
+        effective_conf_name = conf_name or (
+            getattr(target_speaker, "conference_name", "") if target_speaker else ""
+        )
+        try:
+            wc = None
+            if effective_conf_id and isinstance(effective_conf_id, str):
+                wc = self.db.query(WeeklyConference).filter(
+                    WeeklyConference.conference_id == effective_conf_id
+                ).first()
+            if not wc and effective_conf_name and isinstance(effective_conf_name, str):
+                wc = self.db.query(WeeklyConference).filter(
+                    func.lower(WeeklyConference.conference_name) == effective_conf_name.strip().lower()
+                ).first()
+            if wc:
+                wc_ind = fmt_ind(getattr(wc, "industry", ""))
+                if wc_ind:
+                    return wc_ind
+        except Exception as e:
+            logger.debug(f"Notice looking up conference industry for Teams card ({effective_conf_name}): {e}")
+
+        return "Not available"
+
+    def _load_monitoring_targets(self, threads: Dict[str, Any]) -> Dict[str, Any]:
+        """Loads contacted targets from PostgreSQL, Qualified Leads, Non -Qualified Leads, Verified Data, and state threads."""
         # 1. Previously contacted Weekly Speakers
         sent_speakers = self.db.query(WeeklySpeaker).filter(
             (WeeklySpeaker.outreach_status.in_(["sent", "replied"])) | (WeeklySpeaker.email_thread_id.isnot(None))
         ).all()
-        speaker_by_thread = {s.email_thread_id: s for s in sent_speakers if s.email_thread_id}
-        speaker_by_email = {(s.professional_email or "").strip().lower(): s for s in sent_speakers if s.professional_email}
+        speaker_by_thread = {s.email_thread_id: s for s in sent_speakers if getattr(s, "email_thread_id", None)}
+        speaker_by_email = {
+            (s.professional_email or "").strip().lower(): s
+            for s in sent_speakers if getattr(s, "professional_email", None)
+        }
 
         # 2. Qualified Leads contacts
         qualified_leads = self._load_qualified_leads()
@@ -2793,14 +3212,20 @@ class SpeakerOutreachService:
         for k, th in threads.items():
             t_id = th.get("thread_id")
             em = th.get("email") or k.split("|")[0]
+            th_ind = th.get("industry", "")
+            if isinstance(th_ind, str) and th_ind.strip().lower() in ("ai", "healthcare", "finance"):
+                th_ind = {"ai": "AI", "healthcare": "Healthcare", "finance": "Finance"}[th_ind.strip().lower()]
             if t_id and t_id not in qualified_by_thread and t_id not in non_qualified_by_thread and t_id not in verified_by_thread:
                 qualified_by_thread[t_id] = {
                     "professional_email": em,
                     "name": th.get("name", ""),
                     "company_name": th.get("company", ""),
                     "conference_name": th.get("conference", ""),
+                    "conference_id": th.get("conference_id", ""),
+                    "industry": th_ind,
                     "contact_type": th.get("contact_type", "Contact"),
-                    "thread_id": t_id
+                    "category": th.get("category", "Speaker"),
+                    "thread_id": t_id,
                 }
             if em and em.lower() not in qualified_by_email and em.lower() not in non_qualified_by_email and em.lower() not in verified_by_email:
                 qualified_by_email[em.lower()] = {
@@ -2808,111 +3233,429 @@ class SpeakerOutreachService:
                     "name": th.get("name", ""),
                     "company_name": th.get("company", ""),
                     "conference_name": th.get("conference", ""),
+                    "conference_id": th.get("conference_id", ""),
+                    "industry": th_ind,
                     "contact_type": th.get("contact_type", "Contact"),
-                    "thread_id": t_id or ""
+                    "category": th.get("category", "Speaker"),
+                    "thread_id": t_id or "",
                 }
 
-        # Query recent inbox messages
-        try:
-            inbox_messages = self.graph.get_inbox_messages(top=30)
-        except Exception as e:
-            logger.warning(f"Error querying inbox messages: {e}")
-            return {"status": "error", "error": str(e)}
+        return {
+            "speaker_by_thread": speaker_by_thread,
+            "speaker_by_email": speaker_by_email,
+            "qualified_by_thread": qualified_by_thread,
+            "qualified_by_email": qualified_by_email,
+            "non_qualified_by_thread": non_qualified_by_thread,
+            "non_qualified_by_email": non_qualified_by_email,
+            "verified_by_thread": verified_by_thread,
+            "verified_by_email": verified_by_email,
+        }
 
-        for msg in inbox_messages:
-            msg_id = msg.get("id")
-            if not msg_id or msg_id in processed_ids or msg_id in PROCESSED_REPLY_IDS_GLOBAL:
-                continue
+    def _match_inbox_targets(
+        self,
+        conv_id: str,
+        from_addr: str,
+        candidates: List[str],
+        targets: Dict[str, Any],
+    ) -> Tuple[Any, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
+        """Matches an inbox message (reply or NDR bounce) against known contacted leads."""
+        speaker_by_thread = targets["speaker_by_thread"]
+        speaker_by_email = targets["speaker_by_email"]
+        qualified_by_thread = targets["qualified_by_thread"]
+        qualified_by_email = targets["qualified_by_email"]
+        non_qualified_by_thread = targets["non_qualified_by_thread"]
+        non_qualified_by_email = targets["non_qualified_by_email"]
+        verified_by_thread = targets["verified_by_thread"]
+        verified_by_email = targets["verified_by_email"]
 
-            conv_id = msg.get("conversationId", "")
-            from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
-            body_text = extract_body_text_ms(msg)
+        matched_bounce_email: Optional[str] = None
 
-            # Accurate, robust NDR and bounce detection
-            is_bounce = is_bounce_email(msg, body_text)
-            bounced_recipient = extract_bounce_recipient(msg, body_text) if is_bounce else None
+        def match_email_map(email_map: Dict[str, Any]) -> Tuple[Any, Optional[str]]:
+            for cand in candidates:
+                if cand in email_map:
+                    return email_map[cand], cand
+            if from_addr and from_addr in email_map:
+                return email_map[from_addr], None
+            return None, None
 
-            # Identify target: check Weekly Speakers first, then Qualified Leads, Non -Qualified Leads, Verified Data
-            target_speaker = (
-                speaker_by_thread.get(conv_id) 
-                or (speaker_by_email.get(bounced_recipient) if bounced_recipient else None)
-                or speaker_by_email.get(from_addr)
+        target_speaker = speaker_by_thread.get(conv_id)
+        if not target_speaker:
+            target_speaker, mb_em = match_email_map(speaker_by_email)
+            if mb_em and not matched_bounce_email:
+                matched_bounce_email = mb_em
+
+        qualified_target = qualified_by_thread.get(conv_id)
+        if not qualified_target:
+            qualified_target, mb_em = match_email_map(qualified_by_email)
+            if mb_em and not matched_bounce_email:
+                matched_bounce_email = mb_em
+
+        non_qualified_target = non_qualified_by_thread.get(conv_id)
+        if not non_qualified_target:
+            non_qualified_target, mb_em = match_email_map(non_qualified_by_email)
+            if mb_em and not matched_bounce_email:
+                matched_bounce_email = mb_em
+
+        verified_target = verified_by_thread.get(conv_id)
+        if not verified_target:
+            verified_target, mb_em = match_email_map(verified_by_email)
+            if mb_em and not matched_bounce_email:
+                matched_bounce_email = mb_em
+
+        if not matched_bounce_email and candidates:
+            matched_bounce_email = candidates[0]
+
+        # Cross-populate across sheet maps when WeeklySpeaker matched first
+        if target_speaker:
+            sp_email = (getattr(target_speaker, "professional_email", None) or "").strip().lower()
+            if not qualified_target:
+                qualified_target = qualified_by_thread.get(conv_id) or (qualified_by_email.get(sp_email) if sp_email else None)
+            if not non_qualified_target:
+                non_qualified_target = non_qualified_by_thread.get(conv_id) or (non_qualified_by_email.get(sp_email) if sp_email else None)
+            if not verified_target:
+                verified_target = verified_by_thread.get(conv_id) or (verified_by_email.get(sp_email) if sp_email else None)
+
+        return target_speaker, qualified_target, non_qualified_target, verified_target, matched_bounce_email
+
+    def _extract_target_contact_details(
+        self,
+        target_speaker: Any,
+        qualified_target: Optional[Dict[str, Any]],
+        non_qualified_target: Optional[Dict[str, Any]],
+        verified_target: Optional[Dict[str, Any]],
+        fallback_email: str,
+    ) -> Dict[str, str]:
+        """Extracts display contact metadata + resolved industry for Teams cards and logs."""
+        contact_name = (
+            target_speaker.speaker_name if target_speaker
+            else (qualified_target.get("name") if qualified_target
+            else (non_qualified_target.get("name") if non_qualified_target
+            else (verified_target.get("name") if verified_target else "Contact")))
+        ) or "Contact"
+        company_name = (
+            target_speaker.company_name if target_speaker
+            else (qualified_target.get("company_name") if qualified_target
+            else (non_qualified_target.get("company_name") if non_qualified_target
+            else (verified_target.get("company_name") if verified_target else "")))
+        ) or ""
+        conf_name = (
+            target_speaker.conference_name if target_speaker
+            else (qualified_target.get("conference_name") if qualified_target
+            else (non_qualified_target.get("conference_name") if non_qualified_target
+            else (verified_target.get("conference_name") if verified_target else "")))
+        ) or ""
+        conf_id = (
+            getattr(target_speaker, "conference_id", "") if target_speaker
+            else (qualified_target.get("conference_id", "") if qualified_target
+            else (non_qualified_target.get("conference_id", "") if non_qualified_target
+            else (verified_target.get("conference_id", "") if verified_target else "")))
+        ) or ""
+        contact_type = (
+            "Weekly Speaker" if target_speaker
+            else (qualified_target.get("contact_type") if qualified_target
+            else (non_qualified_target.get("contact_type") if non_qualified_target
+            else (verified_target.get("contact_type") if verified_target else "Verified Contact")))
+        ) or "Verified Contact"
+        contact_email = (
+            (target_speaker.professional_email if (target_speaker and getattr(target_speaker, "professional_email", None)) else "")
+            or (qualified_target.get("professional_email") if qualified_target else "")
+            or (non_qualified_target.get("professional_email") if non_qualified_target else "")
+            or (verified_target.get("professional_email") if verified_target else "")
+            or fallback_email
+        )
+        industry_display = self._resolve_lead_industry_for_card(
+            target_speaker=target_speaker,
+            qualified_target=qualified_target,
+            non_qualified_target=non_qualified_target,
+            verified_target=verified_target,
+            contact_email=contact_email,
+            company_name=company_name,
+            conf_name=conf_name,
+            conf_id=conf_id,
+        )
+        return {
+            "contact_name": contact_name,
+            "company_name": company_name,
+            "conf_name": conf_name,
+            "conf_id": conf_id,
+            "contact_type": contact_type,
+            "contact_email": contact_email,
+            "industry": industry_display,
+        }
+
+    def _process_bounced_inbox_message(
+        self,
+        msg: Dict[str, Any],
+        body_text: str,
+        msg_id: str,
+        conv_id: str,
+        matched_targets: Tuple[Any, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]],
+        candidates: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Handles a single bounced/NDR inbox message independently of reply sentiment analysis:
+        - Claims msg_id in bounce & reply deduplication sets immediately.
+        - Extracts bounce diagnostic reason, company, industry, and timestamp.
+        - Triggers at-most-once Teams Bounce Alert Card.
+        - Updates PostgreSQL / OneDrive / Local Excel / state with 'bounced' status.
+        - Never runs Gemini reply sentiment analysis and never writes to speaker_replies.
+        """
+        mark_bounce_processed(msg_id)
+        target_speaker, qualified_target, non_qualified_target, verified_target, matched_bounce_email = matched_targets
+        from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
+        fallback_email = matched_bounce_email or (candidates[0] if candidates else "") or from_addr
+
+        details = self._extract_target_contact_details(
+            target_speaker=target_speaker,
+            qualified_target=qualified_target,
+            non_qualified_target=non_qualified_target,
+            verified_target=verified_target,
+            fallback_email=fallback_email,
+        )
+        contact_name = details["contact_name"]
+        company_name = details["company_name"]
+        conf_name = details["conf_name"]
+        contact_type = details["contact_type"]
+        contact_email = details["contact_email"]
+        industry_display = details["industry"]
+
+        received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
+        bounce_reason = extract_bounce_reason(msg, body_text)
+
+        logger.info(f"🚫 Bounce/NDR detected for [{contact_type}] {contact_name} <{contact_email}>. Triggering Teams bounce card.")
+        teams_res = send_teams_bounce_notification(
+            lead_name=contact_name,
+            email=contact_email,
+            conf_name=conf_name,
+            bounce_reason=bounce_reason,
+            contact_type=contact_type,
+            company_name=company_name,
+            industry=industry_display,
+            timestamp=received_at_str,
+            message_id=msg_id,
+        )
+
+        # 1. Update Weekly Speakers if contact originated there (never log bounces into speaker_replies)
+        if target_speaker:
+            target_speaker.reply_status = "bounced"
+            target_speaker.reply_sentiment = "Negative"
+            target_speaker.received_reply = f"BOUNCE: {bounce_reason}"
+            self.db.commit()
+            self._update_onedrive_speaker_row(target_speaker)
+
+        # 2. Update Qualified Leads, Non -Qualified Leads, Verified Data, and Weekly sheets
+        if qualified_target or non_qualified_target or verified_target:
+            cat_target = (
+                qualified_target.get("category") if qualified_target
+                else (non_qualified_target.get("category") if non_qualified_target
+                else (verified_target.get("category") if verified_target else "Speaker"))
             )
-            qualified_target = (
-                qualified_by_thread.get(conv_id)
-                or (qualified_by_email.get(bounced_recipient) if bounced_recipient else None)
-                or qualified_by_email.get(from_addr)
+            bounce_updates = {
+                "Outreach Status": "bounced",
+                "Reply Status": "bounced",
+                "Reply Sentiment": "Negative",
+                "Sentiment": "Negative",
+                "Received Reply": f"BOUNCE: {bounce_reason}",
+            }
+            self._update_qualified_leads_outreach(
+                email=contact_email,
+                updates=bounce_updates,
+                thread_id=conv_id,
+                category=cat_target,
             )
-            non_qualified_target = (
-                non_qualified_by_thread.get(conv_id)
-                or (non_qualified_by_email.get(bounced_recipient) if bounced_recipient else None)
-                or non_qualified_by_email.get(from_addr)
-            )
-            verified_target = (
-                verified_by_thread.get(conv_id)
-                or (verified_by_email.get(bounced_recipient) if bounced_recipient else None)
-                or verified_by_email.get(from_addr)
-            )
+            self._sync_db_outreach_status(email=contact_email, status="bounced", thread_id=conv_id)
 
-            if not target_speaker and not qualified_target and not non_qualified_target and not verified_target:
-                # Unrelated email - ignore safely
-                continue
+            fresh_state = load_state()
+            fresh_state.setdefault("replies", []).append({
+                "email": contact_email,
+                "name": contact_name,
+                "company": company_name,
+                "industry": industry_display,
+                "conference_name": conf_name,
+                "source": "non_qualified_leads" if non_qualified_target else ("qualified_leads" if qualified_target else "verified_data"),
+                "sentiment": "Negative",
+                "intent": "BOUNCE",
+                "bounce_reason": bounce_reason,
+                "received_at": received_at_str,
+                "message_id": msg_id,
+            })
+            save_state(fresh_state)
+            logger.info(f"✅ Stored bounce for '{contact_name}' into lead sheets & tracking tables.")
 
-            # IMMEDIATELY claim this message ID in memory and disk before any processing begins
-            processed_ids.add(msg_id)
-            mark_reply_processed(msg_id)
+        mark_bounce_processed(msg_id)
+        return {
+            "email": contact_email,
+            "name": contact_name,
+            "bounce_reason": bounce_reason,
+            "teams_status": teams_res.get("status"),
+            "message_id": msg_id,
+        }
 
-            contact_name = (
-                target_speaker.speaker_name if target_speaker 
-                else (qualified_target.get("name") if qualified_target 
-                else (non_qualified_target.get("name") if non_qualified_target
-                else (verified_target.get("name") if verified_target else "Contact")))
-            )
-            company_name = (
-                target_speaker.company_name if target_speaker 
-                else (qualified_target.get("company_name") if qualified_target 
-                else (non_qualified_target.get("company_name") if non_qualified_target
-                else (verified_target.get("company_name") if verified_target else "")))
-            )
-            conf_name = (
-                target_speaker.conference_name if target_speaker 
-                else (qualified_target.get("conference_name") if qualified_target 
-                else (non_qualified_target.get("conference_name") if non_qualified_target
-                else (verified_target.get("conference_name") if verified_target else "")))
-            )
-            contact_type = (
-                "Weekly Speaker" if target_speaker 
-                else (qualified_target.get("contact_type") if qualified_target 
-                else (non_qualified_target.get("contact_type") if non_qualified_target
-                else (verified_target.get("contact_type") if verified_target else "Verified Contact")))
-            )
-            contact_email = (
-                target_speaker.professional_email if (target_speaker and target_speaker.professional_email)
-                else (qualified_target.get("professional_email") if (qualified_target and qualified_target.get("professional_email"))
-                else (non_qualified_target.get("professional_email") if (non_qualified_target and non_qualified_target.get("professional_email"))
-                else (verified_target.get("professional_email") if (verified_target and verified_target.get("professional_email"))
-                else (bounced_recipient or from_addr))))
-            )
+    def poll_bounces(self) -> Dict[str, Any]:
+        """
+        Independent Email Bounce & NDR Monitor for akash@adople.ai:
+        - Runs independently of reply detection & Gemini sentiment analysis.
+        - Scans recent inbox messages strictly for NDR / bounce notices matching outreach contacts.
+        - Triggers exactly ONE Microsoft Teams Bounce Alert Card per bounce message ID.
+        - Updates PostgreSQL, Excel sheets, and outreach_state.json with 'bounced' status.
+        """
+        with inbox_poll_lock:
+            self._industry_lookup_cache = None
+            state = load_state()
+            threads = state.get("threads", {})
+            processed_bounce_ids = set(state.get("processed_bounce_ids", []))
+            processed_reply_ids = set(state.get("processed_reply_ids", []))
+            bounces_count = 0
+            bounce_details: List[Dict[str, Any]] = []
 
-            # Ensure both speaker and qualified/non-qualified leads targets are resolved if contact exists across lists
-            if target_speaker and not qualified_target:
-                qualified_target = qualified_by_thread.get(conv_id) or (qualified_by_email.get(contact_email.lower()) if contact_email else None)
-            if target_speaker and not non_qualified_target:
-                non_qualified_target = non_qualified_by_thread.get(conv_id) or (non_qualified_by_email.get(contact_email.lower()) if contact_email else None)
-            if target_speaker and not verified_target:
-                verified_target = verified_by_thread.get(conv_id) or (verified_by_email.get(contact_email.lower()) if contact_email else None)
+            targets = self._load_monitoring_targets(threads)
 
-            # Fetch full conversation thread to build chronological transcript
-            thread_msgs = self.graph.get_conversation_messages(conv_id) if conv_id else [msg]
-            transcript = build_conversation_transcript_ms(thread_msgs, self.graph.mailbox, contact_name)
+            try:
+                inbox_messages = self.graph.get_inbox_messages(top=30)
+            except Exception as e:
+                logger.warning(f"Error querying inbox messages during bounce poll: {e}")
+                return {"status": "error", "error": str(e)}
 
-            sentiment = "Negative" if is_bounce else "Neutral"
-            intent = "BOUNCE" if is_bounce else "OTHER"
+            for msg in inbox_messages:
+                msg_id = msg.get("id")
+                if (
+                    not msg_id
+                    or msg_id in processed_bounce_ids
+                    or msg_id in processed_reply_ids
+                    or msg_id in PROCESSED_BOUNCE_IDS_GLOBAL
+                    or msg_id in PROCESSED_REPLY_IDS_GLOBAL
+                ):
+                    continue
 
-            if is_bounce:
+                body_text = extract_body_text_ms(msg)
+                if not is_bounce_email(msg, body_text):
+                    # Leave genuine replies untouched for reply monitoring
+                    continue
+
+                conv_id = msg.get("conversationId", "")
+                from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
+                candidates = extract_bounce_candidates(msg, body_text)
+                matched_targets = self._match_inbox_targets(conv_id, from_addr, candidates, targets)
+                target_speaker, qualified_target, non_qualified_target, verified_target, _ = matched_targets
+
+                if not target_speaker and not qualified_target and not non_qualified_target and not verified_target:
+                    continue
+
+                processed_bounce_ids.add(msg_id)
+                processed_reply_ids.add(msg_id)
+                detail = self._process_bounced_inbox_message(
+                    msg=msg,
+                    body_text=body_text,
+                    msg_id=msg_id,
+                    conv_id=conv_id,
+                    matched_targets=matched_targets,
+                    candidates=candidates,
+                )
+                bounce_details.append(detail)
                 bounces_count += 1
-                logger.info(f"🚫 Bounce/NDR detected for [{contact_type}] {contact_name} <{contact_email}>. Teams notification card suppressed.")
-            else:
+
+            return {
+                "status": "success",
+                "bounces": bounces_count,
+                "scanned_messages": len(inbox_messages),
+                "bounce_details": bounce_details,
+            }
+
+    def poll_replies(self) -> Dict[str, Any]:
+        """
+        Polls mailbox akash@adople.ai for new incoming replies:
+        - Runs 24/7 every 60s without interrupting existing workflows.
+        - Identifies whether incoming messages belong to:
+          1. Previously contacted Weekly Speakers (routes to Weekly Speakers & Speakers Replies).
+          2. Contacts reached out via Qualified Leads sheet (routes to Qualified Leads & Verified Data).
+          3. Contacts reached out via Non -Qualified Leads / Verified Data sheets.
+        - Captures full back-and-forth transcript into 'Received Reply'.
+        - Performs Gemini sentiment & intent analysis for replies (Positive, Negative, Neutral, Other).
+        - Sends exactly ONE Microsoft Teams Adaptive Card per new reply or bounce.
+        - Prevents duplicate Teams cards using message ID tracking.
+        - Updates Qualified Leads and original sheets in-place.
+        """
+        with inbox_poll_lock:
+            self._industry_lookup_cache = None
+            state = load_state()
+            threads = state.get("threads", {})
+            processed_ids = set(state.get("processed_reply_ids", []))
+            processed_bounce_ids = set(state.get("processed_bounce_ids", []))
+            new_replies_count = 0
+            bounces_count = 0
+
+            targets = self._load_monitoring_targets(threads)
+
+            # Query recent inbox messages
+            try:
+                inbox_messages = self.graph.get_inbox_messages(top=30)
+            except Exception as e:
+                logger.warning(f"Error querying inbox messages: {e}")
+                return {"status": "error", "error": str(e)}
+
+            for msg in inbox_messages:
+                msg_id = msg.get("id")
+                if (
+                    not msg_id
+                    or msg_id in processed_ids
+                    or msg_id in processed_bounce_ids
+                    or msg_id in PROCESSED_REPLY_IDS_GLOBAL
+                    or msg_id in PROCESSED_BOUNCE_IDS_GLOBAL
+                ):
+                    continue
+
+                conv_id = msg.get("conversationId", "")
+                from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "").strip().lower()
+                body_text = extract_body_text_ms(msg)
+
+                # Accurate, robust NDR and bounce detection
+                is_bounce = is_bounce_email(msg, body_text)
+                candidates = extract_bounce_candidates(msg, body_text) if is_bounce else []
+                matched_targets = self._match_inbox_targets(conv_id, from_addr, candidates, targets)
+                target_speaker, qualified_target, non_qualified_target, verified_target, _ = matched_targets
+
+                if not target_speaker and not qualified_target and not non_qualified_target and not verified_target:
+                    # Unrelated email - ignore safely
+                    continue
+
+                if is_bounce:
+                    processed_ids.add(msg_id)
+                    processed_bounce_ids.add(msg_id)
+                    self._process_bounced_inbox_message(
+                        msg=msg,
+                        body_text=body_text,
+                        msg_id=msg_id,
+                        conv_id=conv_id,
+                        matched_targets=matched_targets,
+                        candidates=candidates,
+                    )
+                    bounces_count += 1
+                    continue
+
+                # IMMEDIATELY claim this reply message ID in memory and disk before any processing begins
+                processed_ids.add(msg_id)
+                mark_reply_processed(msg_id)
+
+                details = self._extract_target_contact_details(
+                    target_speaker=target_speaker,
+                    qualified_target=qualified_target,
+                    non_qualified_target=non_qualified_target,
+                    verified_target=verified_target,
+                    fallback_email=from_addr,
+                )
+                contact_name = details["contact_name"]
+                company_name = details["company_name"]
+                conf_name = details["conf_name"]
+                contact_type = details["contact_type"]
+                contact_email = details["contact_email"]
+                industry_display = details["industry"]
+
+                received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
+
+                # Fetch full conversation thread to build chronological transcript
+                thread_msgs = self.graph.get_conversation_messages(conv_id) if conv_id else [msg]
+                transcript = build_conversation_transcript_ms(thread_msgs, self.graph.mailbox, contact_name)
+
                 logger.info(f"📬 Incoming reply detected from [{contact_type}] {contact_name} <{contact_email}>!")
                 analysis = self.gemini.analyze_reply(
                     body_text,
@@ -2932,144 +3675,147 @@ class SpeakerOutreachService:
                     intent=intent,
                     sentiment=sentiment,
                     reply_text=body_text,
-                    contact_type=contact_type
+                    contact_type=contact_type,
+                    company_name=company_name,
+                    industry=industry_display,
+                    timestamp=received_at_str,
+                    message_id=msg_id,
                 )
 
-            received_at_str = msg.get("receivedDateTime") or datetime.utcnow().isoformat()
+                # -----------------------------------------------------------------
+                # 1. Update Weekly Speakers if contact originated there
+                # -----------------------------------------------------------------
+                if target_speaker:
+                    target_speaker.reply_status = "replied"
+                    target_speaker.reply_sentiment = sentiment
+                    target_speaker.received_reply = transcript
+                    self.db.commit()
+                    self._update_onedrive_speaker_row(target_speaker)
 
-            # -----------------------------------------------------------------
-            # 1. Update Weekly Speakers if contact originated there
-            # -----------------------------------------------------------------
-            if target_speaker:
-                target_speaker.reply_status = "bounced" if is_bounce else "replied"
-                target_speaker.reply_sentiment = sentiment
-                target_speaker.received_reply = transcript if not is_bounce else "BOUNCE: Undeliverable address"
-                self.db.commit()
-                self._update_onedrive_speaker_row(target_speaker)
+                    # Only log genuine prospect replies into tbl_speakers_replies
+                    if getattr(settings, "SPEAKER_REPLIES_ENABLED", True):
+                        last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
+                        reply_row = [
+                            target_speaker.speaker_id or "",
+                            target_speaker.conference_id or "",
+                            target_speaker.conference_name or "",
+                            target_speaker.speaker_name or "",
+                            target_speaker.job_title or "",
+                            target_speaker.company_name or "",
+                            target_speaker.personal_linkedin_url or "",
+                            target_speaker.linkedin_status or "",
+                            contact_email,
+                            target_speaker.email_source_url or "",
+                            target_speaker.speaker_source_url or "",
+                            target_speaker.verification_status or "",
+                            last_checked_str,
+                            target_speaker.weekly_run_id or "",
+                            target_speaker.outreach_status or "sent",
+                            "replied",
+                            sentiment,
+                            body_text,
+                            target_speaker.sent_message or "",
+                            conv_id or "",
+                            received_at_str,
+                            msg_id
+                        ]
 
-                # Only log genuine prospect replies into tbl_speakers_replies
-                if getattr(settings, "SPEAKER_REPLIES_ENABLED", True) and not is_bounce:
-                    last_checked_str = target_speaker.last_checked_at.isoformat() if target_speaker.last_checked_at else datetime.utcnow().isoformat()
-                    reply_row = [
-                        target_speaker.speaker_id or "",
-                        target_speaker.conference_id or "",
-                        target_speaker.conference_name or "",
-                        target_speaker.speaker_name or "",
-                        target_speaker.job_title or "",
-                        target_speaker.company_name or "",
-                        target_speaker.personal_linkedin_url or "",
-                        target_speaker.linkedin_status or "",
-                        contact_email,
-                        target_speaker.email_source_url or "",
-                        target_speaker.speaker_source_url or "",
-                        target_speaker.verification_status or "",
-                        last_checked_str,
-                        target_speaker.weekly_run_id or "",
-                        target_speaker.outreach_status or "sent",
-                        "replied",
-                        sentiment,
-                        body_text,
-                        target_speaker.sent_message or "",
-                        conv_id or "",
-                        received_at_str,
-                        msg_id
-                    ]
-
-                    try:
-                        self.onedrive.append_speaker_reply(reply_row)
-                    except Exception as e:
-                        logger.error(f"Error appending reply to OneDrive tbl_speakers_replies: {e}", exc_info=True)
-
-                    try:
-                        self.excel_mgr.append_speaker_reply_to_excel(reply_row)
-                    except Exception as e:
-                        logger.error(f"Error appending reply to Local Excel 'Speakers Replies': {e}", exc_info=True)
-
-                    try:
-                        from ..models import SpeakerReply
-                        parsed_dt = None
                         try:
-                            parsed_dt = datetime.fromisoformat(received_at_str.replace("Z", "+00:00"))
-                        except Exception:
-                            parsed_dt = datetime.utcnow()
+                            self.onedrive.append_speaker_reply(reply_row)
+                        except Exception as e:
+                            logger.error(f"Error appending reply to OneDrive tbl_speakers_replies: {e}", exc_info=True)
 
-                        reply_rec = SpeakerReply(
-                            speaker_id=target_speaker.speaker_id or "",
-                            conference_id=target_speaker.conference_id or "",
-                            conference_name=target_speaker.conference_name or "",
-                            speaker_name=target_speaker.speaker_name or "",
-                            job_title=target_speaker.job_title or "",
-                            company_name=target_speaker.company_name or "",
-                            personal_linkedin_url=target_speaker.personal_linkedin_url or "",
-                            linkedin_status=target_speaker.linkedin_status or "",
-                            professional_email=contact_email,
-                            email_source_url=target_speaker.email_source_url or "",
-                            speaker_source_url=target_speaker.speaker_source_url or "",
-                            verification_status=target_speaker.verification_status or "",
-                            last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
-                            weekly_run_id=target_speaker.weekly_run_id or "",
-                            outreach_status=target_speaker.outreach_status or "sent",
-                            reply_status="replied",
-                            reply_sentiment=sentiment,
-                            received_reply=body_text,
-                            sent_message=target_speaker.sent_message or "",
-                            thread_id=conv_id or "",
-                            reply_received_at=parsed_dt,
-                            message_id=msg_id,
-                            original_speaker_id=target_speaker.speaker_id or ""
-                        )
-                        self.db.add(reply_rec)
-                        self.db.commit()
-                    except Exception as e:
-                        self.db.rollback()
-                        logger.warning(f"Notice: PostgreSQL speaker_replies record commit: {e}")
+                        try:
+                            self.excel_mgr.append_speaker_reply_to_excel(reply_row)
+                        except Exception as e:
+                            logger.error(f"Error appending reply to Local Excel 'Speakers Replies': {e}", exc_info=True)
 
-                    logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
+                        try:
+                            from ..models import SpeakerReply
+                            parsed_dt = None
+                            try:
+                                parsed_dt = datetime.fromisoformat(received_at_str.replace("Z", "+00:00"))
+                            except Exception:
+                                parsed_dt = datetime.utcnow()
 
-            # -----------------------------------------------------------------
-            # 2. Update Qualified Leads, Non -Qualified Leads, and Verified Data
-            # -----------------------------------------------------------------
-            if qualified_target or non_qualified_target or verified_target:
-                rep_status = "bounced" if is_bounce else "replied"
-                cat_target = (
-                    qualified_target.get("category") if qualified_target 
-                    else (non_qualified_target.get("category") if non_qualified_target
-                    else (verified_target.get("category") if verified_target else "Speaker"))
-                )
-                reply_updates = {
-                    "Outreach Status": rep_status,
-                    "Reply Status": rep_status,
-                    "Reply Sentiment": sentiment,
-                    "Sentiment": sentiment,
-                    "Received Reply": transcript if not is_bounce else "BOUNCE: Undeliverable address"
-                }
-                # Updates Qualified Leads, Non -Qualified Leads in OneDrive & Local Excel, and syncs Verified Data & original Weekly sheet
-                self._update_qualified_leads_outreach(email=contact_email, updates=reply_updates, thread_id=conv_id, category=cat_target)
-                self._sync_db_outreach_status(email=contact_email, status=rep_status, thread_id=conv_id)
+                            reply_rec = SpeakerReply(
+                                speaker_id=target_speaker.speaker_id or "",
+                                conference_id=target_speaker.conference_id or "",
+                                conference_name=target_speaker.conference_name or "",
+                                speaker_name=target_speaker.speaker_name or "",
+                                job_title=target_speaker.job_title or "",
+                                company_name=target_speaker.company_name or "",
+                                personal_linkedin_url=target_speaker.personal_linkedin_url or "",
+                                linkedin_status=target_speaker.linkedin_status or "",
+                                professional_email=contact_email,
+                                email_source_url=target_speaker.email_source_url or "",
+                                speaker_source_url=target_speaker.speaker_source_url or "",
+                                verification_status=target_speaker.verification_status or "",
+                                last_checked_at=target_speaker.last_checked_at or datetime.utcnow(),
+                                weekly_run_id=target_speaker.weekly_run_id or "",
+                                outreach_status=target_speaker.outreach_status or "sent",
+                                reply_status="replied",
+                                reply_sentiment=sentiment,
+                                received_reply=body_text,
+                                sent_message=target_speaker.sent_message or "",
+                                thread_id=conv_id or "",
+                                reply_received_at=parsed_dt,
+                                message_id=msg_id,
+                                original_speaker_id=target_speaker.speaker_id or ""
+                            )
+                            self.db.add(reply_rec)
+                            self.db.commit()
+                        except Exception as e:
+                            self.db.rollback()
+                            logger.warning(f"Notice: PostgreSQL speaker_replies record commit: {e}")
 
-                fresh_state = load_state()
-                fresh_state.setdefault("replies", []).append({
-                    "email": contact_email,
-                    "name": contact_name,
-                    "conference_name": conf_name,
-                    "source": "non_qualified_leads" if non_qualified_target else ("qualified_leads" if qualified_target else "verified_data"),
-                    "sentiment": sentiment,
-                    "intent": intent,
-                    "received_at": received_at_str,
-                    "message_id": msg_id
-                })
-                save_state(fresh_state)
-                logger.info(f"✅ Stored {'bounce' if is_bounce else 'reply'} for '{contact_name}' into 'Qualified Leads'/'Non -Qualified Leads' and original Weekly sheets & tables.")
+                        logger.info(f"✅ Stored reply copy for '{target_speaker.speaker_name}' into 'Speakers Replies' (Weekly Speakers also updated as usual).")
 
-            # Ensure persisted in state & deduplication set
-            mark_reply_processed(msg_id)
+                # -----------------------------------------------------------------
+                # 2. Update Qualified Leads, Non -Qualified Leads, and Verified Data
+                # -----------------------------------------------------------------
+                if qualified_target or non_qualified_target or verified_target:
+                    cat_target = (
+                        qualified_target.get("category") if qualified_target
+                        else (non_qualified_target.get("category") if non_qualified_target
+                        else (verified_target.get("category") if verified_target else "Speaker"))
+                    )
+                    reply_updates = {
+                        "Outreach Status": "replied",
+                        "Reply Status": "replied",
+                        "Reply Sentiment": sentiment,
+                        "Sentiment": sentiment,
+                        "Received Reply": transcript,
+                    }
+                    # Updates Qualified Leads, Non -Qualified Leads in OneDrive & Local Excel, and syncs Verified Data & original Weekly sheet
+                    self._update_qualified_leads_outreach(email=contact_email, updates=reply_updates, thread_id=conv_id, category=cat_target)
+                    self._sync_db_outreach_status(email=contact_email, status="replied", thread_id=conv_id)
 
-        return {
-            "status": "success",
-            "new_replies": new_replies_count,
-            "bounces": bounces_count,
-            "scanned_messages": len(inbox_messages)
-        }
+                    fresh_state = load_state()
+                    fresh_state.setdefault("replies", []).append({
+                        "email": contact_email,
+                        "name": contact_name,
+                        "company": company_name,
+                        "industry": industry_display,
+                        "conference_name": conf_name,
+                        "source": "non_qualified_leads" if non_qualified_target else ("qualified_leads" if qualified_target else "verified_data"),
+                        "sentiment": sentiment,
+                        "intent": intent,
+                        "received_at": received_at_str,
+                        "message_id": msg_id,
+                    })
+                    save_state(fresh_state)
+                    logger.info(f"✅ Stored reply for '{contact_name}' into 'Qualified Leads'/'Non -Qualified Leads' and original Weekly sheets & tables.")
+
+                # Ensure persisted in state & deduplication set
+                mark_reply_processed(msg_id)
+
+            return {
+                "status": "success",
+                "new_replies": new_replies_count,
+                "bounces": bounces_count,
+                "scanned_messages": len(inbox_messages),
+            }
 
     def send_manual_lead_outreach(
         self,
@@ -3240,6 +3986,23 @@ class SpeakerOutreachService:
                 updates={"Outreach Status": "failed"},
                 category=cat_lead
             )
+            try:
+                ind_disp = target_lead.get("industry") or target_lead.get("primary_industry") or industry_key
+                if str(ind_disp).strip().lower() in ("ai", "healthcare", "finance"):
+                    ind_disp = {"ai": "AI", "healthcare": "Healthcare", "finance": "Finance"}[str(ind_disp).strip().lower()]
+                send_teams_bounce_notification(
+                    lead_name=name,
+                    email=clean_email,
+                    conf_name=conf_name,
+                    bounce_reason=f"Outreach email failed to reach recipient: {e}",
+                    contact_type=c_type,
+                    company_name=company,
+                    industry=ind_disp,
+                    timestamp=now_iso(),
+                    message_id=f"send_failure:{clean_email}:{conf_name.lower()}",
+                )
+            except Exception as te:
+                logger.warning(f"Notice triggering Teams alert on manual send failure for {clean_email}: {te}")
             return {"status": "error", "error": str(e)}
 
     def _update_onedrive_speaker_row(self, speaker: WeeklySpeaker):

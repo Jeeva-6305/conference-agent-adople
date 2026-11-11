@@ -133,6 +133,27 @@ def weekly_speaker_reply_watcher_job():
             svc.close()
 
 
+def weekly_speaker_bounce_watcher_job():
+    """
+    Independent Bounce & NDR Watcher:
+    Watches mailbox (akash@adople.ai) every 60 seconds (or configured interval)
+    independently of reply detection & sentiment analysis.
+    Detects bounced outreach emails and triggers at-most-once Microsoft Teams bounce cards.
+    """
+    if not getattr(settings, "OUTREACH_ENABLED", True):
+        return
+    svc = None
+    try:
+        from ..services.speaker_outreach_service import SpeakerOutreachService
+        svc = SpeakerOutreachService()
+        svc.poll_bounces()
+    except Exception as e:
+        logger.error(f"❌ [Bounce Watcher] Error in bounce watcher job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
 def weekly_speaker_scheduled_send_job():
     """
     Scheduled Outreach Job:
@@ -258,7 +279,7 @@ def start_scheduler():
             replace_existing=True
         )
 
-        # 4. 24/7 Continuous Email Reply Monitoring (every 60s / 1m)
+        # 4. 24/7 Continuous Email Reply & Independent Bounce Monitoring (every 60s / 1m)
         watch_interval = getattr(settings, "OUTREACH_WATCH_INTERVAL_MINUTES", 1) or 1
         scheduler.add_job(
             weekly_speaker_reply_watcher_job,
@@ -266,6 +287,14 @@ def start_scheduler():
             id="weekly_speaker_reply_watcher_job",
             name="24/7 Weekly Speaker Email Reply Watcher",
             replace_existing=True
+        )
+        scheduler.add_job(
+            weekly_speaker_bounce_watcher_job,
+            trigger=IntervalTrigger(minutes=watch_interval),
+            id="weekly_speaker_bounce_watcher_job",
+            name="24/7 Independent Email Bounce Watcher",
+            replace_existing=True,
+            next_run_time=datetime.now() + timedelta(seconds=30),
         )
 
         # 5. Scheduled Outreach Sender (Every Thursday at 19:00 / 7:00 PM IST)

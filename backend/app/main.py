@@ -870,6 +870,20 @@ def poll_outreach_replies(db: Session = Depends(get_db)):
     return svc.poll_replies()
 
 
+@app.post("/api/outreach/poll-bounces")
+def poll_outreach_bounces(db: Session = Depends(get_db)):
+    """
+    Manually triggers an independent email bounce / NDR monitoring pass across akash@adople.ai:
+    - Works independently of reply detection & Gemini sentiment analysis
+    - Matches NDR / bounce notices against outreach recipients
+    - Dispatches a Microsoft Teams Bounce Alert Card strictly once per bounced message
+    - Updates PostgreSQL & Excel tracking statuses to 'bounced'
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.poll_bounces()
+
+
 @app.get("/api/outreach/template")
 def get_outreach_templates():
     """
