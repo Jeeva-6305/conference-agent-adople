@@ -38,6 +38,15 @@ def normalize_title(title: Optional[str]) -> str:
     return " ".join(t.split())
 
 
+def _col_num_to_letter(n: int) -> str:
+    """Converts 1-based column number to Excel column letters (1 -> A, 23 -> W)."""
+    res = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        res = chr(65 + rem) + res
+    return res
+
+
 class OneDriveExcelService:
     """
     Microsoft Graph API Client for Work OneDrive Excel Workbook Integration:
@@ -1560,7 +1569,7 @@ class OneDriveExcelService:
         if "error" not in res:
             return res
         excel_row = row_index + 2
-        col_letter = "V"
+        col_letter = _col_num_to_letter(max(len(values), 1))
         ws_encoded = urllib.parse.quote(self.qualified_leads_ws_name)
         return self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/range(address='A{excel_row}:{col_letter}{excel_row}')", body={"values": [values]})
 
@@ -1670,7 +1679,7 @@ class OneDriveExcelService:
         if "error" not in res:
             return res
         excel_row = row_index + 2
-        col_letter = "V"
+        col_letter = _col_num_to_letter(max(len(values), 1))
         ws_encoded = urllib.parse.quote(self.non_qualified_leads_ws_name)
         return self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/range(address='A{excel_row}:{col_letter}{excel_row}')", body={"values": [values]})
 

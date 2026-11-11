@@ -1,12 +1,13 @@
 import logging
 import os
 import re
-from datetime import date
-from typing import List, Optional, Dict, Any
+from datetime import date, datetime, timedelta
+from typing import List, Optional, Dict, Any, Set
 import pandas as pd
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from ..config import settings
 from ..models import Conference, Speaker, Attendee, WeeklyConference, WeeklySpeaker, WeeklySourceRunLog
@@ -1021,7 +1022,8 @@ class ExcelManager:
         Union-merges existing historical lead rows with newly scored incoming rows
         using lowercase Professional_Email (or Company+Contact+Conference fallback),
         preserving outreach tracking states with precedence replied > bounced > sent > sending > failed > pending.
-        Sorts descending by Overall_Score and reassigns Rank 1..N.
+        Keeps existing contacted rows at top, existing unsent rows next, and always appends
+        newly collected rows strictly below existing records, reassigning Rank 1..N.
         """
         cur_h_map = {h.lower().replace(" ", "").replace("_", ""): idx for idx, h in enumerate(headers)}
         em_col = cur_h_map.get("professionalemail", 10)
@@ -1029,12 +1031,20 @@ class ExcelManager:
         name_col = cur_h_map.get("contactname", 8)
         conf_col = cur_h_map.get("conferencename", 5)
         score_col = cur_h_map.get("overallscore", 1)
-        ost_col = cur_h_map.get("outreachstatus", 16)
-        rep_col = cur_h_map.get("replystatus", 17)
-        rec_col = cur_h_map.get("receivedreply", 18)
-        sent_col = cur_h_map.get("replysentiment", 19)
-        th_col = cur_h_map.get("threadid", 20)
-        snd_col = cur_h_map.get("sendmessage", 21)
+        out_ind_col = cur_h_map.get("industry")
+        eval_col = cur_h_map.get("evaluatedat", 16)
+        ost_col = cur_h_map.get("outreachstatus", 17)
+        rep_col = cur_h_map.get("replystatus", 18)
+        rec_col = cur_h_map.get("receivedreply", 19)
+        sent_col = cur_h_map.get("replysentiment", 20)
+        th_col = cur_h_map.get("threadid", 21)
+        snd_col = cur_h_map.get("sendmessage", 22)
+        valid_industries = {
+            "healthcare": "Healthcare",
+            "ai": "AI",
+            "finance": "Finance",
+            "medical": "Medical",
+        }
 
         precedence = {
             "replied": 5,
@@ -1047,6 +1057,17 @@ class ExcelManager:
             "disqualified": 0,
             "": -1,
         }
+        contacted_states = {"replied", "bounced", "do_not_contact", "sent", "sending", "failed"}
+
+        def _normalize_row(row_vals: List[Any]) -> List[Any]:
+            padded = ["" if v is None else v for v in list(row_vals)]
+            while len(padded) < len(headers):
+                padded.append("")
+            padded = padded[:len(headers)]
+            ev_v = padded[eval_col]
+            if isinstance(ev_v, (int, float)) and not isinstance(ev_v, bool) and 40000 < float(ev_v) < 60000:
+                padded[eval_col] = (datetime(1899, 12, 30) + timedelta(days=float(ev_v))).strftime("%Y-%m-%d %H:%M:%S")
+            return padded
 
         def _row_key(row_vals: List[Any]) -> str:
             em = str(row_vals[em_col] or "").strip().lower()
@@ -1058,13 +1079,12 @@ class ExcelManager:
             return f"alt:{comp}|{name}|{conf}"
 
         merged_map: Dict[str, List[Any]] = {}
-        order_keys: List[str] = []
+        existing_order_keys: List[str] = []
+        existing_keys_set: Set[str] = set()
+        new_incoming_keys: List[str] = []
 
         for r in existing_rows:
-            padded = list(r)
-            while len(padded) < len(headers):
-                padded.append("")
-            padded = padded[:len(headers)]
+            padded = _normalize_row(r)
             if not any(padded[1:]):
                 continue
             k = _row_key(padded)
@@ -1072,32 +1092,43 @@ class ExcelManager:
                 continue
             if k not in merged_map:
                 merged_map[k] = padded
-                order_keys.append(k)
+                existing_order_keys.append(k)
+                existing_keys_set.add(k)
 
         for r in incoming_rows:
-            padded = list(r)
-            while len(padded) < len(headers):
-                padded.append("")
-            padded = padded[:len(headers)]
+            padded = _normalize_row(r)
+            if not any(padded[1:]):
+                continue
             k = _row_key(padded)
             if not k or k == "alt:||":
                 continue
 
             if k not in merged_map:
+                if not str(padded[ost_col] or "").strip():
+                    padded[ost_col] = default_status
                 merged_map[k] = padded
-                order_keys.append(k)
-            else:
+                new_incoming_keys.append(k)
+            elif k in existing_keys_set:
                 prev = merged_map[k]
-                # Keep non-empty profile fields, preferring incoming updates when present
+                prev_st = str(prev[ost_col] or "").strip()
+                new_st = str(padded[ost_col] or "").strip()
+
                 for idx in range(len(headers)):
                     if idx in (ost_col, rep_col, rec_col, sent_col, th_col, snd_col):
                         continue
                     if (padded[idx] is None or str(padded[idx]).strip() == "") and prev[idx] not in (None, ""):
                         padded[idx] = prev[idx]
 
-                # Merge outreach tracking preserving higher precedence
-                prev_st = str(prev[ost_col] or "").strip()
-                new_st = str(padded[ost_col] or "").strip()
+                # Preserve historical Evaluated_At on already-contacted leads
+                if prev_st.lower() in contacted_states and str(prev[eval_col] or "").strip():
+                    padded[eval_col] = prev[eval_col]
+
+                # Preserve previously curated valid Industry categorization
+                if out_ind_col is not None:
+                    prev_ind = valid_industries.get(str(prev[out_ind_col] or "").strip().lower(), "")
+                    if prev_ind:
+                        padded[out_ind_col] = prev_ind
+
                 if precedence.get(prev_st.lower(), 0) >= precedence.get(new_st.lower(), 0):
                     if prev_st:
                         padded[ost_col] = prev_st
@@ -1108,9 +1139,7 @@ class ExcelManager:
                     if str(prev[track_idx] or "").strip() and not str(padded[track_idx] or "").strip():
                         padded[track_idx] = prev[track_idx]
 
-                merged_map[k] = padded
-
-        merged_list = [merged_map[k] for k in order_keys]
+                merged_map[k] = ["" if v is None else v for v in padded]
 
         def _score_val(row_vals: List[Any]) -> float:
             try:
@@ -1118,10 +1147,125 @@ class ExcelManager:
             except (ValueError, TypeError):
                 return 0.0
 
-        merged_list.sort(key=lambda row_vals: (-_score_val(row_vals), str(row_vals[comp_col] or "").lower()))
+        existing_contacted = [
+            merged_map[k] for k in existing_order_keys
+            if str(merged_map[k][ost_col] or "").strip().lower() in contacted_states
+        ]
+        existing_unsent = [
+            merged_map[k] for k in existing_order_keys
+            if str(merged_map[k][ost_col] or "").strip().lower() not in contacted_states
+        ]
+        new_incoming_rows = [merged_map[k] for k in new_incoming_keys]
+        new_incoming_rows.sort(
+            key=lambda row_vals: (-_score_val(row_vals), str(row_vals[comp_col] or "").lower())
+        )
+
+        merged_list = existing_contacted + existing_unsent + new_incoming_rows
         for rank_idx, row_vals in enumerate(merged_list, 1):
             row_vals[0] = rank_idx
         return merged_list
+
+    @staticmethod
+    def _write_formatted_leads_table_sheet(
+        ws,
+        headers: List[str],
+        rows: List[List[Any]],
+        table_name: str,
+    ) -> None:
+        """
+        Writes a structured, styled Excel table (`tbl_qualified_leads` / `tbl_non_qualified_leads`)
+        preserving exact header styling, zebra striping, column alignments, widths, borders,
+        number formats ('0', '0.0', '@' on Evaluated_At), frozen header row, and TableStyleMedium2.
+        """
+        thin_side = Side(style="thin", color="CBD5E1")
+        cell_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+        hdr_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+        hdr_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        hdr_align = Alignment(horizontal="center", vertical="center")
+
+        even_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        odd_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+        data_font = Font(name="Calibri", size=10, color="0F172A")
+
+        center_headers = {
+            "rank", "overallscore", "qualificationstatus", "conferenceid",
+            "contacttype", "emailstatus", "industry", "headcounttier",
+            "evaluatedat", "outreachstatus", "replystatus", "replysentiment",
+        }
+        col_widths_by_norm = {
+            "rank": 10.0,
+            "overallscore": 16.5,
+            "qualificationstatus": 23.0,
+            "companyname": 30.0,
+            "companydomain": 24.0,
+            "conferencename": 38.0,
+            "conferenceid": 24.0,
+            "contacttype": 16.0,
+            "contactname": 24.0,
+            "jobtitle": 30.0,
+            "professionalemail": 34.0,
+            "emailstatus": 16.0,
+            "personallinkedinurl": 36.0,
+            "primaryindustry": 28.0,
+            "industry": 16.0,
+            "headcounttier": 22.0,
+            "evaluatedat": 22.0,
+            "outreachstatus": 18.0,
+            "replystatus": 17.0,
+            "receivedreply": 38.0,
+            "replysentiment": 18.0,
+            "threadid": 32.0,
+            "sendmessage": 48.0,
+        }
+
+        ws.row_dimensions[1].height = 30.0
+        norm_headers = [
+            str(h or "").strip().lower().replace(" ", "").replace("_", "")
+            for h in headers
+        ]
+
+        for col_idx, (h, nh) in enumerate(zip(headers, norm_headers), 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = hdr_font
+            cell.fill = hdr_fill
+            cell.alignment = hdr_align
+            cell.border = cell_border
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = col_widths_by_norm.get(nh, 20.0)
+
+        for row_idx, padded in enumerate(rows, 2):
+            ws.row_dimensions[row_idx].height = 22.0
+            row_fill = even_fill if row_idx % 2 == 0 else odd_fill
+            for col_idx, (val, nh) in enumerate(zip(padded[:len(headers)], norm_headers), 1):
+                clean_val = "" if val is None else val
+                cell = ws.cell(row=row_idx, column=col_idx, value=clean_val)
+                cell.fill = row_fill
+                cell.font = data_font
+                cell.border = cell_border
+                cell.alignment = Alignment(
+                    horizontal="center" if nh in center_headers else "left",
+                    vertical="center",
+                )
+                if nh == "rank":
+                    cell.number_format = "0"
+                elif nh == "overallscore":
+                    cell.number_format = "0.0"
+                elif nh == "evaluatedat":
+                    cell.number_format = "@"
+
+        ws.freeze_panes = "A2"
+        last_col = get_column_letter(max(1, len(headers)))
+        last_row = max(2, len(rows) + 1)
+        tbl = Table(displayName=table_name, ref=f"A1:{last_col}{last_row}")
+        tbl.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(tbl)
 
     def sync_qualified_leads_to_excel(self, qualified_rows: List[List[Any]], headers: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -1131,21 +1275,22 @@ class ExcelManager:
         self._ensure_file_exists()
         wb = load_workbook(self.file_path)
         sheet_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
-
-        from openpyxl.styles import PatternFill, Font, Alignment
+        table_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
 
         if headers is None:
             headers = [
                 "Rank", "Overall_Score", "Qualification_Status", "Company_Name",
                 "Company_Domain", "Conference_Name", "Conference_ID", "Contact_Type",
                 "Contact_Name", "Job_Title", "Professional_Email", "Email_Status",
-                "Personal_LinkedIn_URL", "Primary_Industry", "Headcount_Tier",
+                "Personal_LinkedIn_URL", "Primary_Industry", "Industry", "Headcount_Tier",
                 "Evaluated_At", "Outreach Status", "Reply Status", "Received Reply",
                 "Reply Sentiment", "Thread ID", "Send Message"
             ]
 
         existing_rows_aligned: List[List[Any]] = []
+        old_idx = None
         if sheet_name in wb.sheetnames:
+            old_idx = wb.sheetnames.index(sheet_name)
             ws_exist = wb[sheet_name]
             h_row = [str(cell.value or "").strip().lower().replace(" ", "").replace("_", "").replace("replay", "reply") for cell in ws_exist[1]]
             h_map = {name: idx for idx, name in enumerate(h_row)}
@@ -1164,32 +1309,15 @@ class ExcelManager:
                         src_idx = h_map.get("name")
                     elif src_idx is None and nh == "replysentiment":
                         src_idx = h_map.get("sentiment")
-                    aligned.append(raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else "")
+                    val = raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else ""
+                    aligned.append("" if val is None else val)
                 existing_rows_aligned.append(aligned)
             del wb[sheet_name]
 
         merged_rows = self._union_merge_lead_rows(existing_rows_aligned, qualified_rows, headers, default_status="Pending")
 
-        ws = wb.create_sheet(title=sheet_name)
-        for col_idx, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_idx, value=h)
-            cell.font = Font(name="Calibri", size=11, bold=True, color="1B365D")
-            cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        for row_idx, padded in enumerate(merged_rows, 2):
-            qual_val = str(padded[2] or "").upper()
-            try:
-                score_val = float(padded[1] or 0)
-            except (ValueError, TypeError):
-                score_val = 0.0
-            fill_color = "D9EAD3" if (qual_val == "HIGH_MATCH" or score_val >= 75.0) else "FFF2CC"
-            row_fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
-
-            for col_idx, val in enumerate(padded[:len(headers)], 1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                cell.fill = row_fill
-                cell.font = Font(name="Calibri", size=10)
+        ws = wb.create_sheet(title=sheet_name, index=old_idx)
+        self._write_formatted_leads_table_sheet(ws, headers, merged_rows, table_name=table_name)
 
         self._safe_save(wb)
         logger.info(f"✅ Local Excel: Successfully union-synced {len(merged_rows)} qualified leads ({len(qualified_rows)} incoming) to '{sheet_name}'.")
@@ -1259,24 +1387,25 @@ class ExcelManager:
         self._ensure_file_exists()
         wb = load_workbook(self.file_path)
         sheet_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
-
-        from openpyxl.styles import PatternFill, Font, Alignment
+        table_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
 
         if headers is None:
             headers = [
                 "Rank", "Overall_Score", "Qualification_Status", "Company_Name",
                 "Company_Domain", "Conference_Name", "Conference_ID", "Contact_Type",
                 "Contact_Name", "Job_Title", "Professional_Email", "Email_Status",
-                "Personal_LinkedIn_URL", "Primary_Industry", "Headcount_Tier",
+                "Personal_LinkedIn_URL", "Primary_Industry", "Industry", "Headcount_Tier",
                 "Evaluated_At", "Outreach Status", "Reply Status", "Received Reply",
                 "Reply Sentiment", "Thread ID", "Send Message"
             ]
 
         existing_rows_aligned: List[List[Any]] = []
         target_ws_name = None
+        old_idx = None
         for s in [sheet_name, "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:
             if s in wb.sheetnames:
                 target_ws_name = s
+                old_idx = wb.sheetnames.index(s)
                 break
 
         if target_ws_name and target_ws_name in wb.sheetnames:
@@ -1298,26 +1427,15 @@ class ExcelManager:
                         src_idx = h_map.get("name")
                     elif src_idx is None and nh == "replysentiment":
                         src_idx = h_map.get("sentiment")
-                    aligned.append(raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else "")
+                    val = raw_vals[src_idx] if src_idx is not None and src_idx < len(raw_vals) else ""
+                    aligned.append("" if val is None else val)
                 existing_rows_aligned.append(aligned)
             del wb[target_ws_name]
 
         merged_rows = self._union_merge_lead_rows(existing_rows_aligned, non_qualified_rows, headers, default_status="Disqualified")
 
-        ws = wb.create_sheet(title=sheet_name)
-        for col_idx, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_idx, value=h)
-            cell.font = Font(name="Calibri", size=11, bold=True, color="5B2C05")
-            cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        row_fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
-
-        for row_idx, padded in enumerate(merged_rows, 2):
-            for col_idx, val in enumerate(padded[:len(headers)], 1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                cell.fill = row_fill
-                cell.font = Font(name="Calibri", size=10)
+        ws = wb.create_sheet(title=sheet_name, index=old_idx)
+        self._write_formatted_leads_table_sheet(ws, headers, merged_rows, table_name=table_name)
 
         self._safe_save(wb)
         logger.info(f"✅ Local Excel: Successfully union-synced {len(merged_rows)} non-qualified leads ({len(non_qualified_rows)} incoming) to '{sheet_name}'.")
