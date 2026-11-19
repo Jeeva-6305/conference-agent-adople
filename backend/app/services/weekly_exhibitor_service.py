@@ -27,6 +27,9 @@ _AGGREGATOR_DOMAINS = (
     "eventbrite.", "meetup.com", "lu.ma", "luma.com", "allevents.in",
     "10times.com", "tsnn.com", "tradefest.io", "eventseye.com",
     "eventsinamerica.com", "cvent.com", "govevents.com",
+    "electronica.de", "fanexpohq.com", "comic-con.org", "nacuboannualmeeting.org",
+    "hannovermesse.de", "worlddairyexpo.", "soho2026.", "aafpfuture2026.",
+    "money2020middleeast.com", "sdaba.org", "mdrealtor.org",
 )
 
 _EXHIBITOR_NOISE_PATTERNS = re.compile(
@@ -416,7 +419,7 @@ class WeeklyExhibitorService:
                 for tr in t_results:
                     r_url = tr.get("url", "")
                     r_title = tr.get("title", "")
-                    if r_url and any(k in (r_url + " " + r_title).lower() for k in ["exhibitor", "floorplan", "mapyourshow", "directory", "a2z", "cadmium", "expo", "partner", "sponsor"]):
+                    if r_url and not any(dom in r_url.lower() for dom in _AGGREGATOR_DOMAINS) and any(k in (r_url + " " + r_title).lower() for k in ["exhibitor", "floorplan", "mapyourshow", "directory", "a2z", "cadmium", "expo", "partner", "sponsor"]):
                         try:
                             resp = self._get_session().get(r_url, timeout=8)
                             if resp.status_code == 200 and resp.text:

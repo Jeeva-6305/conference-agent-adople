@@ -714,7 +714,7 @@ class ExcelManager:
             existing_keys.add(key)
             added_count += 1
 
-        if replace_all and cached_real_rows:
+        if not replace_all and cached_real_rows:
             for hist_row in cached_real_rows:
                 h_key = (str(hist_row[0] or "").strip().lower(), str(hist_row[2] or "").strip().lower())
                 if h_key not in existing_keys:
@@ -854,7 +854,7 @@ class ExcelManager:
             existing_keys.add(key)
             added_count += 1
 
-        if replace_all and cached_real_rows:
+        if not replace_all and cached_real_rows:
             for hist_row in cached_real_rows:
                 h_key = (str(hist_row[0] or "").strip().lower(), str(hist_row[2] or "").strip().lower())
                 if h_key not in existing_keys:
