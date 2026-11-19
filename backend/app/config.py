@@ -152,6 +152,7 @@ class Settings:
     OUTREACH_GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     OUTREACH_USE_GEMINI: bool = os.getenv("USE_GEMINI", "1").lower() in ("1", "true", "yes")
     EMAIL_TEAMS_CARD_ENABLED: bool = os.getenv("EMAIL_TEAMS_CARD_ENABLED", os.getenv("EMAIL_TEAMS_CARD", "true")).lower() in ("1", "true", "yes")
+    BOUNCE_TEAMS_CARD_ENABLED: bool = os.getenv("BOUNCE_TEAMS_CARD_ENABLED", "false").lower() in ("1", "true", "yes")
     OUTREACH_STATE_FILE: str = os.getenv("STATE_FILE", str(BASE_DIR.parent / "outreach_state.json"))
     OUTREACH_ACTIVE: bool = os.getenv("OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
     OUTREACH_TIMEZONE: str = os.getenv("OUTREACH_TIMEZONE", "Asia/Kolkata")

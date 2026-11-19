@@ -1383,7 +1383,7 @@ def send_teams_bounce_notification(
     enabled = getattr(
         settings,
         "BOUNCE_TEAMS_CARD_ENABLED",
-        getattr(settings, "EMAIL_TEAMS_CARD_ENABLED", True),
+        False,
     )
     if not enabled:
         logger.info("Teams bounce card is disabled.")
