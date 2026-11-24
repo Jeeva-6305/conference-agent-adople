@@ -138,6 +138,37 @@ class ExcelManager:
             logger.warning(f"Could not overwrite {self.file_path} because it is currently locked in Excel.")
             return False
 
+    def _safe_load_workbook(self, read_only: bool = False, data_only: bool = False):
+        """
+        Safely loads the Excel workbook. If corrupted or truncated (e.g. zlib/zip error),
+        automatically attempts self-healing recovery by downloading the clean master copy from OneDrive.
+        """
+        self._ensure_file_exists()
+        try:
+            return load_workbook(self.file_path, read_only=read_only, data_only=data_only)
+        except Exception as e:
+            logger.error(f"⚠️ [ExcelManager] Corrupted or unreadable workbook at {self.file_path}: {e}. Initiating auto-recovery from OneDrive master...")
+            try:
+                from ..services.onedrive_excel_service import OneDriveExcelService
+                od_svc = OneDriveExcelService()
+                content = od_svc.download_workbook_bytes()
+                if content and len(content) > 1000:
+                    import shutil, time
+                    backup_path = f"{self.file_path}.corrupt.{int(time.time())}"
+                    try:
+                        shutil.copy(self.file_path, backup_path)
+                    except Exception:
+                        pass
+                    with open(self.file_path, "wb") as f:
+                        f.write(content)
+                    logger.info(f"✅ [ExcelManager] Auto-recovery successful: restored {self.file_path} from OneDrive master.")
+                    return load_workbook(self.file_path, read_only=read_only, data_only=data_only)
+                else:
+                    logger.warning("[ExcelManager] Auto-recovery failed: OneDrive returned empty bytes.")
+            except Exception as rec_err:
+                logger.error(f"❌ [ExcelManager] OneDrive auto-recovery failed: {rec_err}")
+            raise
+
     def _auto_fit_columns(self, ws):
         thin_border = Border(
             left=Side(style='thin', color='E2E8F0'),
@@ -192,7 +223,7 @@ class ExcelManager:
             return 0
 
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         
         if "USA Conferences" not in wb.sheetnames:
             ws_conf = wb.active
@@ -358,7 +389,7 @@ class ExcelManager:
         Never deletes or overwrites existing rows.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
 
         # 1. Weekly Conferences sheet
         if "weekly_conference" not in wb.sheetnames:
@@ -448,6 +479,12 @@ class ExcelManager:
 
         added_spks = 0
         for s in speakers:
+            # Keep only verified speaker records relevant to upcoming conferences
+            has_contact = bool((s.professional_email or "").strip() or (s.personal_linkedin_url or "").strip())
+            is_verified = (s.verification_status or "").strip().lower() in ("verified", "accept_all")
+            if not (has_contact or is_verified):
+                continue
+
             spk_key = ((s.conference_id or "").strip().lower(), (s.speaker_name or "").strip().lower())
             match_spk_row = existing_wspk_rows.get(spk_key)
             if match_spk_row:
@@ -548,7 +585,7 @@ class ExcelManager:
         """
         if not os.path.exists(self.file_path):
             return False
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         if "weekly_speakers" not in wb.sheetnames:
             return False
         ws = wb["weekly_speakers"]
@@ -593,6 +630,75 @@ class ExcelManager:
             self._safe_save(wb)
         return updated
 
+    def bulk_update_weekly_speaker_enrichment(
+        self,
+        updates: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Updates multiple existing speaker rows in-place on the local 'weekly_speakers' sheet
+        in a SINGLE open/save pass to eliminate disk/zip thrashing and prevent file corruption.
+        """
+        if not updates or not os.path.exists(self.file_path):
+            return 0
+        wb = self._safe_load_workbook()
+        if "weekly_speakers" not in wb.sheetnames:
+            return 0
+        ws = wb["weekly_speakers"]
+
+        # Build fast index lookups for O(1) matching
+        row_by_sid = {}
+        row_by_cid_name = {}
+        for row_idx in range(2, ws.max_row + 1):
+            sid_val = str(ws.cell(row=row_idx, column=1).value or "").strip().lower()
+            cid_val = str(ws.cell(row=row_idx, column=2).value or "").strip().lower()
+            name_val = str(ws.cell(row=row_idx, column=4).value or "").strip().lower()
+            if sid_val:
+                row_by_sid[sid_val] = row_idx
+            if cid_val and name_val:
+                row_by_cid_name[(cid_val, name_val)] = row_idx
+
+        updated_count = 0
+        for item in updates:
+            target_sid = str(item.get("speaker_id") or "").strip().lower()
+            target_cid = str(item.get("conference_id") or "").strip().lower()
+            target_name = str(item.get("speaker_name") or "").strip().lower()
+
+            row_idx = row_by_sid.get(target_sid) or row_by_cid_name.get((target_cid, target_name))
+            if not row_idx:
+                continue
+
+            job_title = item.get("job_title")
+            company_name = item.get("company_name")
+            personal_linkedin_url = item.get("personal_linkedin_url")
+            linkedin_status = item.get("linkedin_status")
+            professional_email = item.get("professional_email")
+            email_source_url = item.get("email_source_url")
+            verification_status = item.get("verification_status")
+            last_checked_at = item.get("last_checked_at")
+
+            if job_title and not str(ws.cell(row=row_idx, column=5).value or "").strip():
+                ws.cell(row=row_idx, column=5).value = job_title
+            if company_name and not str(ws.cell(row=row_idx, column=6).value or "").strip():
+                ws.cell(row=row_idx, column=6).value = company_name
+            if personal_linkedin_url:
+                ws.cell(row=row_idx, column=7).value = personal_linkedin_url
+            if linkedin_status:
+                ws.cell(row=row_idx, column=8).value = linkedin_status
+            if professional_email:
+                ws.cell(row=row_idx, column=9).value = professional_email
+            if email_source_url:
+                ws.cell(row=row_idx, column=10).value = email_source_url
+            if verification_status:
+                ws.cell(row=row_idx, column=12).value = verification_status
+            if last_checked_at:
+                ws.cell(row=row_idx, column=13).value = last_checked_at
+
+            updated_count += 1
+
+        if updated_count > 0:
+            self._safe_save(wb)
+        return updated_count
+
     def sync_weekly_attendees_to_excel(
         self,
         attendees: List[Any],
@@ -606,7 +712,7 @@ class ExcelManager:
             return {"status": "skipped", "inserted_count": 0}
 
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
 
         sheet_name = "weekly_attendees"
         cols = [
@@ -739,7 +845,7 @@ class ExcelManager:
             return {"status": "skipped", "inserted_count": 0}
 
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
 
         sheet_name = "weekly_exhibitors"
         cols = [
@@ -892,7 +998,7 @@ class ExcelManager:
         across Speaker, Attendee, and Exhibitor column sets.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         if "Verified Data" not in wb.sheetnames:
             return False
         ws = wb["Verified Data"]
@@ -963,7 +1069,7 @@ class ExcelManager:
         Preserves 'weekly_speakers' completely untouched.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
 
         sheet_name = "Speakers Replies"
         headers = [
@@ -1273,7 +1379,7 @@ class ExcelManager:
         Union-merges incoming rows with existing historical rows and preserves all outreach tracking states.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         sheet_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
         table_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
 
@@ -1333,7 +1439,7 @@ class ExcelManager:
         Updates an existing contact row in Local Excel 'Qualified Leads' worksheet.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         sheet_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
         if sheet_name not in wb.sheetnames:
             return False
@@ -1385,7 +1491,7 @@ class ExcelManager:
         Union-merges incoming rows with existing historical rows and preserves all outreach tracking states.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         sheet_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
         table_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
 
@@ -1451,7 +1557,7 @@ class ExcelManager:
         Updates an existing contact row in Local Excel 'Non -Qualified Leads' worksheet.
         """
         self._ensure_file_exists()
-        wb = load_workbook(self.file_path)
+        wb = self._safe_load_workbook()
         sheet_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
         target_ws_name = None
         for s in [sheet_name, "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:

@@ -136,37 +136,51 @@ class OneDriveExcelService:
         endpoint: str,
         body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Makes an authenticated HTTP request to the Microsoft Graph API."""
-        token = self._get_access_token()
+        """Makes an authenticated HTTP request to the Microsoft Graph API with retry backoff."""
         url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
+        max_retries = 3
+        backoff = 1.0
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json"
-        }
+        for attempt in range(max_retries):
+            token = self._get_access_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json"
+            }
 
-        data_bytes = None
-        if body is not None:
-            data_bytes = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            data_bytes = None
+            if body is not None:
+                data_bytes = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
 
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                status = resp.status
-                raw = resp.read().decode("utf-8")
-                if not raw:
-                    return {"status_code": status}
-                data = json.loads(raw)
-                data["_status_code"] = status
-                return data
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="ignore")
-            logger.error(f"Graph API {method} {url} error (HTTP {e.code}): {err_body}")
-            return {"error": e.code, "message": err_body}
-        except Exception as e:
-            logger.error(f"Graph API {method} {url} unexpected exception: {e}")
-            return {"error": -1, "message": str(e)}
+            req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    status = resp.status
+                    raw = resp.read().decode("utf-8")
+                    if not raw:
+                        return {"status_code": status}
+                    data = json.loads(raw)
+                    data["_status_code"] = status
+                    return data
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="ignore")
+                if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    logger.warning(f"Graph API {method} {url} returned HTTP {e.code}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                logger.error(f"Graph API {method} {url} error (HTTP {e.code}): {err_body}")
+                return {"error": e.code, "message": err_body}
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Graph API {method} {url} error: {e}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                logger.error(f"Graph API {method} {url} unexpected exception: {e}")
+                return {"error": -1, "message": str(e)}
+        return {"error": -1, "message": "Max retries exceeded"}
 
     def resolve_drive_id(self) -> str:
         """Resolves the user's OneDrive drive ID."""
@@ -222,6 +236,16 @@ class OneDriveExcelService:
                     return self._item_id
 
         raise FileNotFoundError(f"Workbook '{self.file_name}' not found in OneDrive drive '{drive_id}'.")
+
+    def download_workbook_bytes(self) -> bytes:
+        """Downloads the current master workbook bytes directly from OneDrive via Microsoft Graph API."""
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        token = self._get_access_token()
+        url = f"{self.base_url}/drives/{drive_id}/items/{item_id}/content"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
 
     def test_connection(self) -> Dict[str, Any]:
         """
@@ -505,6 +529,14 @@ class OneDriveExcelService:
             conf_id = (spk.conference_id or "").strip()
             name = (spk.speaker_name or "").strip()
             if not conf_id or not name:
+                skipped_count += 1
+                continue
+
+            # Keep ONLY verified speaker records relevant to upcoming conferences.
+            # Avoid adding unverified speaker records that are marked as 'needs_review' without email or LinkedIn.
+            has_contact = bool((spk.professional_email or "").strip() or (spk.personal_linkedin_url or "").strip())
+            is_verified = (spk.verification_status or "").strip().lower() in ("verified", "accept_all")
+            if not (has_contact or is_verified):
                 skipped_count += 1
                 continue
 
@@ -938,6 +970,14 @@ class OneDriveExcelService:
             conf_id = (spk.conference_id or "").strip()
             name = (spk.speaker_name or "").strip()
             if not conf_id or not name:
+                skipped_count += 1
+                continue
+
+            # Keep ONLY verified speaker records relevant to upcoming conferences.
+            # Avoid adding unverified speaker records that are marked as 'needs_review' without email or LinkedIn.
+            has_contact = bool((spk.professional_email or "").strip() or (spk.personal_linkedin_url or "").strip())
+            is_verified = (spk.verification_status or "").strip().lower() in ("verified", "accept_all")
+            if not (has_contact or is_verified):
                 skipped_count += 1
                 continue
 

@@ -597,6 +597,8 @@ def is_distinctive_company(company_name: str) -> bool:
     non_generic = [t for t in tokens if t and t not in GENERIC_COMPANY_WORDS and len(t) > 2]
     return len(non_generic) > 0
 
+_TAVILY_EXHAUSTED = False
+
 def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_title: str = "", location: str = ""):
     clean_name = re.sub(r'^(Dr\.|Doctor|Prof\.|Professor|Mr\.|Ms\.|Mrs\.)\s+', '', speaker_name, flags=re.I).strip()
     clean_name = re.sub(r'[\s,]+(MD|PhD|JD|CISO|CISSP|Esq|Jr\.|Sr\.|III|II|IV)[\s.]*$', '', clean_name, flags=re.I).strip()
@@ -623,10 +625,10 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
     seen_urls = set()
     s = cffi_requests.Session(impersonate="chrome120")
 
-    for q in queries:
+    for q in queries[:2]:
         try:
             url = f"https://www.bing.com/search?q={urllib.parse.quote(q)}"
-            resp = s.get(url, headers=headers, timeout=8)
+            resp = s.get(url, headers=headers, timeout=4)
             if resp.status_code != 200:
                 continue
 
@@ -678,7 +680,8 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
             pass
 
     # High-accuracy fallback: Tavily Search if direct Bing was blocked or inconclusive
-    if not candidates and getattr(settings, "TAVILY_API_KEY", ""):
+    global _TAVILY_EXHAUSTED
+    if not candidates and not _TAVILY_EXHAUSTED and getattr(settings, "TAVILY_API_KEY", ""):
         try:
             import requests as _rq
             target_scope = company_name or job_title or "USA"
@@ -704,6 +707,8 @@ def search_linkedin_candidates(speaker_name: str, company_name: str = "", job_ti
                                     "snippet": it.get("content", ""),
                                     "query_used": t_query
                                 })
+            elif t_resp.status_code in (401, 402, 429, 432, 433):
+                _TAVILY_EXHAUSTED = True
         except Exception:
             pass
 

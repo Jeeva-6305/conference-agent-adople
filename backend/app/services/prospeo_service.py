@@ -55,7 +55,7 @@ class ProspeoService:
             "X-KEY": self.api_key
         }
         self.last_call_time = 0.0
-        self.min_interval = 3.0  # Safety rate limit spacing: max 1 req every 3.0 sec
+        self.min_interval = 4.5  # Safety rate limit spacing: max 1 req every 4.5 sec
 
     def _rate_limit_throttle(self):
         """Enforces minimum time interval between consecutive Prospeo API calls."""
@@ -195,8 +195,10 @@ class ProspeoService:
                     return {"status": "error", "code": 400, "message": f"Prospeo 400: {err_code}"}
 
                 elif status_code == 429:
-                    logger.warning(f"Prospeo 429 Rate Limit. Backing off for {5 * attempt}s (Attempt {attempt}/3)...")
-                    time.sleep(5 * attempt)
+                    logger.warning(f"Prospeo 429 Rate Limit. Backing off for {10 * attempt}s (Attempt {attempt}/3)...")
+                    if attempt == 3:
+                        return {"status": "rate_limited", "code": 429, "message": "Prospeo 429 Rate Limit exceeded after 3 attempts."}
+                    time.sleep(10 * attempt)
                     continue
 
                 else:

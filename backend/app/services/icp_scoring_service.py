@@ -2403,15 +2403,21 @@ FOUND OFFICIAL URL:
 
 enrichment_chain = research_prompt | azure_llm | profile_parser
 
+_TAVILY_EXHAUSTED = False
+
 def search_company_with_tavily(
     company_name: str,
     speaker_name: str = "",
     conference_name: str = ""
 ) -> Dict[str, str]:
     """Production-grade targeted homepage Tavily web search with lexical URL ranking and blog filtering."""
+    global _TAVILY_EXHAUSTED
     clean_name = company_name.strip()
     if not clean_name or clean_name.lower() in ["unknown", "n/a", "none"]:
         return {"url": "", "overview": "No company name provided."}
+
+    if _TAVILY_EXHAUSTED:
+        return {"url": "", "overview": f"Company: {clean_name}."}
 
     if len(clean_name) <= 5:
         context_parts = [f'"{clean_name}"']
@@ -2442,6 +2448,11 @@ def search_company_with_tavily(
 
             return {"url": official_url, "overview": overview[:1200]}
         except Exception as e:
+            err_msg = str(e).lower()
+            if "usage limit" in err_msg or "quota" in err_msg or "432" in err_msg or "402" in err_msg:
+                _TAVILY_EXHAUSTED = True
+                print(f"⚠️ Tavily quota exhausted: {e}. Skipping subsequent Tavily calls.")
+                return {"url": "", "overview": f"Company: {clean_name}."}
             if attempt == 0:
                 time.sleep(1.0)
                 continue

@@ -200,6 +200,15 @@ def is_valid_speaker_name(name: str) -> bool:
     if any(kw in lower for kw in substring_junk):
         return False
 
+    KNOWN_JUNK_PHRASES = {
+        "san francisco", "san diego", "las vegas", "los angeles", "new york", "san antonio",
+        "san antonio-austin", "atlanta fall", "atlanta spring", "from san fernando valley",
+        "from san bernardino", "national bridal market chicago", "san francisco web design",
+        "orange county", "new jersey", "from orange county", "invite friends", "add me to waitlist"
+    }
+    if lower in KNOWN_JUNK_PHRASES or lower.startswith("from ") or lower.startswith("exit at "):
+        return False
+
     # Whole-word checks for job titles, event vocabulary, and cities
     invalid_words = {
         "visit", "information", "ticket", "tickets", "policy", "network", "community",
@@ -223,7 +232,9 @@ def is_valid_speaker_name(name: str) -> bool:
         "roadmap", "showcase", "exhibit", "exhibitor", "exhibitors", "booth", "track",
         "reception", "breakfast", "lunch", "dinner", "cocktail", "vip", "schedule",
         "avenue", "boulevard", "suite", "floor", "united", "states", "usa", "uk",
-        "masterclass", "workshop", "webinar", "bootcamp", "tbd", "tba", "placeholder",
+        "masterclass", "workshop", "workshops", "seminar", "seminars", "tutorial", "tutorials",
+        "roundtable", "roundtables", "webinar", "webinars", "bootcamp", "tbd", "tba", "placeholder",
+        "review", "quarterly", "businessweek", "economist", "journal",
         "n/a", "none", "unknown", "what", "when", "where", "why", "how", "more",
     }
     raw_words = clean.split()

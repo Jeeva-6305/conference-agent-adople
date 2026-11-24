@@ -5,6 +5,7 @@ import re
 import time
 import json
 import uuid
+import hashlib
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -93,13 +94,15 @@ def calculate_weekly_target_range(
 def generate_weekly_conference_id(title: str, start_dt: date) -> str:
     """Generates a stable, reproducible Conference ID based on title and year/month."""
     norm = re.sub(r'[^a-zA-Z0-9]', '', title.lower())[:8].upper()
-    return f"CONF-W{start_dt.year}-{norm}-{uuid.uuid4().hex[:4].upper()}"
+    h = hashlib.md5(f"{norm}_{start_dt.isoformat()}".encode("utf-8")).hexdigest()[:4].upper()
+    return f"CONF-W{start_dt.year}-{norm}-{h}"
 
 
 def generate_weekly_speaker_id(conf_id: str, name: str) -> str:
-    """Generates a stable Speaker ID."""
+    """Generates a stable, deterministic Speaker ID based on conference ID and name."""
     norm = re.sub(r'[^a-zA-Z0-9]', '', name.lower())[:6].upper()
-    return f"SPK-{conf_id}-{norm}-{uuid.uuid4().hex[:3].upper()}"
+    h = hashlib.md5(f"{conf_id}_{name.lower()}".encode("utf-8")).hexdigest()[:3].upper()
+    return f"SPK-{conf_id}-{norm}-{h}"
 
 
 def validate_personal_linkedin_url(url: Optional[str]) -> str:
@@ -680,17 +683,17 @@ class WeeklyConferenceService:
                 if not exist_main:
                     main_conf = Conference(
                         conference_id=conf_rec.conference_id,
-                        conference_title=conf_rec.conference_name,
+                        conference_title=str(conf_rec.conference_name or "")[:500],
                         start_date=conf_rec.start_date,
                         end_date=conf_rec.end_date,
-                        city=conf_rec.city or "",
-                        country=conf_rec.country or "USA",
-                        venue=f"{conf_rec.city} Convention Center" if conf_rec.city else "Convention Center",
-                        industry_category=conf_rec.industry or "Enterprise AI / Technology",
-                        official_conference_url=conf_rec.official_event_url,
-                        registration_url=conf_rec.official_event_url,
-                        source_url=conf_rec.source_url or conf_rec.official_event_url,
-                        source_name=conf_rec.source_name,
+                        city=str(conf_rec.city or "")[:255],
+                        country=str(conf_rec.country or "USA")[:50],
+                        venue=str(f"{conf_rec.city} Convention Center" if conf_rec.city else "Convention Center")[:500],
+                        industry_category=str(conf_rec.industry or "Enterprise AI / Technology")[:500],
+                        official_conference_url=str(conf_rec.official_event_url or "")[:500],
+                        registration_url=str(conf_rec.official_event_url or "")[:500],
+                        source_url=str(conf_rec.source_url or conf_rec.official_event_url or "")[:500],
+                        source_name=str(conf_rec.source_name or "")[:50],
                         is_published_to_excel=False,
                         speakers_available="Yes" if conf_rec.speaker_status == "Yes" else "No",
                         status="scheduled"
@@ -707,16 +710,17 @@ class WeeklyConferenceService:
                 if not exist_spk:
                     main_spk = Speaker(
                         conference_id=spk_rec.conference_id,
-                        conference_name=spk_rec.conference_name,
-                        speaker_name=spk_rec.speaker_name,
-                        company_name=spk_rec.company_name,
-                        job_role_designation=spk_rec.job_title,
-                        linkedin_url=spk_rec.personal_linkedin_url,
-                        source_url=spk_rec.speaker_source_url
+                        conference_name=str(spk_rec.conference_name or "")[:500],
+                        speaker_name=str(spk_rec.speaker_name or "")[:255],
+                        company_name=str(spk_rec.company_name or "")[:255],
+                        job_role_designation=str(spk_rec.job_title or "")[:255],
+                        linkedin_url=str(spk_rec.personal_linkedin_url or "")[:500],
+                        source_url=str(spk_rec.speaker_source_url or "")[:500]
                     )
                     self.db.add(main_spk)
             self.db.commit()
         except Exception as e:
+            self.db.rollback()
             logger.warning(f"⚠️ [Weekly Workflow] Mirror to primary tables warning: {e}")
 
         # 8. Synchronize Append-Only to OneDrive Excel
@@ -724,6 +728,7 @@ class WeeklyConferenceService:
             f"☁️ [Weekly Workflow] Syncing {len(window_confs)} conferences, "
             f"{len(window_speakers)} speakers, and {len(source_run_logs)} logs to OneDrive Excel..."
         )
+        excel_sync_res = {}
         try:
             excel_sync_res = self.onedrive_svc.sync_all_weekly(
                 conferences=window_confs,
@@ -738,14 +743,9 @@ class WeeklyConferenceService:
                     pass
             logger.info(f"✅ [Weekly Workflow] OneDrive Excel sync succeeded: {excel_sync_res}")
         except Exception as e:
-            logger.error(f"❌ [Weekly Workflow] Critical failure during OneDrive Excel storage: {e}", exc_info=True)
-            # Strict restriction: Do not consider run complete or send Teams card if Excel storage fails!
-            return {
-                "status": "error",
-                "stage": "onedrive_excel_storage",
-                "error": str(e),
-                "weekly_run_id": run_id
-            }
+            self.db.rollback()
+            logger.error(f"⚠️ [Weekly Workflow] Initial OneDrive Excel storage warning: {e}", exc_info=True)
+            excel_sync_res = {"status": "error", "error": str(e), "stage": "onedrive_excel_storage"}
 
         # 8b. Automated Speaker LinkedIn Resolution & Professional Email Enrichment (Prospeo / Apollo / Hunter)
         enrichment_res = {}
@@ -810,6 +810,21 @@ class WeeklyConferenceService:
             except Exception as e:
                 logger.warning(f"⚠️ [Weekly Workflow] ICP scoring notice: {e}", exc_info=True)
 
+        # 8g. Retry OneDrive sync if initial attempt encountered transient error
+        if excel_sync_res.get("status") == "error":
+            logger.info("🔄 [Weekly Workflow] Retrying OneDrive Excel storage after downstream collection...")
+            try:
+                excel_sync_res = self.onedrive_svc.sync_all_weekly(
+                    conferences=window_confs,
+                    speakers=window_speakers,
+                    logs=source_run_logs,
+                    run_id=run_id
+                )
+                logger.info(f"✅ [Weekly Workflow] OneDrive Excel sync retry succeeded: {excel_sync_res}")
+            except Exception as retry_err:
+                self.db.rollback()
+                logger.error(f"❌ [Weekly Workflow] OneDrive Excel sync retry also failed: {retry_err}")
+
         # 7. One General Weekly Inbound Summary Teams Card
         # Industry-wise conference counts across all active target-window conferences
         industry_counts: Dict[str, int] = {}
@@ -850,6 +865,248 @@ class WeeklyConferenceService:
             "speaker_enrichment": enrichment_res,
             "attendees": attendee_res,
             "exhibitors": exhibitor_res,
+            "icp_scoring": icp_res,
+            "teams_card": teams_res,
+            "duration_seconds": elapsed
+        }
+
+    def complete_weekly_pipeline_for_run(self, run_id: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+        """
+        Completes the weekly pipeline for an existing run (or current weekly run):
+        1. Loads target window conferences and speakers from DB.
+        2. Re-syncs to Local Excel (self-healing).
+        3. Mirrors safely to primary Conference and Speaker tables.
+        4. Syncs to OneDrive Excel (weekly_conference, weekly_speakers, weekly_source_run_log).
+        5. Enriches speakers with missing email/LinkedIn.
+        6. Discovers and collects genuine weekly attendees.
+        7. Discovers and collects genuine weekly exhibitors.
+        8. Aggregates all new data into Verified Data.
+        9. Scores leads via ICP Scoring and publishes Qualified & Non-Qualified Leads.
+        10. Sends the weekly summary card to Teams.
+        """
+        start_time = time.time()
+        if not run_id:
+            target_sunday, target_saturday, run_id = calculate_weekly_target_range()
+        else:
+            m = re.match(r"^WEEK-(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$", run_id.strip())
+            if m:
+                target_sunday = date.fromisoformat(m.group(1))
+                target_saturday = date.fromisoformat(m.group(2))
+            else:
+                target_sunday, target_saturday, _ = calculate_weekly_target_range()
+
+        logger.info(f"🚀 [Weekly Pipeline Resumption] Resuming pipeline for run {run_id} ({target_sunday} to {target_saturday})...")
+
+        # Load conferences and speakers
+        window_confs = self.db.query(WeeklyConference).filter(
+            WeeklyConference.start_date >= target_sunday,
+            WeeklyConference.start_date <= target_saturday
+        ).order_by(WeeklyConference.start_date.asc()).all()
+
+        window_conf_ids = [c.conference_id for c in window_confs]
+        window_speakers = (
+            self.db.query(WeeklySpeaker).filter(WeeklySpeaker.conference_id.in_(window_conf_ids)).all()
+            if window_conf_ids else []
+        )
+
+        db_logs = self.db.query(WeeklySourceRunLog).filter(WeeklySourceRunLog.run_id == run_id).all()
+        source_run_logs = [l.to_dict() for l in db_logs]
+
+        logger.info(f"Loaded {len(window_confs)} conferences, {len(window_speakers)} speakers, {len(source_run_logs)} logs from database.")
+
+        # Local Excel Sync
+        try:
+            from ..storage.excel_manager import ExcelManager
+            excel_mgr = ExcelManager()
+            excel_mgr.sync_weekly_to_excel(
+                conferences=window_confs,
+                speakers=window_speakers,
+                logs=source_run_logs
+            )
+            logger.info("✅ [Weekly Resumption] Local Excel sync complete.")
+        except Exception as e:
+            logger.warning(f"⚠️ [Weekly Resumption] Local Excel sync notice: {e}")
+
+        # Mirror to primary tables
+        try:
+            from ..models import Conference, Speaker
+            for conf_rec in window_confs:
+                exist_main = self.db.query(Conference).filter(
+                    (Conference.conference_id == conf_rec.conference_id) |
+                    ((Conference.conference_title == conf_rec.conference_name) & (Conference.start_date == conf_rec.start_date))
+                ).first()
+                if not exist_main:
+                    main_conf = Conference(
+                        conference_id=conf_rec.conference_id,
+                        conference_title=str(conf_rec.conference_name or "")[:500],
+                        start_date=conf_rec.start_date,
+                        end_date=conf_rec.end_date,
+                        city=str(conf_rec.city or "")[:255],
+                        country=str(conf_rec.country or "USA")[:50],
+                        venue=str(f"{conf_rec.city} Convention Center" if conf_rec.city else "Convention Center")[:500],
+                        industry_category=str(conf_rec.industry or "Enterprise AI / Technology")[:500],
+                        official_conference_url=str(conf_rec.official_event_url or "")[:500],
+                        registration_url=str(conf_rec.official_event_url or "")[:500],
+                        source_url=str(conf_rec.source_url or conf_rec.official_event_url or "")[:500],
+                        source_name=str(conf_rec.source_name or "")[:50],
+                        is_published_to_excel=False,
+                        speakers_available="Yes" if conf_rec.speaker_status == "Yes" else "No",
+                        status="scheduled"
+                    )
+                    self.db.add(main_conf)
+                else:
+                    exist_main.speakers_available = "Yes" if conf_rec.speaker_status == "Yes" else exist_main.speakers_available
+
+            for spk_rec in window_speakers:
+                exist_spk = self.db.query(Speaker).filter(
+                    Speaker.conference_id == spk_rec.conference_id,
+                    Speaker.speaker_name == spk_rec.speaker_name
+                ).first()
+                if not exist_spk:
+                    main_spk = Speaker(
+                        conference_id=spk_rec.conference_id,
+                        conference_name=str(spk_rec.conference_name or "")[:500],
+                        speaker_name=str(spk_rec.speaker_name or "")[:255],
+                        company_name=str(spk_rec.company_name or "")[:255],
+                        job_role_designation=str(spk_rec.job_title or "")[:255],
+                        linkedin_url=str(spk_rec.personal_linkedin_url or "")[:500],
+                        source_url=str(spk_rec.speaker_source_url or "")[:500]
+                    )
+                    self.db.add(main_spk)
+            self.db.commit()
+            logger.info("✅ [Weekly Resumption] Primary Conference and Speaker tables mirrored.")
+        except Exception as e:
+            self.db.rollback()
+            logger.warning(f"⚠️ [Weekly Resumption] Mirror to primary tables warning: {e}")
+
+        # Sync to OneDrive Excel
+        excel_sync_res = {}
+        try:
+            excel_sync_res = self.onedrive_svc.sync_all_weekly(
+                conferences=window_confs,
+                speakers=window_speakers,
+                logs=source_run_logs,
+                run_id=run_id
+            )
+            logger.info(f"✅ [Weekly Resumption] OneDrive Excel sync succeeded: {excel_sync_res}")
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"⚠️ [Weekly Resumption] OneDrive Excel sync warning: {e}", exc_info=True)
+            excel_sync_res = {"status": "error", "error": str(e)}
+
+        # Speaker Enrichment
+        enrichment_res = {}
+        speaker_enrichment_enabled = (
+            getattr(settings, "PROSPEO_ENRICHMENT_ENABLED", True)
+            or getattr(settings, "APOLLO_ENRICHMENT_ENABLED", True)
+            or getattr(settings, "HUNTER_EMAIL_ENRICHMENT_ENABLED", True)
+        )
+        speakers_needing_enrichment = [
+            s for s in window_speakers
+            if not (s.professional_email or "").strip() or not (s.personal_linkedin_url or "").strip()
+        ]
+        if speaker_enrichment_enabled and speakers_needing_enrichment:
+            try:
+                from .speaker_enrichment_service import SpeakerEnrichmentService
+                enrich_svc = SpeakerEnrichmentService(self.db)
+                enrichment_res = enrich_svc.enrich_weekly_speakers(speakers=speakers_needing_enrichment, sync_verified=False)
+                logger.info(f"✅ [Weekly Resumption] Speaker enrichment complete: {enrichment_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Resumption] Speaker enrichment notice: {e}")
+
+        # Attendee Collection
+        attendee_res = {}
+        if getattr(settings, "WEEKLY_ATTENDEE_COLLECTION_ENABLED", True):
+            try:
+                from .weekly_attendee_service import WeeklyAttendeeService
+                att_svc = WeeklyAttendeeService(self.db)
+                attendee_res = att_svc.collect_weekly_attendees(run_id=run_id, force=force, sync_verified=False)
+                logger.info(f"✅ [Weekly Resumption] Attendee collection complete: {attendee_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Resumption] Attendee collection notice: {e}")
+
+        # Exhibitor Collection
+        exhibitor_res = {}
+        if getattr(settings, "WEEKLY_EXHIBITOR_COLLECTION_ENABLED", True):
+            try:
+                from .weekly_exhibitor_service import WeeklyExhibitorService
+                exh_svc = WeeklyExhibitorService(self.db)
+                exhibitor_res = exh_svc.collect_weekly_exhibitors(run_id=run_id, force=force, sync_verified=False)
+                logger.info(f"✅ [Weekly Resumption] Exhibitor collection complete: {exhibitor_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Resumption] Exhibitor collection notice: {e}")
+
+        # Sync to Verified Data
+        verified_res = {}
+        try:
+            from .verified_data_service import VerifiedDataService
+            v_svc = VerifiedDataService(self.db)
+            verified_res = v_svc.sync_all_verified_data()
+            logger.info(f"✅ [Weekly Resumption] Verified Data sync complete: {verified_res}")
+        except Exception as e:
+            logger.warning(f"⚠️ [Weekly Resumption] Verified Data sync notice: {e}", exc_info=True)
+
+        # ICP Scoring & Qualified Leads
+        icp_res = {}
+        if getattr(settings, "WEEKLY_ICP_SCORING_ENABLED", True):
+            try:
+                from .icp_scoring_service import ICPScoringService
+                icp_svc = ICPScoringService(self.db)
+                icp_res = icp_svc.score_and_publish_weekly_run(run_id=run_id)
+                logger.info(f"✅ [Weekly Resumption] ICP scoring & lead segregation complete: {icp_res}")
+            except Exception as e:
+                logger.warning(f"⚠️ [Weekly Resumption] ICP scoring notice: {e}", exc_info=True)
+
+        # Retry OneDrive sync if initial failed
+        if excel_sync_res.get("status") == "error":
+            logger.info("🔄 [Weekly Resumption] Retrying OneDrive Excel sync...")
+            try:
+                excel_sync_res = self.onedrive_svc.sync_all_weekly(
+                    conferences=window_confs,
+                    speakers=window_speakers,
+                    logs=source_run_logs,
+                    run_id=run_id
+                )
+                logger.info(f"✅ [Weekly Resumption] OneDrive Excel sync retry succeeded: {excel_sync_res}")
+            except Exception as retry_err:
+                self.db.rollback()
+                logger.error(f"❌ [Weekly Resumption] OneDrive Excel sync retry failed: {retry_err}")
+
+        # Teams Summary Card
+        industry_counts: Dict[str, int] = {}
+        for c in window_confs:
+            cat = c.industry or "Enterprise AI / Technology"
+            main_cat = cat.split("/")[0].strip()
+            industry_counts[main_cat] = industry_counts.get(main_cat, 0) + 1
+
+        teams_res = self.teams_svc.send_weekly_summary_card(
+            db=self.db,
+            weekly_run_id=run_id,
+            start_date=target_sunday,
+            end_date=target_saturday,
+            total_conferences=len(window_confs),
+            industry_counts=industry_counts,
+            force=force
+        )
+
+        elapsed = round(time.time() - start_time, 2)
+        logger.info(f"🎉 [Weekly Resumption] Completed run {run_id} in {elapsed}s.")
+
+        return {
+            "status": "success",
+            "weekly_run_id": run_id,
+            "target_window": {
+                "sunday": target_sunday.isoformat(),
+                "saturday": target_saturday.isoformat()
+            },
+            "total_conferences": len(window_confs),
+            "total_speakers": len(window_speakers),
+            "industry_breakdown": industry_counts,
+            "onedrive_excel": excel_sync_res,
+            "speaker_enrichment": enrichment_res,
+            "attendees": attendee_res,
+            "exhibitors": exhibitor_res,
+            "verified_data": verified_res,
             "icp_scoring": icp_res,
             "teams_card": teams_res,
             "duration_seconds": elapsed

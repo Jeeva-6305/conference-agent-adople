@@ -745,6 +745,8 @@ _INDUSTRY_EXACT_MAP: Dict[str, str] = {
     # Healthcare Industry (checked with exact priority over AI for "Healthcare AI")
     "healthcare": "healthcare",
     "health care": "healthcare",
+    "medical": "healthcare",
+    "medicine": "healthcare",
     "healthcare technology": "healthcare",
     "healthcare tech": "healthcare",
     "healthtech": "healthcare",

@@ -55,6 +55,7 @@ class SpeakerEnrichmentService:
         self.excel_mgr = ExcelManager()
         self._prospeo_quota_exhausted = False
         self._hunter_quota_exhausted = False
+        self._speaker_enrichment_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def enrich_single_speaker(
         self,
@@ -85,6 +86,12 @@ class SpeakerEnrichmentService:
         clean_existing_email = (existing_email or "").strip().lower()
         need_email = not ("@" in clean_existing_email and "." in clean_existing_email)
 
+        cache_key = (clean_name.lower(), clean_company.lower())
+        if cache_key in self._speaker_enrichment_cache and need_email:
+            cached = dict(self._speaker_enrichment_cache[cache_key])
+            if cached.get("professional_email") or cached.get("personal_linkedin_url"):
+                return cached
+
         discovered_li = current_li
         linkedin_status = "verified" if current_li else "needs_review"
         professional_email = clean_existing_email if not need_email else ""
@@ -98,7 +105,7 @@ class SpeakerEnrichmentService:
         # Step 1: Free LinkedIn Discovery FIRST (Apollo + Web Search)
         # Doing this before Prospeo avoids double Prospeo credit burns.
         # -------------------------------------------------------------
-        if not discovered_li:
+        if not discovered_li and (discovered_company or discovered_title):
             logger.info(f"🔍 [Enrichment] Missing LinkedIn URL for '{clean_name}' at '{clean_company}'. Searching...")
             try:
                 apollo_search = self.apollo.search_people(
@@ -120,7 +127,7 @@ class SpeakerEnrichmentService:
             except Exception as e:
                 logger.debug(f"[Enrichment] Apollo notice for '{clean_name}': {e}")
 
-            if not discovered_li:
+            if not discovered_li and (discovered_company or discovered_title):
                 try:
                     verified_url = discover_and_verify_linkedin_profile(
                         clean_name, discovered_company, discovered_title, location or "USA"
@@ -136,6 +143,8 @@ class SpeakerEnrichmentService:
                 except Exception as e:
                     logger.warning(f"⚠️ [Enrichment] LinkedIn discovery notice for '{clean_name}': {e}")
                     linkedin_status = "needs_review"
+        elif not discovered_li:
+            linkedin_status = "needs_review"
 
         # -------------------------------------------------------------
         # Step 2: Single Prospeo API Call (only if email is missing & we have company or LinkedIn)
@@ -149,10 +158,10 @@ class SpeakerEnrichmentService:
                     linkedin_url=discovered_li
                 )
                 p_status = prospeo_res.get("status")
-                if p_status == "quota_exceeded":
+                if p_status in ("quota_exceeded", "rate_limited"):
                     self._prospeo_quota_exhausted = True
-                    enrichment_stage = "prospeo_quota_exceeded"
-                    logger.warning("⚠️ [Enrichment] Prospeo credits exhausted; skipping further Prospeo calls in this run.")
+                    enrichment_stage = p_status
+                    logger.warning(f"⚠️ [Enrichment] Prospeo {p_status}; pausing Prospeo for remaining speakers and falling back to Hunter/Apollo.")
                 elif p_status == "success":
                     p_li = validate_personal_linkedin_url(prospeo_res.get("linkedin_url"))
                     if p_li and not discovered_li:
@@ -219,7 +228,7 @@ class SpeakerEnrichmentService:
         if not professional_email:
             verification_status = "needs_review"
 
-        return {
+        res = {
             "speaker_name": clean_name,
             "company_name": discovered_company,
             "job_title": discovered_title,
@@ -231,6 +240,8 @@ class SpeakerEnrichmentService:
             "enrichment_stage": enrichment_stage,
             "last_checked_at": datetime.utcnow().isoformat()
         }
+        self._speaker_enrichment_cache[cache_key] = res
+        return res
 
     def enrich_weekly_speakers(
         self,
@@ -324,13 +335,18 @@ class SpeakerEnrichmentService:
             "duration_seconds": 0.0
         }
 
+        local_excel_batch: List[Dict[str, Any]] = []
+
         for spk in target_speakers:
-            s_name = (spk.speaker_name or "").strip()
-            s_conf_id = (spk.conference_id or "").strip()
-            s_comp = (spk.company_name or "").strip()
-            s_role = (spk.job_title or "").strip()
-            current_li = (spk.personal_linkedin_url or "").strip()
-            current_email = (spk.professional_email or "").strip()
+            try:
+                s_name = (spk.speaker_name or "").strip()
+                s_conf_id = (spk.conference_id or "").strip()
+                s_comp = (spk.company_name or "").strip()
+                s_role = (spk.job_title or "").strip()
+                current_li = (spk.personal_linkedin_url or "").strip()
+                current_email = (spk.professional_email or "").strip()
+            except Exception:
+                continue
 
             # Check if OneDrive row has a LinkedIn URL / Email that DB was missing (case-insensitive)
             od_match = (
@@ -355,6 +371,11 @@ class SpeakerEnrichmentService:
 
             # Skip if already fully enriched and not forced
             if current_li and current_email and not force:
+                stats["already_complete"] += 1
+                continue
+
+            # Skip if email quotas are exhausted and speaker already has confirmed LinkedIn URL
+            if self._prospeo_quota_exhausted and self._hunter_quota_exhausted and current_li and not force:
                 stats["already_complete"] += 1
                 continue
 
@@ -385,20 +406,27 @@ class SpeakerEnrichmentService:
                 stats["not_found_count"] += 1
 
             # Fill empty title/company if discovered from Prospeo/Apollo
+            title_updated = False
+            comp_updated = False
             if not s_role and new_title:
                 spk.job_title = new_title
+                title_updated = True
             if not s_comp and new_comp:
                 spk.company_name = new_comp
+                comp_updated = True
 
             # Update LinkedIn if newly discovered
+            li_updated = False
             if new_li and new_li != current_li:
                 spk.personal_linkedin_url = new_li
                 spk.linkedin_status = new_li_status
                 stats["linkedin_discovered"] += 1
+                li_updated = True
             elif not spk.linkedin_status or spk.linkedin_status != new_li_status:
                 spk.linkedin_status = new_li_status
 
             # Update email if newly discovered, safeguarding against downgrading an existing verified email
+            email_updated = False
             if new_email and new_email != current_email:
                 current_is_verified = (spk.verification_status == "verified" and bool(current_email))
                 new_is_verified = (new_ver_status == "verified")
@@ -406,6 +434,7 @@ class SpeakerEnrichmentService:
                     spk.professional_email = new_email
                     spk.email_source_url = new_email_source or "prospeo.io"
                     stats["emails_enriched"] += 1
+                    email_updated = True
 
             # Ensure verification_status reflects actual email state (never "verified" without email)
             final_email = (spk.professional_email or "").strip()
@@ -418,82 +447,84 @@ class SpeakerEnrichmentService:
 
             spk.last_checked_at = datetime.utcnow()
 
+            was_updated = (li_updated or email_updated or title_updated or comp_updated)
+
             # -------------------------------------------------------------
-            # Storage Sync: DB, Local Excel, and OneDrive in-place update
+            # Storage Sync: DB, Local Excel (batched), and OneDrive in-place update
             # -------------------------------------------------------------
-            # A. Update PostgreSQL
-            self.db.commit()
-            stats["db_updates"] += 1
+            if was_updated:
+                # A. Update PostgreSQL
+                self.db.commit()
+                stats["db_updates"] += 1
 
-            # Mirror to primary Speaker table if applicable
-            try:
-                main_spk = self.db.query(Speaker).filter(
-                    Speaker.conference_id == spk.conference_id,
-                    Speaker.speaker_name == spk.speaker_name
-                ).first()
-                if main_spk:
-                    if new_li and not main_spk.linkedin_url:
-                        main_spk.linkedin_url = new_li
-                    self.db.commit()
-            except Exception:
-                pass
-
-            # B. Update Local Excel in-place
-            try:
-                local_ok = self.excel_mgr.update_weekly_speaker_enrichment(
-                    speaker_id=spk.speaker_id,
-                    conference_id=spk.conference_id,
-                    speaker_name=spk.speaker_name,
-                    personal_linkedin_url=spk.personal_linkedin_url,
-                    linkedin_status=spk.linkedin_status,
-                    professional_email=spk.professional_email,
-                    email_source_url=spk.email_source_url,
-                    verification_status=spk.verification_status,
-                    last_checked_at=spk.last_checked_at.isoformat()
-                )
-                if local_ok:
-                    stats["local_excel_updates"] += 1
-            except Exception as e:
-                logger.warning(f"Local Excel enrichment update notice for '{s_name}': {e}")
-
-            # C. Update OneDrive Excel table row in-place
-            if od_row_idx is not None and od_vals is not None:
+                # Mirror to primary Speaker table if applicable
                 try:
-                    updated_vals = list(od_vals)
-                    # Ensure row has at least 20 columns matching table schema
-                    while len(updated_vals) < 20:
-                        updated_vals.append("")
+                    main_spk = self.db.query(Speaker).filter(
+                        Speaker.conference_id == spk.conference_id,
+                        Speaker.speaker_name == spk.speaker_name
+                    ).first()
+                    if main_spk:
+                        if new_li and not main_spk.linkedin_url:
+                            main_spk.linkedin_url = new_li
+                        self.db.commit()
+                except Exception:
+                    pass
 
-                    # Col 4: Job_Title
-                    if spk.job_title and spk.job_title.lower() not in ["keynote speaker", "speaker", "featured guest"]:
-                        updated_vals[4] = spk.job_title
-                    # Col 5: Company_Name
-                    if spk.company_name and spk.company_name.lower() not in ["industry organization", "n/a", "tbd"]:
-                        updated_vals[5] = spk.company_name
-                    # Col 6: Personal_LinkedIn_URL
-                    if spk.personal_linkedin_url:
-                        updated_vals[6] = spk.personal_linkedin_url
-                    # Col 7: LinkedIn_Status
-                    updated_vals[7] = spk.linkedin_status or "needs_review"
-                    # Col 8: Professional_Email
-                    if spk.professional_email:
-                        updated_vals[8] = spk.professional_email
-                    # Col 9: Email_Source_URL
-                    if spk.email_source_url:
-                        updated_vals[9] = spk.email_source_url
-                    # Col 11: Verification_Status
-                    updated_vals[11] = spk.verification_status or "needs_review"
-                    # Col 12: Last_Checked_At
-                    updated_vals[12] = spk.last_checked_at.isoformat()
+                # B. Stage for bulk Local Excel update
+                local_excel_batch.append({
+                    "speaker_id": spk.speaker_id,
+                    "conference_id": spk.conference_id,
+                    "speaker_name": spk.speaker_name,
+                    "personal_linkedin_url": spk.personal_linkedin_url,
+                    "linkedin_status": spk.linkedin_status,
+                    "professional_email": spk.professional_email,
+                    "email_source_url": spk.email_source_url,
+                    "verification_status": spk.verification_status,
+                    "last_checked_at": spk.last_checked_at.isoformat(),
+                    "job_title": spk.job_title,
+                    "company_name": spk.company_name,
+                })
 
-                    od_patch_res = self.onedrive_svc.update_weekly_speaker_row(
-                        row_index=od_row_idx,
-                        values=updated_vals
-                    )
-                    if "error" not in od_patch_res:
-                        stats["onedrive_updates"] += 1
-                except Exception as e:
-                    logger.warning(f"OneDrive Excel row PATCH notice for '{s_name}': {e}")
+                # C. Update OneDrive Excel table row in-place
+                if od_row_idx is not None and od_vals is not None:
+                    try:
+                        updated_vals = list(od_vals)
+                        while len(updated_vals) < 20:
+                            updated_vals.append("")
+
+                        if spk.job_title and spk.job_title.lower() not in ["keynote speaker", "speaker", "featured guest"]:
+                            updated_vals[4] = spk.job_title
+                        if spk.company_name and spk.company_name.lower() not in ["industry organization", "n/a", "tbd"]:
+                            updated_vals[5] = spk.company_name
+                        if spk.personal_linkedin_url:
+                            updated_vals[6] = spk.personal_linkedin_url
+                        updated_vals[7] = spk.linkedin_status or "needs_review"
+                        if spk.professional_email:
+                            updated_vals[8] = spk.professional_email
+                        if spk.email_source_url:
+                            updated_vals[9] = spk.email_source_url
+                        updated_vals[11] = spk.verification_status or "needs_review"
+                        updated_vals[12] = spk.last_checked_at.isoformat()
+
+                        od_patch_res = self.onedrive_svc.update_weekly_speaker_row(
+                            row_index=od_row_idx,
+                            values=updated_vals
+                        )
+                        if "error" not in od_patch_res:
+                            stats["onedrive_updates"] += 1
+                    except Exception as e:
+                        logger.warning(f"OneDrive Excel row PATCH notice for '{s_name}': {e}")
+            else:
+                # Even if no data changed, save last_checked_at in DB
+                self.db.commit()
+
+        # Execute bulk Local Excel update in a single file open/save pass
+        if local_excel_batch:
+            try:
+                stats["local_excel_updates"] = self.excel_mgr.bulk_update_weekly_speaker_enrichment(local_excel_batch)
+                logger.info(f"✅ [Speaker Enrichment] Local Excel bulk updated {stats['local_excel_updates']} speaker rows in a single pass.")
+            except Exception as e:
+                logger.warning(f"Local Excel enrichment update notice: {e}")
 
         elapsed = round(time.time() - start_time, 2)
         stats["duration_seconds"] = elapsed
