@@ -22,6 +22,7 @@ from .tasks.celery_app import (
 )
 
 from .tasks.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+from .routers.reporting_router import router as reporting_router
 
 
 
@@ -46,6 +47,11 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     init_db()
+    try:
+        from .services.reporting_service import ReportingService
+        ReportingService.ensure_initialized()
+    except Exception as _rpt_err:
+        logger.warning(f"[Startup] Reporting table init notice: {_rpt_err}")
     start_scheduler()
     db = SessionLocal()
     try:
@@ -721,6 +727,83 @@ def get_outreach_telemetry(db: Session = Depends(get_db)):
     return svc.get_status()
 
 
+@app.get("/api/outreach/non-qualified/status")
+def get_non_qualified_outreach_telemetry(db: Session = Depends(get_db)):
+    """
+    Returns telemetry for the Non-Qualified Leads Outreach campaign (ICP score < 50):
+    - Independent campaign state from .env (NON_QUALIFIED_OUTREACH_ACTIVE)
+    - Dry Run safety status (NON_QUALIFIED_DRY_RUN)
+    - Total non-qualified leads, pending, sent, and replied counts
+    - Scheduled send time and day
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.get_non_qualified_status()
+
+
+@app.post("/api/outreach/non-qualified/preview-send")
+def preview_non_qualified_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Dry-run preview of the non-qualified outreach email campaign:
+    Personalizes emails from template.txt based on category (Speaker, Attendee, Exhibitor),
+    and returns sample renderings without sending live emails.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_non_qualified_outreach_send_pass(force=force, dry_run_override=True)
+
+
+@app.post("/api/outreach/non-qualified/send")
+def trigger_non_qualified_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
+    """
+    Executes the email outreach campaign targeting Non-Qualified Leads (score < 50).
+    Independent workflow controlled by NON_QUALIFIED_OUTREACH_ACTIVE in .env.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.run_non_qualified_outreach_send_pass(force=force)
+
+
+@app.post("/api/outreach/sync-qualified-leads")
+def sync_qualified_leads_endpoint():
+    """
+    Refreshes the 'Qualified Leads' worksheet in both Local Excel and SharePoint/OneDrive.
+    Extracts all leads from latest weekly scoring results with ICP score > 50,
+    deduplicates them, and attaches the 6 outreach tracking columns.
+    """
+    from .services.icp_scoring_service import build_and_sync_qualified_leads
+    return build_and_sync_qualified_leads()
+
+
+@app.post("/api/outreach/sync-non-qualified-leads")
+def sync_non_qualified_leads_endpoint():
+    """
+    Refreshes the 'Non -Qualified Leads' worksheet in both Local Excel and SharePoint/OneDrive.
+    Extracts all leads from latest weekly scoring results with ICP score < 50,
+    deduplicates them, and attaches the 6 outreach tracking columns.
+    """
+    from .services.icp_scoring_service import build_and_sync_non_qualified_leads
+    return build_and_sync_non_qualified_leads()
+
+
+@app.post("/api/outreach/send-lead")
+def send_lead_manual_endpoint(
+    email: str = Query(..., description="Email address of the lead to send outreach to"),
+    dry_run: bool = Query(False, description="Whether to preview without sending"),
+    force: bool = Query(True, description="Force send even if disqualified or already contacted"),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually triggers outreach for an individual lead (Qualified or Disqualified):
+    - Selects template from template.txt based on category (Speaker, Attendee, Exhibitor).
+    - Updates outreach tracking columns in Qualified Leads / Non -Qualified Leads and original weekly sheet.
+    - Registers thread for reply monitoring.
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.send_manual_lead_outreach(email=email, force=force, dry_run_override=dry_run)
+
+
 @app.post("/api/outreach/preview-send")
 def preview_outreach_send(force: bool = Query(False), db: Session = Depends(get_db)):
     """
@@ -750,11 +833,12 @@ def send_test_email_endpoint(
     speaker_name: str = Query("Akash Tester", description="Test recipient name"),
     company_name: str = Query("Adople AI", description="Test company name"),
     conference_name: str = Query("AI Innovation Summit 2026", description="Test conference name"),
+    category: str = Query("Speaker", description="Role category: Speaker, Attendee, or Exhibitor"),
     db: Session = Depends(get_db)
 ):
     """
     Sends an isolated test outreach email to your personal email address:
-    - Uses approved template.txt formatting.
+    - Uses approved template.txt role-specific formatting.
     - Dispatches from akash@adople.ai via Microsoft Graph API.
     - Creates an isolated test record in PostgreSQL and OneDrive Excel.
     - Registers the thread in outreach_state.json for reply monitoring.
@@ -766,7 +850,8 @@ def send_test_email_endpoint(
         recipient_email=test_email,
         speaker_name=speaker_name,
         company_name=company_name,
-        conference_name=conference_name
+        conference_name=conference_name,
+        category=category
     )
 
 
@@ -783,6 +868,20 @@ def poll_outreach_replies(db: Session = Depends(get_db)):
     from .services.speaker_outreach_service import SpeakerOutreachService
     svc = SpeakerOutreachService(db=db)
     return svc.poll_replies()
+
+
+@app.post("/api/outreach/poll-bounces")
+def poll_outreach_bounces(db: Session = Depends(get_db)):
+    """
+    Manually triggers an independent email bounce / NDR monitoring pass across akash@adople.ai:
+    - Works independently of reply detection & Gemini sentiment analysis
+    - Matches NDR / bounce notices against outreach recipients
+    - Dispatches a Microsoft Teams Bounce Alert Card strictly once per bounced message
+    - Updates PostgreSQL & Excel tracking statuses to 'bounced'
+    """
+    from .services.speaker_outreach_service import SpeakerOutreachService
+    svc = SpeakerOutreachService(db=db)
+    return svc.poll_bounces()
 
 
 @app.get("/api/outreach/template")
@@ -809,6 +908,20 @@ def get_outreach_templates():
         "template_path": template_path,
         "status": "pending_user_approval"
     }
+
+
+# ==========================================
+# Automated Weekly Outreach & Conference Reporting System (24/7 Isolated Module)
+# ==========================================
+app.include_router(reporting_router)
+
+# ==========================================
+# Outreach Studio UI & Automated Pipeline Router
+# ==========================================
+from .routers.outreach_studio_router import studio_router
+app.include_router(studio_router)
+
+
 
 
 

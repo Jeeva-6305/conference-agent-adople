@@ -38,6 +38,15 @@ def normalize_title(title: Optional[str]) -> str:
     return " ".join(t.split())
 
 
+def _col_num_to_letter(n: int) -> str:
+    """Converts 1-based column number to Excel column letters (1 -> A, 23 -> W)."""
+    res = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        res = chr(65 + rem) + res
+    return res
+
+
 class OneDriveExcelService:
     """
     Microsoft Graph API Client for Work OneDrive Excel Workbook Integration:
@@ -74,6 +83,10 @@ class OneDriveExcelService:
         self.weekly_exh_tbl_name = getattr(settings, "WEEKLY_EXHIBITOR_TABLE_NAME", "weekly_exhibitors")
         self.speakers_replies_ws_name = getattr(settings, "SPEAKER_REPLIES_WORKSHEET_NAME", "Speakers Replies")
         self.speakers_replies_tbl_name = getattr(settings, "SPEAKER_REPLIES_TABLE_NAME", "tbl_speakers_replies")
+        self.qualified_leads_ws_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
+        self.qualified_leads_tbl_name = getattr(settings, "QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
+        self.non_qualified_leads_ws_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
+        self.non_qualified_leads_tbl_name = getattr(settings, "NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
 
         self.base_url = settings.MICROSOFT_GRAPH_BASE_URL.rstrip("/")
 
@@ -123,37 +136,51 @@ class OneDriveExcelService:
         endpoint: str,
         body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Makes an authenticated HTTP request to the Microsoft Graph API."""
-        token = self._get_access_token()
+        """Makes an authenticated HTTP request to the Microsoft Graph API with retry backoff."""
         url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
+        max_retries = 3
+        backoff = 1.0
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json"
-        }
+        for attempt in range(max_retries):
+            token = self._get_access_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json"
+            }
 
-        data_bytes = None
-        if body is not None:
-            data_bytes = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            data_bytes = None
+            if body is not None:
+                data_bytes = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
 
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                status = resp.status
-                raw = resp.read().decode("utf-8")
-                if not raw:
-                    return {"status_code": status}
-                data = json.loads(raw)
-                data["_status_code"] = status
-                return data
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="ignore")
-            logger.error(f"Graph API {method} {url} error (HTTP {e.code}): {err_body}")
-            return {"error": e.code, "message": err_body}
-        except Exception as e:
-            logger.error(f"Graph API {method} {url} unexpected exception: {e}")
-            return {"error": -1, "message": str(e)}
+            req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    status = resp.status
+                    raw = resp.read().decode("utf-8")
+                    if not raw:
+                        return {"status_code": status}
+                    data = json.loads(raw)
+                    data["_status_code"] = status
+                    return data
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="ignore")
+                if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    logger.warning(f"Graph API {method} {url} returned HTTP {e.code}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                logger.error(f"Graph API {method} {url} error (HTTP {e.code}): {err_body}")
+                return {"error": e.code, "message": err_body}
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Graph API {method} {url} error: {e}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                logger.error(f"Graph API {method} {url} unexpected exception: {e}")
+                return {"error": -1, "message": str(e)}
+        return {"error": -1, "message": "Max retries exceeded"}
 
     def resolve_drive_id(self) -> str:
         """Resolves the user's OneDrive drive ID."""
@@ -209,6 +236,16 @@ class OneDriveExcelService:
                     return self._item_id
 
         raise FileNotFoundError(f"Workbook '{self.file_name}' not found in OneDrive drive '{drive_id}'.")
+
+    def download_workbook_bytes(self) -> bytes:
+        """Downloads the current master workbook bytes directly from OneDrive via Microsoft Graph API."""
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        token = self._get_access_token()
+        url = f"{self.base_url}/drives/{drive_id}/items/{item_id}/content"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
 
     def test_connection(self) -> Dict[str, Any]:
         """
@@ -495,6 +532,14 @@ class OneDriveExcelService:
                 skipped_count += 1
                 continue
 
+            # Keep ONLY verified speaker records relevant to upcoming conferences.
+            # Avoid adding unverified speaker records that are marked as 'needs_review' without email or LinkedIn.
+            has_contact = bool((spk.professional_email or "").strip() or (spk.personal_linkedin_url or "").strip())
+            is_verified = (spk.verification_status or "").strip().lower() in ("verified", "accept_all")
+            if not (has_contact or is_verified):
+                skipped_count += 1
+                continue
+
             key = (conf_id.lower(), name.lower())
             name_norm = normalize_title(name)
             title_norm = normalize_title(spk.conference_name)
@@ -690,6 +735,24 @@ class OneDriveExcelService:
         endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows/itemAt(index={row_index})"
         return self._api_request("PATCH", endpoint, body={"values": [values]})
 
+    def update_weekly_attendee_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates an existing weekly attendee row in-place in 'tbl_weekly_attendees' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
+    def update_weekly_exhibitor_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates an existing weekly exhibitor row in-place in 'weekly_exhibitors' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows/itemAt(index={row_index})"
+        return self._api_request("PATCH", endpoint, body={"values": [values]})
+
     def delete_weekly_speaker_row(self, row_index: int) -> Dict[str, Any]:
         """
         Deletes a weekly speaker row at row_index from 'tbl_weekly_speakers' on OneDrive.
@@ -742,12 +805,12 @@ class OneDriveExcelService:
         item_id = self.resolve_item_id()
         existing_rows = self.get_existing_weekly_conference_rows_map()
 
-        existing_ids = {cid.lower() for cid in existing_rows.keys()}
+        existing_ids = {cid.lower(): cid for cid in existing_rows.keys()}
         existing_titles: Set[str] = set()
-        existing_title_dates: Set[Tuple[str, str]] = set()
-        existing_canonical_urls: Set[str] = set()
+        existing_title_dates: Dict[Tuple[str, str], str] = {}
+        existing_canonical_urls: Dict[str, str] = {}
 
-        for _, (_, vals) in existing_rows.items():
+        for cid, (_, vals) in existing_rows.items():
             if len(vals) > 1 and vals[1]:
                 t = normalize_title(vals[1])
                 if t:
@@ -755,11 +818,11 @@ class OneDriveExcelService:
                 if len(vals) > 2 and vals[2]:
                     d = str(vals[2]).strip()
                     if t and d:
-                        existing_title_dates.add((t, d))
+                        existing_title_dates[(t, d)] = cid
             if len(vals) > 8 and vals[8]:
                 canon_u = canonicalize_url(vals[8])
                 if canon_u and len(canon_u) > 10:
-                    existing_canonical_urls.add(canon_u)
+                    existing_canonical_urls[canon_u] = cid
 
         rows_to_insert = []
         skipped_count = 0
@@ -771,16 +834,42 @@ class OneDriveExcelService:
             start_date_str = conf.start_date.isoformat() if conf.start_date else ""
             canon_official_url = canonicalize_url(conf.official_event_url)
 
-            # Deduplication check
-            is_dup = False
+            # Deduplication check + safe metadata backfill for blank / placeholder city/state
+            matched_cid = None
             if conf_id_lower and conf_id_lower in existing_ids:
-                is_dup = True
+                matched_cid = existing_ids[conf_id_lower]
             elif conf_title_norm and start_date_str and (conf_title_norm, start_date_str) in existing_title_dates:
-                is_dup = True
+                matched_cid = existing_title_dates[(conf_title_norm, start_date_str)]
             elif canon_official_url and len(canon_official_url) > 10 and canon_official_url in existing_canonical_urls:
-                is_dup = True
+                matched_cid = existing_canonical_urls[canon_official_url]
 
-            if is_dup:
+            if matched_cid:
+                row_idx, vals = existing_rows[matched_cid]
+                updated_vals = list(vals)
+                changed = False
+                cur_city = str(updated_vals[4] if len(updated_vals) > 4 else "").strip()
+                cur_state = str(updated_vals[5] if len(updated_vals) > 5 else "").strip()
+                cur_ind = str(updated_vals[7] if len(updated_vals) > 7 else "").strip()
+                cur_spk = str(updated_vals[12] if len(updated_vals) > 12 else "").strip()
+                if len(updated_vals) > 12:
+                    if (not cur_city or cur_city.upper() == "USA") and (conf.city or "").strip():
+                        updated_vals[4] = conf.city.strip()
+                        changed = True
+                    if not cur_state and (conf.state or "").strip():
+                        updated_vals[5] = conf.state.strip()
+                        changed = True
+                    if not cur_ind and (conf.industry or "").strip():
+                        updated_vals[7] = conf.industry.strip()
+                        changed = True
+                    if cur_spk.lower() != "yes" and (conf.speaker_status or "").lower() == "yes":
+                        updated_vals[12] = "Yes"
+                        changed = True
+                if changed:
+                    try:
+                        ep = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/rows/itemAt(index={row_idx})"
+                        self._api_request("PATCH", ep, body={"values": [updated_vals]})
+                    except Exception:
+                        pass
                 logger.info(f"OneDrive Excel: Retaining existing weekly record for '{conf.conference_name}'. Skipping duplicate append.")
                 skipped_count += 1
                 continue
@@ -808,15 +897,24 @@ class OneDriveExcelService:
             ]
 
             rows_to_insert.append(new_row)
-            existing_ids.add(conf_id_lower)
+            existing_ids[conf_id_lower] = conf_id
             if conf_title_norm and start_date_str:
-                existing_title_dates.add((conf_title_norm, start_date_str))
+                existing_title_dates[(conf_title_norm, start_date_str)] = conf_id
             if canon_official_url and len(canon_official_url) > 10:
-                existing_canonical_urls.add(canon_official_url)
+                existing_canonical_urls[canon_official_url] = conf_id
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly conference row(s) into '{self.weekly_conf_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 20
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly conference row(s) into '{self.weekly_conf_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_conf_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -875,6 +973,14 @@ class OneDriveExcelService:
                 skipped_count += 1
                 continue
 
+            # Keep ONLY verified speaker records relevant to upcoming conferences.
+            # Avoid adding unverified speaker records that are marked as 'needs_review' without email or LinkedIn.
+            has_contact = bool((spk.professional_email or "").strip() or (spk.personal_linkedin_url or "").strip())
+            is_verified = (spk.verification_status or "").strip().lower() in ("verified", "accept_all")
+            if not (has_contact or is_verified):
+                skipped_count += 1
+                continue
+
             key = (conf_id.lower(), name.lower())
             name_norm = normalize_title(name)
             title_norm = normalize_title(spk.conference_name)
@@ -925,7 +1031,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly speaker row(s) into '{self.weekly_spk_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 26
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} genuinely new weekly speaker row(s) into '{self.weekly_spk_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_spk_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1007,7 +1122,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly attendee row(s) into '{self.weekly_att_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 16
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly attendee row(s) into '{self.weekly_att_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_att_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1096,7 +1220,16 @@ class OneDriveExcelService:
 
         inserted_count = 0
         if rows_to_insert:
-            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly exhibitor row(s) into '{self.weekly_exh_tbl_name}'...")
+            # Dynamically determine exact table column count to prevent dimension mismatch
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/columns")
+            expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 21
+            for r_idx in range(len(rows_to_insert)):
+                while len(rows_to_insert[r_idx]) < expected_width:
+                    rows_to_insert[r_idx].append("")
+                if len(rows_to_insert[r_idx]) > expected_width:
+                    rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
+
+            logger.info(f"OneDrive Excel: Inserting {len(rows_to_insert)} weekly exhibitor row(s) into '{self.weekly_exh_tbl_name}' (width {expected_width})...")
             endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_exh_tbl_name}/rows"
             res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
             if "error" in res:
@@ -1126,18 +1259,31 @@ class OneDriveExcelService:
 
         rows_to_insert = []
         for l in logs:
+            def _val(obj, key, default=""):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                return getattr(obj, key, default)
+
             rows_to_insert.append([
-                l.get("run_id", ""),
-                str(l.get("run_date", "")),
-                l.get("source_name", ""),
-                l.get("source_status", "success"),
-                int(l.get("pages_checked", 1)),
-                int(l.get("conferences_found", 0)),
-                int(l.get("conferences_accepted", 0)),
-                int(l.get("speakers_found", 0)),
-                str(l.get("error_details", "") or ""),
-                round(float(l.get("duration_seconds", 0.0)), 2)
+                _val(l, "run_id", ""),
+                str(_val(l, "run_date", "")),
+                _val(l, "source_name", ""),
+                _val(l, "source_status", "success"),
+                int(_val(l, "pages_checked", 1) or 1),
+                int(_val(l, "conferences_found", 0) or 0),
+                int(_val(l, "conferences_accepted", 0) or 0),
+                int(_val(l, "speakers_found", 0) or 0),
+                str(_val(l, "error_details", "") or ""),
+                round(float(_val(l, "duration_seconds", 0.0) or 0.0), 2)
             ])
+
+        cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_log_tbl_name}/columns")
+        expected_width = len(cols_res.get("value", [])) if (isinstance(cols_res, dict) and "value" in cols_res) else 10
+        for r_idx in range(len(rows_to_insert)):
+            while len(rows_to_insert[r_idx]) < expected_width:
+                rows_to_insert[r_idx].append("")
+            if len(rows_to_insert[r_idx]) > expected_width:
+                rows_to_insert[r_idx] = rows_to_insert[r_idx][:expected_width]
 
         endpoint = f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.weekly_log_tbl_name}/rows"
         res = self._api_request("POST", endpoint, body={"values": rows_to_insert})
@@ -1407,4 +1553,225 @@ class OneDriveExcelService:
             return "error" not in res
         except Exception as e:
             logger.error(f"Error updating verified data contact in OneDrive: {e}")
+            return False
+
+    def get_qualified_leads_table_info(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
+        """
+        Retrieves column names, column index map, and all row entries from 'tbl_qualified_leads' or 'Qualified Leads' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        # Try reading table first
+        try:
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.qualified_leads_tbl_name}/columns")
+            if "error" not in cols_res and "value" in cols_res:
+                col_names = [c["name"] for c in cols_res.get("value", [])]
+                col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                rows_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.qualified_leads_tbl_name}/rows")
+                raw_rows = rows_res.get("value", [])
+                parsed_rows = []
+                for idx, r in enumerate(raw_rows):
+                    vals = r.get("values", [[]])[0]
+                    while len(vals) < len(col_names):
+                        vals.append("")
+                    parsed_rows.append({"row_index": idx, "values": vals})
+                if parsed_rows:
+                    return col_names, col_map, parsed_rows
+        except Exception as e:
+            logger.debug(f"Note reading OneDrive table {self.qualified_leads_tbl_name}: {e}")
+
+        # Fallback to worksheet usedRange
+        try:
+            ws_encoded = urllib.parse.quote(self.qualified_leads_ws_name)
+            used_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/usedRange")
+            vals_matrix = used_res.get("values", [])
+            if len(vals_matrix) > 1:
+                col_names = [str(c) for c in vals_matrix[0]]
+                col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                parsed_rows = []
+                for idx, row in enumerate(vals_matrix[1:]):
+                    while len(row) < len(col_names):
+                        row.append("")
+                    parsed_rows.append({"row_index": idx, "values": row})
+                return col_names, col_map, parsed_rows
+        except Exception as e:
+            logger.debug(f"Note reading OneDrive worksheet {self.qualified_leads_ws_name}: {e}")
+
+        return [], {}, []
+
+    def update_qualified_leads_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates a row in 'tbl_qualified_leads' or worksheet 'Qualified Leads' on OneDrive in-place.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.qualified_leads_tbl_name}/rows/itemAt(index={row_index})", body={"values": [values]})
+        if "error" not in res:
+            return res
+        excel_row = row_index + 2
+        col_letter = _col_num_to_letter(max(len(values), 1))
+        ws_encoded = urllib.parse.quote(self.qualified_leads_ws_name)
+        return self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/range(address='A{excel_row}:{col_letter}{excel_row}')", body={"values": [values]})
+
+    def update_qualified_leads_contact(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None
+    ) -> bool:
+        """
+        Updates a lead's outreach tracking fields in 'Qualified Leads' sheet / table on OneDrive.
+        """
+        try:
+            col_names, col_map, rows = self.get_qualified_leads_table_info()
+            if not rows:
+                return False
+
+            clean_email = (email or "").strip().lower()
+            clean_thread = (thread_id or "").strip()
+
+            target_row = None
+            em_idx = col_map.get("professionalemail") or col_map.get("email")
+            th_idx = col_map.get("threadid")
+
+            for r in rows:
+                vals = r["values"]
+                if em_idx is not None and len(vals) > em_idx:
+                    r_em = str(vals[em_idx] or "").strip().lower()
+                    if clean_email and r_em == clean_email:
+                        target_row = r
+                        break
+                if th_idx is not None and len(vals) > th_idx:
+                    r_th = str(vals[th_idx] or "").strip()
+                    if clean_thread and r_th == clean_thread:
+                        target_row = r
+                        break
+
+            if not target_row:
+                return False
+
+            updated_vals = list(target_row["values"])
+            for field, val in updates.items():
+                f_clean = field.strip()
+                f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+                f_idx = col_map.get(f_key)
+                if f_idx is None and "replay" in f_key:
+                    f_idx = col_map.get(f_key.replace("replay", "reply"))
+                if f_idx is not None and f_idx < len(updated_vals):
+                    updated_vals[f_idx] = val
+
+            res = self.update_qualified_leads_row(target_row["row_index"], updated_vals)
+            return "error" not in res
+        except Exception as e:
+            logger.error(f"Error updating Qualified Leads contact in OneDrive: {e}")
+            return False
+
+    def get_non_qualified_leads_table_info(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
+        """
+        Retrieves column names, column index map, and all row entries from 'tbl_non_qualified_leads' or 'Non -Qualified Leads' on OneDrive.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        try:
+            cols_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/columns")
+            if "error" not in cols_res and "value" in cols_res:
+                col_names = [c["name"] for c in cols_res.get("value", [])]
+                col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                rows_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/rows")
+                raw_rows = rows_res.get("value", [])
+                parsed_rows = []
+                for idx, r in enumerate(raw_rows):
+                    vals = r.get("values", [[]])[0]
+                    while len(vals) < len(col_names):
+                        vals.append("")
+                    parsed_rows.append({"row_index": idx, "values": vals})
+                if parsed_rows:
+                    return col_names, col_map, parsed_rows
+        except Exception as e:
+            logger.debug(f"Note reading OneDrive table {self.non_qualified_leads_tbl_name}: {e}")
+
+        for ws_candidate in [self.non_qualified_leads_ws_name, "Non -Qualified Leads", "Non-Qualified Leads", "Disqualified Leads"]:
+            try:
+                ws_encoded = urllib.parse.quote(ws_candidate)
+                used_res = self._api_request("GET", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/usedRange")
+                vals_matrix = used_res.get("values", [])
+                if len(vals_matrix) > 1:
+                    col_names = [str(c) for c in vals_matrix[0]]
+                    col_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(col_names)}
+                    parsed_rows = []
+                    for idx, row in enumerate(vals_matrix[1:]):
+                        while len(row) < len(col_names):
+                            row.append("")
+                        parsed_rows.append({"row_index": idx, "values": row})
+                    return col_names, col_map, parsed_rows
+            except Exception:
+                pass
+
+        return [], {}, []
+
+    def update_non_qualified_leads_row(self, row_index: int, values: List[Any]) -> Dict[str, Any]:
+        """
+        Updates a row in 'tbl_non_qualified_leads' or worksheet 'Non -Qualified Leads' on OneDrive in-place.
+        """
+        drive_id = self.resolve_drive_id()
+        item_id = self.resolve_item_id()
+        res = self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/tables/{self.non_qualified_leads_tbl_name}/rows/itemAt(index={row_index})", body={"values": [values]})
+        if "error" not in res:
+            return res
+        excel_row = row_index + 2
+        col_letter = _col_num_to_letter(max(len(values), 1))
+        ws_encoded = urllib.parse.quote(self.non_qualified_leads_ws_name)
+        return self._api_request("PATCH", f"/drives/{drive_id}/items/{item_id}/workbook/worksheets('{ws_encoded}')/range(address='A{excel_row}:{col_letter}{excel_row}')", body={"values": [values]})
+
+    def update_non_qualified_leads_contact(
+        self,
+        email: str,
+        updates: Dict[str, Any],
+        thread_id: Optional[str] = None
+    ) -> bool:
+        """
+        Updates a lead's outreach tracking fields in 'Non -Qualified Leads' sheet / table on OneDrive.
+        """
+        try:
+            col_names, col_map, rows = self.get_non_qualified_leads_table_info()
+            if not rows:
+                return False
+
+            clean_email = (email or "").strip().lower()
+            clean_thread = (thread_id or "").strip()
+
+            target_row = None
+            em_idx = col_map.get("professionalemail") or col_map.get("email")
+            th_idx = col_map.get("threadid")
+
+            for r in rows:
+                vals = r["values"]
+                if em_idx is not None and len(vals) > em_idx:
+                    r_em = str(vals[em_idx] or "").strip().lower()
+                    if clean_email and r_em == clean_email:
+                        target_row = r
+                        break
+                if th_idx is not None and len(vals) > th_idx:
+                    r_th = str(vals[th_idx] or "").strip()
+                    if clean_thread and r_th == clean_thread:
+                        target_row = r
+                        break
+
+            if not target_row:
+                return False
+
+            updated_vals = list(target_row["values"])
+            for field, val in updates.items():
+                f_clean = field.strip()
+                f_key = f_clean.lower().replace(" ", "").replace("_", "").replace("/", "")
+                f_idx = col_map.get(f_key)
+                if f_idx is None and "replay" in f_key:
+                    f_idx = col_map.get(f_key.replace("replay", "reply"))
+                if f_idx is not None and f_idx < len(updated_vals):
+                    updated_vals[f_idx] = val
+
+            res = self.update_non_qualified_leads_row(target_row["row_index"], updated_vals)
+            return "error" not in res
+        except Exception as e:
+            logger.error(f"Error updating Non-Qualified Leads contact in OneDrive: {e}")
             return False

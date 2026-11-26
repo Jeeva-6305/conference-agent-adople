@@ -11,8 +11,8 @@ class Conference(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     conference_id = Column(String(50), unique=True, index=True, default=generate_conf_id)
-    conference_title = Column(String(255), nullable=False, index=True)
-    industry_category = Column(String(100), default="Technology & Business")
+    conference_title = Column(String(500), nullable=False, index=True)
+    industry_category = Column(String(500), default="Technology & Business")
     
     start_date = Column(Date, nullable=False, index=True)
     end_date = Column(Date, nullable=False)
@@ -22,12 +22,12 @@ class Conference(Base):
     description = Column(Text, default="")
     
     # Location details
-    venue = Column(String(255), default="Convention Center")
-    city = Column(String(100), default="San Francisco")
+    venue = Column(String(500), default="Convention Center")
+    city = Column(String(255), default="San Francisco")
     country = Column(String(50), default="USA")
     
     # Organizer & Links
-    organizer = Column(String(255), default="")
+    organizer = Column(String(500), default="")
     official_conference_url = Column(String(500), default="")
     registration_url = Column(String(500), default="")
     source_url = Column(String(500), nullable=False)

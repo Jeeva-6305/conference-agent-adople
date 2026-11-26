@@ -218,6 +218,11 @@ class HunterService:
                     return {"status": "error", "code": status_code, "message": err_msg}
 
                 elif status_code == 429:
+                    err_json = resp.json() if resp.text else {}
+                    err_msg = err_json.get("errors", [{}])[0].get("details", "") if isinstance(err_json.get("errors"), list) and err_json.get("errors") else resp.text[:200]
+                    if any(w in str(err_msg).lower() for w in ("quota", "credit", "limit", "billing period", "searches")):
+                        logger.warning(f"⚠️ Hunter.io Quota Exceeded (HTTP 429): {err_msg}")
+                        return {"status": "quota_exceeded", "code": 429, "message": err_msg}
                     retry_after = int(resp.headers.get("Retry-After", 2 * attempt))
                     logger.warning(f"Hunter.io API 429 Rate Limit. Sleeping {retry_after}s (Attempt {attempt}/3)...")
                     time.sleep(retry_after)

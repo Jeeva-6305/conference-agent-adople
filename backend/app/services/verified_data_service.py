@@ -18,7 +18,7 @@ from ..services.onedrive_excel_service import OneDriveExcelService
 
 logger = logging.getLogger(__name__)
 
-# Exact 37-column specification required by user
+# Exact 38-column specification (37 contact/outreach cols + Evaluation_Status in col AL)
 VERIFIED_DATA_HEADERS = [
     # Company and Conference Information (Cols 1-4)
     "Company Name",
@@ -60,7 +60,9 @@ VERIFIED_DATA_HEADERS = [
     "Exhibitor Received Reply",
     "Exhibitor Sentiment",
     "Exhibitor Sent Message",
-    "Exhibitor Thread ID"
+    "Exhibitor Thread ID",
+    # ICP Pipeline Evaluation Marker (Col 38 / AL)
+    "Evaluation_Status"
 ]
 
 
@@ -296,7 +298,7 @@ class VerifiedDataService:
                 att = att_list[i] if i < len(att_list) else None
                 exh = exh_list[i] if i < len(exh_list) else None
 
-                # Build 37-column row
+                # Build 38-column row (37 contact/outreach cols + Evaluation_Status in col AL)
                 row_vals = [
                     # 1-4: Company & Conference Information
                     comp,
@@ -338,7 +340,9 @@ class VerifiedDataService:
                     "",  # Exhibitor Received Reply
                     "",  # Exhibitor Sentiment
                     "",  # Exhibitor Sent Message
-                    ""   # Exhibitor Thread ID
+                    "",  # Exhibitor Thread ID
+                    # 38 (AL): Evaluation_Status (restored from existing sheets during sync if already evaluated)
+                    ""
                 ]
                 matrix_rows.append(row_vals)
 
@@ -357,8 +361,8 @@ class VerifiedDataService:
 
     def sync_to_local_excel(self, matrix_rows: Optional[List[List[Any]]] = None) -> Dict[str, Any]:
         """
-        Writes the 37-column company-grouped records to 'Verified Data' worksheet in local Excel.
-        Preserves existing outreach tracking and reply history in-place.
+        Writes the 38-column company-grouped records to 'Verified Data' worksheet in local Excel.
+        Preserves existing outreach tracking, reply history, and Evaluation_Status in-place.
         """
         if matrix_rows is None:
             matrix_rows, _ = self.get_company_grouped_rows()
@@ -370,17 +374,35 @@ class VerifiedDataService:
             wb = openpyxl.load_workbook(self.excel_path)
             sheet_name = "Verified Data"
 
-            # 1. Cache existing outreach data if local sheet exists
+            # 1. Cache existing outreach data and Evaluation_Status if local sheet exists
             existing_outreach: Dict[str, Dict[str, Any]] = {}
+            existing_eval_by_rowkey: Dict[Tuple[str, str, str, str, str], str] = {}
             if sheet_name in wb.sheetnames:
                 ex_ws = wb[sheet_name]
                 ex_rows = list(ex_ws.iter_rows(values_only=True))
                 if ex_rows and len(ex_rows) > 1:
                     raw_headers = [str(h).strip().lower().replace(" ", "").replace("_", "").replace("/", "") for h in ex_rows[0]]
                     col_map = {name: idx for idx, name in enumerate(raw_headers)}
+                    eval_idx = col_map.get("evaluationstatus")
+                    cid_idx = col_map.get("conferenceid", 3)
+                    comp_idx = col_map.get("companyname", 0)
+                    spk_n_idx = col_map.get("speakername", 4)
+                    att_n_idx = col_map.get("attendeename", 15)
+                    exh_n_idx = col_map.get("exhibitorname", 26)
 
-                    # Support caching from both old 17-col and 37-col schemas
+                    # Support caching from both old 17-col and 38-col schemas
                     for r in ex_rows[1:]:
+                        eval_val = str(r[eval_idx] or "").strip() if eval_idx is not None and len(r) > eval_idx else ""
+                        if eval_val:
+                            rk = (
+                                str(r[cid_idx] or "").strip().lower() if len(r) > cid_idx else "",
+                                str(r[comp_idx] or "").strip().lower() if len(r) > comp_idx else "",
+                                str(r[spk_n_idx] or "").strip().lower() if len(r) > spk_n_idx else "",
+                                str(r[att_n_idx] or "").strip().lower() if len(r) > att_n_idx else "",
+                                str(r[exh_n_idx] or "").strip().lower() if len(r) > exh_n_idx else "",
+                            )
+                            existing_eval_by_rowkey[rk] = eval_val
+
                         # Check speaker email
                         spk_em_idx = col_map.get("speakerprofessionalemail", col_map.get("professionalemail"))
                         if spk_em_idx is not None and len(r) > spk_em_idx:
@@ -392,7 +414,8 @@ class VerifiedDataService:
                                     "received_reply": r[col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1))] if col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1)) != -1 and len(r) > col_map.get("speakerreceivedreply", col_map.get("receivedreplay", -1)) else "",
                                     "reply_sentiment": r[col_map.get("speakersentiment", col_map.get("replaysentiment", -1))] if col_map.get("speakersentiment", col_map.get("replaysentiment", -1)) != -1 and len(r) > col_map.get("speakersentiment", col_map.get("replaysentiment", -1)) else "",
                                     "sent_message": r[col_map.get("speakersentmessage", col_map.get("sendmessage", -1))] if col_map.get("speakersentmessage", col_map.get("sendmessage", -1)) != -1 and len(r) > col_map.get("speakersentmessage", col_map.get("sendmessage", -1)) else "",
-                                    "thread_id": r[col_map.get("speakerthreadid", col_map.get("threadid", -1))] if col_map.get("speakerthreadid", col_map.get("threadid", -1)) != -1 and len(r) > col_map.get("speakerthreadid", col_map.get("threadid", -1)) else ""
+                                    "thread_id": r[col_map.get("speakerthreadid", col_map.get("threadid", -1))] if col_map.get("speakerthreadid", col_map.get("threadid", -1)) != -1 and len(r) > col_map.get("speakerthreadid", col_map.get("threadid", -1)) else "",
+                                    "evaluation_status": eval_val
                                 }
 
                         # Check attendee email
@@ -406,7 +429,8 @@ class VerifiedDataService:
                                     "received_reply": r[col_map.get("attendeereceivedreply", -1)] if col_map.get("attendeereceivedreply", -1) != -1 and len(r) > col_map.get("attendeereceivedreply", -1) else "",
                                     "reply_sentiment": r[col_map.get("attendeesentiment", -1)] if col_map.get("attendeesentiment", -1) != -1 and len(r) > col_map.get("attendeesentiment", -1) else "",
                                     "sent_message": r[col_map.get("attendeesentmessage", -1)] if col_map.get("attendeesentmessage", -1) != -1 and len(r) > col_map.get("attendeesentmessage", -1) else "",
-                                    "thread_id": r[col_map.get("attendeethreadid", -1)] if col_map.get("attendeethreadid", -1) != -1 and len(r) > col_map.get("attendeethreadid", -1) else ""
+                                    "thread_id": r[col_map.get("attendeethreadid", -1)] if col_map.get("attendeethreadid", -1) != -1 and len(r) > col_map.get("attendeethreadid", -1) else "",
+                                    "evaluation_status": eval_val
                                 }
 
                         # Check exhibitor email
@@ -420,7 +444,8 @@ class VerifiedDataService:
                                     "received_reply": r[col_map.get("exhibitorreceivedreply", -1)] if col_map.get("exhibitorreceivedreply", -1) != -1 and len(r) > col_map.get("exhibitorreceivedreply", -1) else "",
                                     "reply_sentiment": r[col_map.get("exhibitorsentiment", -1)] if col_map.get("exhibitorsentiment", -1) != -1 and len(r) > col_map.get("exhibitorsentiment", -1) else "",
                                     "sent_message": r[col_map.get("exhibitorsentmessage", -1)] if col_map.get("exhibitorsentmessage", -1) != -1 and len(r) > col_map.get("exhibitorsentmessage", -1) else "",
-                                    "thread_id": r[col_map.get("exhibitorthreadid", -1)] if col_map.get("exhibitorthreadid", -1) != -1 and len(r) > col_map.get("exhibitorthreadid", -1) else ""
+                                    "thread_id": r[col_map.get("exhibitorthreadid", -1)] if col_map.get("exhibitorthreadid", -1) != -1 and len(r) > col_map.get("exhibitorthreadid", -1) else "",
+                                    "evaluation_status": eval_val
                                 }
 
                 del wb[sheet_name]
@@ -458,6 +483,9 @@ class VerifiedDataService:
             for r_idx, row_vals in enumerate(matrix_rows, start=2):
                 ws.row_dimensions[r_idx].height = 20
                 row_copy = list(row_vals)
+                while len(row_copy) < len(VERIFIED_DATA_HEADERS):
+                    row_copy.append("")
+                restored_eval = ""
 
                 # Merge cached outreach values for Speaker (email at idx 7)
                 spk_em = str(row_copy[7] or "").strip().lower()
@@ -469,6 +497,7 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[12] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[13] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[14] = cache["thread_id"]
+                    if cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
                 # Merge cached outreach values for Attendee (email at idx 18)
                 att_em = str(row_copy[18] or "").strip().lower()
@@ -480,6 +509,7 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[23] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[24] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[25] = cache["thread_id"]
+                    if not restored_eval and cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
                 # Merge cached outreach values for Exhibitor (email at idx 29)
                 exh_em = str(row_copy[29] or "").strip().lower()
@@ -491,14 +521,27 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[34] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[35] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[36] = cache["thread_id"]
+                    if not restored_eval and cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
-                ws.append(row_copy)
-                for col_idx, val in enumerate(row_copy, start=1):
+                if not restored_eval:
+                    rk = (
+                        str(row_copy[3] or "").strip().lower(),
+                        str(row_copy[0] or "").strip().lower(),
+                        str(row_copy[4] or "").strip().lower(),
+                        str(row_copy[15] or "").strip().lower(),
+                        str(row_copy[26] or "").strip().lower(),
+                    )
+                    restored_eval = existing_eval_by_rowkey.get(rk, "")
+                if restored_eval and not str(row_copy[37] or "").strip():
+                    row_copy[37] = restored_eval
+
+                ws.append(row_copy[:len(VERIFIED_DATA_HEADERS)])
+                for col_idx, val in enumerate(row_copy[:len(VERIFIED_DATA_HEADERS)], start=1):
                     cell = ws.cell(row=r_idx, column=col_idx)
                     cell.font = data_font
                     cell.border = thin_border
                     # Align status badges
-                    if col_idx in [4, 9, 10, 11, 13, 20, 21, 22, 24, 31, 32, 33, 35]:
+                    if col_idx in [4, 9, 10, 11, 13, 20, 21, 22, 24, 31, 32, 33, 35, 38]:
                         cell.alignment = center_align
                         if col_idx in [9, 20, 31] and val == "Verified":
                             cell.font = badge_font
@@ -516,7 +559,7 @@ class VerifiedDataService:
                 ws.column_dimensions[col_letter].width = min(max(max_len + 3, 14), 45)
 
             wb.save(self.excel_path)
-            logger.info(f"✅ [VerifiedDataService] Local Excel 'Verified Data' saved with {len(matrix_rows)} 37-column rows.")
+            logger.info(f"✅ [VerifiedDataService] Local Excel 'Verified Data' saved with {len(matrix_rows)} 38-column rows.")
             return {"status": "success", "count": len(matrix_rows)}
         except Exception as e:
             logger.error(f"❌ [VerifiedDataService] Error saving to Local Excel: {e}", exc_info=True)
@@ -524,10 +567,10 @@ class VerifiedDataService:
 
     def sync_to_onedrive(self, matrix_rows: Optional[List[List[Any]]] = None) -> Dict[str, Any]:
         """
-        Synchronizes 37-column company-grouped records to OneDrive Live Excel:
-        - Writes to 'Verified Data' worksheet range A1:AK{N}.
+        Synchronizes 38-column company-grouped records to OneDrive Live Excel:
+        - Writes to 'Verified Data' worksheet range A1:AL{N}.
         - Re-creates table 'tbl_verified_data' with TableStyleMedium9.
-        - Preserves existing outreach and reply tracking data.
+        - Preserves existing outreach, reply tracking, and Evaluation_Status data.
         """
         if matrix_rows is None:
             matrix_rows, _ = self.get_company_grouped_rows()
@@ -557,37 +600,67 @@ class VerifiedDataService:
                         return {}
                     return json.loads(resp.read().decode("utf-8"))
 
-            # Preserve existing outreach tracking from OneDrive table if present
+            # Preserve existing outreach tracking and Evaluation_Status from OneDrive table/range if present
             existing_od_outreach: Dict[str, Dict[str, Any]] = {}
+            existing_od_eval_by_rowkey: Dict[Tuple[str, str, str, str, str], str] = {}
+            raw_od_c_map: Dict[str, int] = {}
+            raw_od_rows: List[List[Any]] = []
             try:
                 rows_res = graph_request("GET", f"/workbook/tables/tbl_verified_data/rows")
                 cols_res = graph_request("GET", f"/workbook/tables/tbl_verified_data/columns")
                 c_names = [col["name"] for col in cols_res.get("value", [])]
-                c_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(c_names)}
+                raw_od_c_map = {name.lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, name in enumerate(c_names)}
+                raw_od_rows = [r.get("values", [[]])[0] for r in rows_res.get("value", [])]
+            except Exception as pe:
+                logger.debug(f"Notice loading existing OneDrive table tbl_verified_data ({pe}); checking worksheet usedRange...")
+                try:
+                    used_res = graph_request("GET", f"/workbook/worksheets/{sheet_name_encoded}/usedRange")
+                    u_vals = used_res.get("values", [])
+                    if len(u_vals) > 1:
+                        raw_od_c_map = {str(c).lower().replace(" ", "").replace("_", "").replace("/", ""): idx for idx, c in enumerate(u_vals[0])}
+                        raw_od_rows = u_vals[1:]
+                except Exception:
+                    pass
 
-                for r in rows_res.get("value", []):
-                    vals = r.get("values", [[]])[0]
-                    # Check across speaker, attendee, exhibitor email columns
+            if raw_od_c_map and raw_od_rows:
+                eval_idx = raw_od_c_map.get("evaluationstatus")
+                cid_idx = raw_od_c_map.get("conferenceid", 3)
+                comp_idx = raw_od_c_map.get("companyname", 0)
+                spk_n_idx = raw_od_c_map.get("speakername", 4)
+                att_n_idx = raw_od_c_map.get("attendeename", 15)
+                exh_n_idx = raw_od_c_map.get("exhibitorname", 26)
+
+                for vals in raw_od_rows:
+                    eval_val = str(vals[eval_idx] or "").strip() if eval_idx is not None and len(vals) > eval_idx else ""
+                    if eval_val:
+                        rk = (
+                            str(vals[cid_idx] or "").strip().lower() if len(vals) > cid_idx else "",
+                            str(vals[comp_idx] or "").strip().lower() if len(vals) > comp_idx else "",
+                            str(vals[spk_n_idx] or "").strip().lower() if len(vals) > spk_n_idx else "",
+                            str(vals[att_n_idx] or "").strip().lower() if len(vals) > att_n_idx else "",
+                            str(vals[exh_n_idx] or "").strip().lower() if len(vals) > exh_n_idx else "",
+                        )
+                        existing_od_eval_by_rowkey[rk] = eval_val
+
                     for em_key, st_key, rep_key, rec_key, sent_key, snd_key, th_key in [
                         ("speakerprofessionalemail", "speakeroutreachstatus", "speakerreplystatus", "speakerreceivedreply", "speakersentiment", "speakersentmessage", "speakerthreadid"),
                         ("attendeeprofessionalemail", "attendeeoutreachstatus", "attendeereplystatus", "attendeereceivedreply", "attendeesentiment", "attendeesentmessage", "attendeethreadid"),
                         ("exhibitorprofessionalemail", "exhibitoroutreachstatus", "exhibitorreplystatus", "exhibitorreceivedreply", "exhibitorsentiment", "exhibitorsentmessage", "exhibitorthreadid"),
                         ("professionalemail", "outreachstatus", "replaystatus", "receivedreplay", "replaysentiment", "sendmessage", "threadid")
                     ]:
-                        em_idx = c_map.get(em_key)
+                        em_idx = raw_od_c_map.get(em_key)
                         if em_idx is not None and len(vals) > em_idx:
                             em = str(vals[em_idx] or "").strip().lower()
                             if em:
                                 existing_od_outreach[em] = {
-                                    "outreach_status": vals[c_map[st_key]] if c_map.get(st_key) is not None and len(vals) > c_map[st_key] else "",
-                                    "reply_status": vals[c_map[rep_key]] if c_map.get(rep_key) is not None and len(vals) > c_map[rep_key] else "",
-                                    "received_reply": vals[c_map[rec_key]] if c_map.get(rec_key) is not None and len(vals) > c_map[rec_key] else "",
-                                    "reply_sentiment": vals[c_map[sent_key]] if c_map.get(sent_key) is not None and len(vals) > c_map[sent_key] else "",
-                                    "sent_message": vals[c_map[snd_key]] if c_map.get(snd_key) is not None and len(vals) > c_map[snd_key] else "",
-                                    "thread_id": vals[c_map[th_key]] if c_map.get(th_key) is not None and len(vals) > c_map[th_key] else ""
+                                    "outreach_status": vals[raw_od_c_map[st_key]] if raw_od_c_map.get(st_key) is not None and len(vals) > raw_od_c_map[st_key] else "",
+                                    "reply_status": vals[raw_od_c_map[rep_key]] if raw_od_c_map.get(rep_key) is not None and len(vals) > raw_od_c_map[rep_key] else "",
+                                    "received_reply": vals[raw_od_c_map[rec_key]] if raw_od_c_map.get(rec_key) is not None and len(vals) > raw_od_c_map[rec_key] else "",
+                                    "reply_sentiment": vals[raw_od_c_map[sent_key]] if raw_od_c_map.get(sent_key) is not None and len(vals) > raw_od_c_map[sent_key] else "",
+                                    "sent_message": vals[raw_od_c_map[snd_key]] if raw_od_c_map.get(snd_key) is not None and len(vals) > raw_od_c_map[snd_key] else "",
+                                    "thread_id": vals[raw_od_c_map[th_key]] if raw_od_c_map.get(th_key) is not None and len(vals) > raw_od_c_map[th_key] else "",
+                                    "evaluation_status": eval_val
                                 }
-            except Exception as pe:
-                logger.debug(f"Notice loading existing OneDrive outreach data: {pe}")
 
             # 1. Delete old table if exists
             try:
@@ -599,9 +672,9 @@ class VerifiedDataService:
             except Exception as te:
                 logger.debug(f"Table deletion notice: {te}")
 
-            # 2. Clear range A1:AK300
+            # 2. Clear range A1:AL500
             try:
-                graph_request("POST", f"/workbook/worksheets/{sheet_name_encoded}/range(address='A1:AK300')/clear", {"applyTo": "All"})
+                graph_request("POST", f"/workbook/worksheets/{sheet_name_encoded}/range(address='A1:AL500')/clear", {"applyTo": "All"})
             except Exception as ce:
                 logger.debug(f"Range clear notice: {ce}")
 
@@ -609,6 +682,10 @@ class VerifiedDataService:
             all_matrix = [VERIFIED_DATA_HEADERS]
             for r in matrix_rows:
                 row_copy = list(r)
+                while len(row_copy) < len(VERIFIED_DATA_HEADERS):
+                    row_copy.append("")
+                restored_eval = ""
+
                 # Speaker cache (idx 7)
                 spk_em = str(row_copy[7] or "").strip().lower()
                 if spk_em and spk_em in existing_od_outreach:
@@ -619,6 +696,7 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[12] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[13] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[14] = cache["thread_id"]
+                    if cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
                 # Attendee cache (idx 18)
                 att_em = str(row_copy[18] or "").strip().lower()
@@ -630,6 +708,7 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[23] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[24] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[25] = cache["thread_id"]
+                    if not restored_eval and cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
                 # Exhibitor cache (idx 29)
                 exh_em = str(row_copy[29] or "").strip().lower()
@@ -641,11 +720,24 @@ class VerifiedDataService:
                     if cache.get("reply_sentiment"): row_copy[34] = cache["reply_sentiment"]
                     if cache.get("sent_message"): row_copy[35] = cache["sent_message"]
                     if cache.get("thread_id"): row_copy[36] = cache["thread_id"]
+                    if not restored_eval and cache.get("evaluation_status"): restored_eval = cache["evaluation_status"]
 
-                all_matrix.append(row_copy)
+                if not restored_eval:
+                    rk = (
+                        str(row_copy[3] or "").strip().lower(),
+                        str(row_copy[0] or "").strip().lower(),
+                        str(row_copy[4] or "").strip().lower(),
+                        str(row_copy[15] or "").strip().lower(),
+                        str(row_copy[26] or "").strip().lower(),
+                    )
+                    restored_eval = existing_od_eval_by_rowkey.get(rk, "")
+                if restored_eval and not str(row_copy[37] or "").strip():
+                    row_copy[37] = restored_eval
+
+                all_matrix.append(row_copy[:len(VERIFIED_DATA_HEADERS)])
 
             end_row = len(all_matrix)
-            range_addr = f"A1:AK{end_row}"
+            range_addr = f"A1:AL{end_row}"
 
             # 4. Write values to range
             graph_request("PATCH", f"/workbook/worksheets/{sheet_name_encoded}/range(address='{range_addr}')", {"values": all_matrix})
@@ -665,7 +757,7 @@ class VerifiedDataService:
                     "style": "TableStyleMedium9"
                 })
 
-            logger.info(f"✅ [VerifiedDataService] Successfully synced {len(matrix_rows)} 37-column rows to OneDrive 'tbl_verified_data'.")
+            logger.info(f"✅ [VerifiedDataService] Successfully synced {len(matrix_rows)} 38-column rows to OneDrive 'tbl_verified_data'.")
             return {"status": "success", "count": len(matrix_rows)}
         except Exception as e:
             logger.error(f"❌ [VerifiedDataService] Error syncing to OneDrive: {e}", exc_info=True)

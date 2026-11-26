@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -64,6 +65,17 @@ class Settings:
     SHAREPOINT_CLIENT_ID: str = os.getenv("SHAREPOINT_CLIENT_ID", "")
     SHAREPOINT_CLIENT_SECRET: str = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
     SHAREPOINT_TENANT_ID: str = os.getenv("SHAREPOINT_TENANT_ID", "")
+    SHAREPOINT_DRIVE_ID: str = os.getenv("SHAREPOINT_DRIVE_ID", "")
+    SHAREPOINT_ITEM_ID: str = os.getenv("SHAREPOINT_ITEM_ID", "")
+    SHAREPOINT_MASTER_SHEET: str = os.getenv("SHAREPOINT_MASTER_SHEET", "Verified Data")
+    SHAREPOINT_LATEST_SHEET: str = os.getenv("SHAREPOINT_LATEST_SHEET", "latest_week_scoring")
+    SHAREPOINT_HISTORY_SHEET: str = os.getenv("SHAREPOINT_HISTORY_SHEET", "Companies scoring")
+
+    # Azure OpenAI & Tavily for AI Reranking Pipeline
+    AZURE_OPENAI_BASE_URL: str = os.getenv("AZURE_OPENAI_BASE_URL", "https://dv-aus-es-resource.services.ai.azure.com/openai/v1")
+    AZURE_OPENAI_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+    AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
     CONFERENCE_ONEDRIVE_HOSTNAME: str = os.getenv("CONFERENCE_ONEDRIVE_HOSTNAME", "adopleaiinf-my.sharepoint.com")
     CONFERENCE_ONEDRIVE_USER: str = os.getenv("CONFERENCE_ONEDRIVE_USER", "jeevanandham_adople_ai")
     CONFERENCE_EXCEL_FILE_NAME: str = os.getenv("CONFERENCE_EXCEL_FILE_NAME", "Conference_Agent_Conferences.xlsx")
@@ -75,16 +87,20 @@ class Settings:
 
     # Weekly Conference Scraping & OneDrive Excel Settings
     WEEKLY_AGENT_ENABLED: bool = os.getenv("WEEKLY_AGENT_ENABLED", "false").lower() in ("true", "1", "yes")
-    WEEKLY_TIMEZONE: str = os.getenv("WEEKLY_TIMEZONE", "America/New_York")
+    WEEKLY_TIMEZONE: str = os.getenv("WEEKLY_TIMEZONE", "Asia/Kolkata")
+    WEEKLY_SCRAPE_DAY: str = os.getenv("WEEKLY_SCRAPE_DAY", "mon")
+    WEEKLY_SCRAPE_TIME: str = os.getenv("WEEKLY_SCRAPE_TIME", "06:00")
+    WEEKLY_TARGET_START_DATE: Optional[str] = os.getenv("WEEKLY_TARGET_START_DATE", "")
+    WEEKLY_TARGET_END_DATE: Optional[str] = os.getenv("WEEKLY_TARGET_END_DATE", "")
     WEEKLY_REFRESH_ENABLED: bool = os.getenv("WEEKLY_REFRESH_ENABLED", "true").lower() in ("true", "1", "yes")
-    WEEKLY_SCRAPE_LEAD_DAYS: int = int(os.getenv("WEEKLY_SCRAPE_LEAD_DAYS", "3"))
+    WEEKLY_SCRAPE_LEAD_DAYS: int = int(os.getenv("WEEKLY_SCRAPE_LEAD_DAYS", "6"))
     WEEKLY_TEAMS_CARD_ENABLED: bool = os.getenv("WEEKLY_TEAMS_CARD_ENABLED", "false").lower() in ("true", "1", "yes")
 
-    WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME", "weekly_conferences")
+    WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_WORKSHEET_NAME", "weekly_conference")
     WEEKLY_CONFERENCE_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_CONFERENCE_EXCEL_TABLE_NAME", "tbl_weekly_conferences")
     WEEKLY_SPEAKERS_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SPEAKERS_EXCEL_WORKSHEET_NAME", "weekly_speakers")
     WEEKLY_SPEAKERS_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SPEAKERS_EXCEL_TABLE_NAME", "tbl_weekly_speakers")
-    WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_run_log")
+    WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_WORKSHEET_NAME", "weekly_source_log")
     WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_SOURCE_LOG_EXCEL_TABLE_NAME", "tbl_weekly_source_run_log")
     WEEKLY_ATTENDEES_EXCEL_WORKSHEET_NAME: str = os.getenv("WEEKLY_ATTENDEES_EXCEL_WORKSHEET_NAME", os.getenv("WEEKLY_ATTENDEE_WORKSHEET_NAME", "weekly_attendees"))
     WEEKLY_ATTENDEES_EXCEL_TABLE_NAME: str = os.getenv("WEEKLY_ATTENDEES_EXCEL_TABLE_NAME", os.getenv("WEEKLY_ATTENDEE_TABLE_NAME", "tbl_weekly_attendees"))
@@ -124,7 +140,7 @@ class Settings:
     OUTREACH_SENDER_TITLE: str = os.getenv("SENDER_TITLE", "Founder")
     OUTREACH_COMPANY: str = os.getenv("COMPANY", "Adople AI")
     OUTREACH_TEMPLATE_FILE: str = os.getenv("TEMPLATE_FILE", "template.txt")
-    OUTREACH_SEND_TIME: str = os.getenv("SEND_TIME", "19:00")
+    OUTREACH_SEND_TIME: str = os.getenv("SEND_TIME", "20:00")
     OUTREACH_SEND_DAY: str = os.getenv("OUTREACH_SEND_DAY", os.getenv("SEND_DAY", "thu"))
     OUTREACH_WATCH_INTERVAL_MINUTES: int = int(os.getenv("WATCH_INTERVAL_MINUTES", "5"))
     OUTREACH_DAILY_CAP: int = int(os.getenv("DAILY_CAP", "0"))
@@ -136,12 +152,25 @@ class Settings:
     OUTREACH_GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     OUTREACH_USE_GEMINI: bool = os.getenv("USE_GEMINI", "1").lower() in ("1", "true", "yes")
     EMAIL_TEAMS_CARD_ENABLED: bool = os.getenv("EMAIL_TEAMS_CARD_ENABLED", os.getenv("EMAIL_TEAMS_CARD", "true")).lower() in ("1", "true", "yes")
-    OUTREACH_STATE_FILE: str = os.getenv("STATE_FILE", "outreach_state.json")
+    BOUNCE_TEAMS_CARD_ENABLED: bool = os.getenv("BOUNCE_TEAMS_CARD_ENABLED", "false").lower() in ("1", "true", "yes")
+    OUTREACH_STATE_FILE: str = os.getenv("STATE_FILE", str(BASE_DIR.parent / "outreach_state.json"))
     OUTREACH_ACTIVE: bool = os.getenv("OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
     OUTREACH_TIMEZONE: str = os.getenv("OUTREACH_TIMEZONE", "Asia/Kolkata")
-    OUTREACH_SOURCE: str = os.getenv("OUTREACH_SOURCE", "verified_data")
+    OUTREACH_SOURCE: str = os.getenv("OUTREACH_SOURCE", "qualified_leads")
     VERIFIED_DATA_EXCEL_TABLE_NAME: str = os.getenv("VERIFIED_DATA_EXCEL_TABLE_NAME", "tbl_verified_data")
     VERIFIED_DATA_EXCEL_WORKSHEET_NAME: str = os.getenv("VERIFIED_DATA_EXCEL_WORKSHEET_NAME", "Verified Data")
+    QUALIFIED_LEADS_EXCEL_TABLE_NAME: str = os.getenv("QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_qualified_leads")
+    QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME: str = os.getenv("QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Qualified Leads")
+    NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME: str = os.getenv("NON_QUALIFIED_LEADS_EXCEL_TABLE_NAME", "tbl_non_qualified_leads")
+    NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME: str = os.getenv("NON_QUALIFIED_LEADS_EXCEL_WORKSHEET_NAME", "Non -Qualified Leads")
+    
+    # Non-Qualified Leads Outreach Configuration (Independent Workflow)
+    NON_QUALIFIED_OUTREACH_ACTIVE: bool = os.getenv("NON_QUALIFIED_OUTREACH_ACTIVE", "false").lower() in ("1", "true", "yes")
+    NON_QUALIFIED_OUTREACH_SEND_TIME: str = os.getenv("NON_QUALIFIED_SEND_TIME", "20:00")
+    NON_QUALIFIED_OUTREACH_SEND_DAY: str = os.getenv("NON_QUALIFIED_SEND_DAY", "fri")
+    NON_QUALIFIED_OUTREACH_DAILY_CAP: int = int(os.getenv("NON_QUALIFIED_DAILY_CAP", "0"))
+    NON_QUALIFIED_DRY_RUN: bool = os.getenv("NON_QUALIFIED_DRY_RUN", "0").lower() in ("1", "true", "yes")
+    
     FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "false").lower() in ("1", "true", "yes")
 
     # Speaker Replies Configuration (Dedicated Sheet & Table)

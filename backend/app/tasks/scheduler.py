@@ -133,6 +133,27 @@ def weekly_speaker_reply_watcher_job():
             svc.close()
 
 
+def weekly_speaker_bounce_watcher_job():
+    """
+    Independent Bounce & NDR Watcher:
+    Watches mailbox (akash@adople.ai) every 60 seconds (or configured interval)
+    independently of reply detection & sentiment analysis.
+    Detects bounced outreach emails and triggers at-most-once Microsoft Teams bounce cards.
+    """
+    if not getattr(settings, "OUTREACH_ENABLED", True):
+        return
+    svc = None
+    try:
+        from ..services.speaker_outreach_service import SpeakerOutreachService
+        svc = SpeakerOutreachService()
+        svc.poll_bounces()
+    except Exception as e:
+        logger.error(f"❌ [Bounce Watcher] Error in bounce watcher job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
 def weekly_speaker_scheduled_send_job():
     """
     Scheduled Outreach Job:
@@ -149,6 +170,65 @@ def weekly_speaker_scheduled_send_job():
         svc.run_outreach_send_pass()
     except Exception as e:
         logger.error(f"❌ [Outreach Sender] Error in scheduled email send job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
+def weekly_non_qualified_scheduled_send_job():
+    """
+    Scheduled Outreach Job for Non-Qualified Leads (ICP score < 50):
+    Triggered every Thursday at NON_QUALIFIED_OUTREACH_SEND_TIME (20:00 IST / 8:00 PM).
+    Safely skips if NON_QUALIFIED_OUTREACH_ACTIVE is False or DRY_RUN is True.
+    """
+    if not getattr(settings, "NON_QUALIFIED_OUTREACH_ACTIVE", False):
+        logger.info("ℹ️ [Non-Qualified Outreach Sender] NON_QUALIFIED_OUTREACH_ACTIVE is False. Skipping live email send pass.")
+        return
+    svc = None
+    try:
+        from ..services.speaker_outreach_service import SpeakerOutreachService
+        svc = SpeakerOutreachService()
+        svc.run_non_qualified_outreach_send_pass()
+    except Exception as e:
+        logger.error(f"❌ [Non-Qualified Outreach Sender] Error in scheduled email send job: {e}", exc_info=True)
+    finally:
+        if svc:
+            svc.close()
+
+
+def reporting_live_refresh_job():
+    """
+    Isolated 24/7 Automated Reporting Sync Job:
+    Syncs Outlook mailbox telemetry, PostgreSQL, Excel sheets, and outreach_state.json
+    every 5 minutes to keep current-week analytics and downloadable latest reports fresh
+    without ever modifying or interrupting existing workflows or overwriting sealed archives.
+    """
+    svc = None
+    try:
+        from ..services.reporting_service import ReportingService
+        svc = ReportingService()
+        svc.ensure_weekly_archives_and_refresh(refresh_graph=True, force_export=False)
+    except Exception as e:
+        logger.warning(f"⚠️ [Reporting 24/7 Sync] Refresh notice: {e}")
+    finally:
+        if svc:
+            svc.close()
+
+
+def weekly_report_generation_job():
+    """
+    Isolated Automated Weekly Report Generation Job:
+    Runs automatically every Sunday at 00:15 to seal the completed Sunday–Saturday week
+    into an immutable versioned snapshot (.xlsx, .pdf, and PostgreSQL archive) without overwriting past reports.
+    """
+    svc = None
+    try:
+        from ..services.reporting_service import ReportingService
+        svc = ReportingService()
+        res = svc.ensure_weekly_archives_and_refresh(refresh_graph=True, force_export=False)
+        logger.info(f"📊 [Weekly Report Archiver] Automated weekly report check completed: {res.get('weeks_processed')} weeks processed.")
+    except Exception as e:
+        logger.error(f"❌ [Weekly Report Archiver] Error in automated weekly report job: {e}", exc_info=True)
     finally:
         if svc:
             svc.close()
@@ -183,17 +263,23 @@ def start_scheduler():
         else:
             logger.info("⏸️ [Scheduler] T-2 hourly scraping & publication engine are temporarily PAUSED (T2_WORKFLOW_ENABLED=false).")
 
-        # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage
-        weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "America/New_York")
+        # 3. Automated Weekly Conference Scraping & OneDrive Excel Storage (Every Monday at 06:00 AM IST)
+        weekly_tz = getattr(settings, "WEEKLY_TIMEZONE", "Asia/Kolkata")
+        weekly_day = getattr(settings, "WEEKLY_SCRAPE_DAY", "mon")
+        weekly_time_str = getattr(settings, "WEEKLY_SCRAPE_TIME", "06:00")
+        try:
+            whour, wmin = [int(p) for p in weekly_time_str.split(":", 1)]
+        except Exception:
+            whour, wmin = 6, 0
         scheduler.add_job(
             weekly_scrape_job,
-            trigger=CronTrigger(hour=6, minute=0, timezone=weekly_tz),
+            trigger=CronTrigger(day_of_week=weekly_day, hour=whour, minute=wmin, timezone=weekly_tz),
             id="weekly_conference_scraper_job",
-            name="Weekly Conference Scraping & OneDrive Excel Storage",
+            name=f"Weekly Conference Scraping ({weekly_day.upper()} {weekly_time_str} {weekly_tz})",
             replace_existing=True
         )
 
-        # 4. 24/7 Continuous Email Reply Monitoring (every 60s / 1m)
+        # 4. 24/7 Continuous Email Reply & Independent Bounce Monitoring (every 60s / 1m)
         watch_interval = getattr(settings, "OUTREACH_WATCH_INTERVAL_MINUTES", 1) or 1
         scheduler.add_job(
             weekly_speaker_reply_watcher_job,
@@ -202,23 +288,70 @@ def start_scheduler():
             name="24/7 Weekly Speaker Email Reply Watcher",
             replace_existing=True
         )
+        scheduler.add_job(
+            weekly_speaker_bounce_watcher_job,
+            trigger=IntervalTrigger(minutes=watch_interval),
+            id="weekly_speaker_bounce_watcher_job",
+            name="24/7 Independent Email Bounce Watcher",
+            replace_existing=True,
+            next_run_time=datetime.now() + timedelta(seconds=30),
+        )
 
         # 5. Scheduled Outreach Sender (Every Thursday at 19:00 / 7:00 PM IST)
         # Note: Will safely skip execution until OUTREACH_ACTIVE=True is set after user template approval
-        send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "19:00")
+        # 5. Scheduled Outreach Sender for Qualified Leads (Every Thursday at 20:00 / 8:00 PM IST)
+        send_time_str = getattr(settings, "OUTREACH_SEND_TIME", "20:00")
         outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
         outreach_day = getattr(settings, "OUTREACH_SEND_DAY", "thu")
         try:
             shour, smin = [int(p) for p in send_time_str.split(":", 1)]
         except Exception:
-            shour, smin = 19, 0
+            shour, smin = 20, 0
         scheduler.add_job(
             weekly_speaker_scheduled_send_job,
             trigger=CronTrigger(day_of_week=outreach_day, hour=shour, minute=smin, timezone=outreach_tz),
             id="weekly_speaker_scheduled_send_job",
-            name=f"Scheduled Weekly Speaker Outreach Sender ({outreach_day.upper()} {send_time_str})",
+            name=f"Scheduled Qualified Leads Outreach Sender ({outreach_day.upper()} {send_time_str} {outreach_tz})",
             replace_existing=True
         )
+
+        # 6. Scheduled Outreach Sender for Non-Qualified Leads (Every Friday at 20:00 / 8:00 PM IST)
+        # Note: Will safely skip execution until NON_QUALIFIED_OUTREACH_ACTIVE=True is set in .env
+        nq_send_time_str = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_TIME", "20:00")
+        nq_outreach_tz = getattr(settings, "OUTREACH_TIMEZONE", "Asia/Kolkata")
+        nq_outreach_day = getattr(settings, "NON_QUALIFIED_OUTREACH_SEND_DAY", "fri")
+        try:
+            nq_hour, nq_min = [int(p) for p in nq_send_time_str.split(":", 1)]
+        except Exception:
+            nq_hour, nq_min = 20, 0
+        scheduler.add_job(
+            weekly_non_qualified_scheduled_send_job,
+            trigger=CronTrigger(day_of_week=nq_outreach_day, hour=nq_hour, minute=nq_min, timezone=nq_outreach_tz),
+            id="weekly_non_qualified_scheduled_send_job",
+            name=f"Scheduled Non-Qualified Outreach Sender ({nq_outreach_day.upper()} {nq_send_time_str})",
+            replace_existing=True
+        )
+
+        # 7. Isolated 24/7 Automated Reporting Refresh (every 5 minutes) & Weekly Archive Seal (every Sunday 00:15)
+        try:
+            scheduler.add_job(
+                reporting_live_refresh_job,
+                trigger=IntervalTrigger(minutes=5),
+                id="reporting_live_refresh_job",
+                name="24/7 Automated Reporting Telemetry Sync",
+                replace_existing=True,
+                next_run_time=datetime.now() + timedelta(seconds=20),
+            )
+            scheduler.add_job(
+                weekly_report_generation_job,
+                trigger=CronTrigger(day_of_week="sun", hour=0, minute=15, timezone=outreach_tz),
+                id="weekly_report_generation_job",
+                name=f"Automated Weekly Report Generation & Archival (SUN 00:15 {outreach_tz})",
+                replace_existing=True,
+            )
+            logger.info("✅ [Scheduler] 24/7 Automated Reporting refresh & weekly archive jobs scheduled.")
+        except Exception as _rpt_sched_err:
+            logger.warning(f"⚠️ [Scheduler] Could not schedule reporting jobs: {_rpt_sched_err}")
         
         scheduler.start()
         scheduler_state["is_running"] = True
