@@ -915,6 +915,13 @@ def get_outreach_templates():
 # ==========================================
 app.include_router(reporting_router)
 
+# ==========================================
+# Outreach Studio UI & Automated Pipeline Router
+# ==========================================
+from .routers.outreach_studio_router import studio_router
+app.include_router(studio_router)
+
+
 
 
 

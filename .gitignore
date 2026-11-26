@@ -37,6 +37,7 @@ data/*.json
 *.csv
 *.json
 *.txt
+!templates/*.txt
 !conference-app/package*.json
 !conference-app/tsconfig.json
 !conference-app/components.json
@@ -51,11 +52,14 @@ conference_talks_with_topics.csv
 backend/.env
 *.db
 
-# Next.js
+# Next.js & UI Apps
 conference-app/.next/
 conference-app/out/
 conference-app/node_modules/
 conference-app/.env*.local
+outreach-studio-ui/node_modules/
+outreach-studio-ui/dist/
+outreach-studio-ui/.env*.local
 
 # IDE
 .vscode/

@@ -140,6 +140,26 @@ def list_reporting_archives(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/reporting/download/latest.pdf")
+def download_latest_pdf_alias(
+    week_id: Optional[str] = Query(None, description="Optional week_id scope"),
+    sync: bool = Query(False, description="Sync live Graph before generating"),
+    db: Session = Depends(get_db),
+):
+    """Direct alias to download the latest report in PDF format."""
+    return download_latest_report(format="pdf", week_id=week_id, sync=sync, db=db)
+
+
+@router.get("/api/reporting/download/latest.xlsx")
+def download_latest_xlsx_alias(
+    week_id: Optional[str] = Query(None, description="Optional week_id scope"),
+    sync: bool = Query(False, description="Sync live Graph before generating"),
+    db: Session = Depends(get_db),
+):
+    """Direct alias to download the latest report in Excel XLSX format."""
+    return download_latest_report(format="xlsx", week_id=week_id, sync=sync, db=db)
+
+
 @router.get("/api/reporting/download/latest")
 def download_latest_report(
     format: Literal["xlsx", "pdf"] = Query("xlsx"),
@@ -147,6 +167,7 @@ def download_latest_report(
     sync: bool = Query(False, description="Sync live Graph before generating"),
     db: Session = Depends(get_db),
 ):
+    import time
     svc = ReportingService(db)
     if sync:
         payload = svc.build_full_report_payload(refresh_graph=True)
@@ -158,14 +179,23 @@ def download_latest_report(
 
     ext = format.lower()
     out_file = REPORTS_DIR / f"Conference_Agent_Latest_Report.{ext}"
+    media = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if ext == "xlsx"
+        else "application/pdf"
+    )
+    fname = f"Adople_Conference_Agent_Latest_Report.{ext}"
+
+    # Fast response cache: If file was generated recently (< 300s) and sync is not forced, serve immediately
+    if not sync and out_file.exists():
+        age = time.time() - out_file.stat().st_mtime
+        if age < 300:
+            return FileResponse(str(out_file), filename=fname, media_type=media)
+
     if ext == "xlsx":
         generate_excel_report(payload, str(out_file), title_scope="Consolidated Weekly & Historical Report")
-        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        fname = "Adople_Conference_Agent_Latest_Report.xlsx"
     else:
         generate_pdf_report(payload, str(out_file), title_scope="Consolidated Weekly & Historical Report")
-        media = "application/pdf"
-        fname = "Adople_Conference_Agent_Latest_Report.pdf"
 
     return FileResponse(str(out_file), filename=fname, media_type=media)
 

@@ -1,0 +1,16 @@
+Subject: Ahead of {conference_name} — {company_name}
+
+Hi {first_name},
+
+I hope this finds you well. I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology.
+
+Ahead of your upcoming session at {conference_name} with {company_name}, and as you look ahead to 2027, we would be delighted to help you explore where Enterprise AI could be useful in {industry}. We can offer an initial assessment and suggest practical solutions, whether that means implementing AI agents, automating enterprise workflows, handling intelligent document processing, or building custom AI solutions.
+
+Please feel free to reach out if this is of interest. I'd also be pleased to arrange a brief introductory call at your convenience.
+
+Thank you for your time, and I wish you a successful conference and year ahead.
+
+Kind regards,
+
+Akash Sadasivam
+Adople AI

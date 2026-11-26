@@ -1,0 +1,59 @@
+Speakers templates :
+ 
+Sub : Ahead of {Conference Name} — {Company Name}
+ 
+Hi {Name},
+ 
+I hope this finds you well. I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology.
+ 
+Ahead of your upcoming session at {Conference Name} with {Company Name}, and as you look ahead to 2027, we would be delighted to help you explore where Enterprise AI could be useful in {Industry}. We can offer an initial assessment and suggest practical solutions, whether that means implementing AI agents, automating enterprise workflows, handling intelligent document processing, or building custom AI solutions.
+ 
+Please feel free to reach out if this is of interest. I'd also be pleased to arrange a brief introductory call at your convenience.
+ 
+Thank you for your time, and I wish you a successful conference and year ahead.
+ 
+Kind regards,
+
+Akash Sadasivam
+Adople AI
+
+---------------------------------------------------------------
+ 
+Attendees Templates :
+ 
+Sub : Akash from Adople AI – Referred by {Conference Name}
+ 
+Hi {Name},
+I hope this finds you well.
+I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology.
+I understand you participated in {Conference Name}. I wanted to reach out and understand whether your organization is exploring AI opportunities or planning any AI initiatives for 2027.
+
+We would be happy to offer an initial assessment of your business needs and suggest practical solutions, whether that involves workflow automation, intelligent document processing, or custom AI solutions.
+If this is something of interest, I'd be glad to arrange a brief conversation at a time convenient for you.
+
+Thank you for your time, and I wish you a successful year ahead.
+Kind regards,
+ 
+Akash Sadasivam
+Adople AI
+ -----------------------------------------------------
+ 
+Exhibitors Template :
+ 
+Sub : Akash from Adople AI – Referred by {Conference Name}
+ 
+Hi {Name},
+I hope this finds you well.
+I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology.
+I came across your organization's participation in {Conference Name} and wanted to connect to explore potential opportunities for collaboration.
+We would be delighted to understand your organization's technology needs and explore how our AI capabilities could complement your existing solutions, streamline workflows, or support your business goals for 2027.
+If this is something of interest, I'd be happy to arrange a brief conversation at a time convenient for you.
+Thank you for your time, and I wish you continued success.
+Kind regards,
+ 
+Akash Sadasivam
+Adople AI
+ 
+ 
+ 
+ 

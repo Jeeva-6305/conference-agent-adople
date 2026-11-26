@@ -2611,25 +2611,64 @@ class SpeakerOutreachService:
         company = str(lead.get("company_name") or "").strip() or "your organization"
         conf_name = str(lead.get("conference_name") or "").strip() or "the upcoming conference"
 
-        try:
-            subj, body, meta = build_industry_email_content(
-                speaker_name=name,
-                job_title=job_title,
-                company=company,
-                conf_name=conf_name,
-                category=role,
-                industry=ind,
-                primary_industry=prim_ind,
-            )
-        except Exception as e:
-            return {
-                "ok": False,
-                "error_kind": "template_error",
-                "reason": str(e),
-                "industry_key": industry_key,
-                "contact_type": role,
-                "message": str(e),
-            }
+        # Extract clean first name
+        raw_name = str(lead.get("name") or lead.get("contact_name") or name).strip()
+        if "(" in raw_name and ")" in raw_name:
+            raw_name = raw_name.split("(")[-1].replace(")", "").strip()
+        name_parts = raw_name.split()
+        if name_parts and name_parts[0].lower().rstrip('.') in ['dr', 'mr', 'ms', 'mrs', 'prof']:
+            name_parts = name_parts[1:]
+        first_name = name_parts[0] if name_parts else "there"
+
+        # Resolve dynamic industry display (strictly non-hardcoded)
+        industry_display = prim_ind or ind or (industry_key.replace("_", " ").title() if industry_key else "your operations")
+        if not industry_display or industry_display.lower() in ("ai", "unknown", "none"):
+            industry_display = "your operations"
+
+        # Approved Outreach Template format (loaded dynamically from external file for easy management)
+        subj = f"Ahead of {conf_name} — {company}"
+        body = (
+            f"Hi {first_name},\n\n"
+            f"I hope this finds you well. I'm Akash from Adople AI. For over 10 years, we have helped businesses solve real-world problems with technology.\n\n"
+            f"Ahead of your upcoming session at {conf_name} with {company}, and as you look ahead to 2027, we would be delighted to help you explore where Enterprise AI could be useful in {industry_display}. "
+            f"We can offer an initial assessment and suggest practical solutions, whether that means implementing AI agents, automating enterprise workflows, handling intelligent document processing, or building custom AI solutions.\n\n"
+            f"Please feel free to reach out if this is of interest. I'd also be pleased to arrange a brief introductory call at your convenience.\n\n"
+            f"Thank you for your time, and I wish you a successful conference and year ahead.\n\n"
+            f"Kind regards,\n\n"
+            f"Akash Sadasivam\n"
+            f"Adople AI"
+        )
+
+        tpl_file = Path("templates/outreach_template.txt")
+        if tpl_file.exists():
+            try:
+                content = tpl_file.read_text(encoding="utf-8")
+                lines = content.splitlines()
+                if lines and lines[0].lower().startswith("subject:"):
+                    raw_subj = lines[0].split(":", 1)[1].strip()
+                    raw_body = "\n".join(lines[1:]).strip()
+                else:
+                    raw_subj = "Ahead of {conference_name} — {company_name}"
+                    raw_body = content.strip()
+
+                subj = (
+                    raw_subj.replace("{conference_name}", conf_name)
+                    .replace("{conference name}", conf_name)
+                    .replace("{company_name}", company)
+                    .replace("{company name}", company)
+                )
+                body = (
+                    raw_body.replace("{first_name}", first_name)
+                    .replace("{first name}", first_name)
+                    .replace("{name}", first_name)
+                    .replace("{conference_name}", conf_name)
+                    .replace("{conference name}", conf_name)
+                    .replace("{company_name}", company)
+                    .replace("{company name}", company)
+                    .replace("{industry}", industry_display)
+                )
+            except Exception as e:
+                logger.warning(f"Notice reading templates/outreach_template.txt: {e}")
 
         return {
             "ok": True,
@@ -2638,9 +2677,9 @@ class SpeakerOutreachService:
             "full_message": f"Subject: {subj}\n\n{body}",
             "category": role.capitalize(),
             "role": role,
-            "industry_key": meta["industry_key"],
-            "template_file": meta["template_file"],
-            "template_path": meta["template_path"],
+            "industry_key": industry_key or "general",
+            "template_file": "approved_outreach_template",
+            "template_path": "approved_format",
         }
 
     def _flag_lead_for_manual_review(self, lead: Dict[str, Any], reason: str, dry_run: bool = False) -> None:
